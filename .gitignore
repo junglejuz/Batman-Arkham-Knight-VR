@@ -1,0 +1,28 @@
+# Build output
+build/
+build-*/
+out/
+*.dll
+*.exe
+*.pdb
+*.lib
+*.obj
+*.ilk
+*.exp
+
+# Python cache
+__pycache__/
+*.pyc
+
+# Editor
+.vs/
+
+# Diagnostic captures: logs, screenshots, DLL backups, extracted game scripts.
+# Keep only the notes and helper scripts.
+diagnostics/**
+!diagnostics/**/
+!diagnostics/**/*.md
+!diagnostics/**/*.py
+
+# Third-party cheat table (forum attachment)
+*.CT

@@ -1,0 +1,15 @@
+cmake_minimum_required(VERSION 3.20)
+project(AKVRProxyTest LANGUAGES CXX)
+set(CMAKE_CXX_STANDARD 17)
+enable_testing()
+add_executable(hud_projection hud_projection.cpp)
+add_test(NAME hud_projection_geometry COMMAND hud_projection)
+add_executable(present_probe present_probe.cpp ../src/present_probe.cpp)
+target_link_libraries(present_probe PRIVATE d3d11 dxgi)
+add_test(NAME present_probe_gpu_boundary COMMAND present_probe)
+# Exercise only the forwarding boundary: never run AKVR's game-specific DllMain
+# inside a test host.
+add_library(input_proxy SHARED ../src/dinput8_proxy.cpp ../src/dinput8.def)
+add_executable(proxy_smoke proxy_smoke.cpp)
+target_link_libraries(proxy_smoke PRIVATE dxguid)
+add_test(NAME directinput_forwarding COMMAND proxy_smoke "$<TARGET_FILE:input_proxy>")
