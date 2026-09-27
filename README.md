@@ -13,8 +13,8 @@ camera, while keeping the game's third-person view.
 ## Working (checked in the headset)
 
 - Full 3D through geo-11
-- Head tracking. Looking up and down works like UEVR's default, and turning your head
-  never tilts the horizon.
+- Head tracking. The camera follows the game's own up-and-down tilt, and turning your
+  head never tilts the horizon.
 - Smooth camera when spinning with the stick
 - World scale you can change live
 - Radar flicker fixed
@@ -27,7 +27,7 @@ camera, while keeping the game's third-person view.
 - Built, not yet tested: HUD distance slider, stutter fix after leaving the pause menu or map
 - Stutter on the main menu when the game first starts
 - The compass shows double when each eye gets its own wider view
-- Frame generation with OFXR Bridge still stutters (on hold for now)
+- Frame generation (extra in-between frames) still stutters (on hold for now)
 
 ## What you need
 
