@@ -26,3 +26,6 @@ diagnostics/**
 
 # Third-party cheat table (forum attachment)
 *.CT
+
+# Tested geo-11 files the installer copies in
+!install/files/*.dll
