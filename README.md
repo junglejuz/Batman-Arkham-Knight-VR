@@ -1,18 +1,31 @@
 # Batman: Arkham Knight VR
 
-Play Batman: Arkham Knight in VR on a Quest 3, in full 3D, with your head moving the
+Play Batman: Arkham Knight in VR on a Quest 3, in true 3D, with your head moving the
 camera, while keeping the game's third-person view.
+
+## True 3D, drawn by the game itself
+
+This is the heart of the mod. The game draws a complete, separate picture for each eye,
+from each eye's own position, at the same moment. Nothing is faked from a flat image, and
+the eyes never take turns. So everything on screen, near or far, has real depth, and
+turning the camera never leaves one eye behind the other.
+
+![Arkham Knight in VR: left and right eye](images/city-streets.jpg)
+
+![Arkham Knight in VR: left and right eye](images/batmobile.jpg)
+
+*The two eye pictures side by side, saved by the mod while playing.*
 
 ## How it works
 
-- **geo-11** (a stereo 3D tool, with a community fix for Arkham Knight) makes the game
+- **geo-11** (a free stereo 3D tool, with a community fix for Arkham Knight) makes the game
   draw a separate picture for each eye.
 - **This mod** shows those two pictures in the headset through Virtual Desktop, moves the
   game's camera with your head, and adds an in-headset settings panel.
 
 ## Working (checked in the headset)
 
-- Full 3D through geo-11
+- True 3D through geo-11
 - Head tracking. The camera follows the game's own up-and-down tilt, and turning your
   head never tilts the horizon.
 - Smooth camera when spinning with the stick
