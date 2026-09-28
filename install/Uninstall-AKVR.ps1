@@ -2,9 +2,12 @@
   AKVR uninstaller: removes the VR mod and the geo-11 3D fix from Batman: Arkham Knight and puts
   back the files the first install replaced.
 
-  Double-click Uninstall-AKVR.bat. Optional: -GameDir "<folder with BatmanAK.exe>" -Yes (no question).
+  It also sets the game's graphics settings back to the game's own defaults.
+
+  Double-click Uninstall-AKVR.bat. Optional: -GameDir "<folder with BatmanAK.exe>", -Yes (no questions,
+  backups kept), -RemoveBackups (also delete the vrmod_backup folders).
 #>
-param([string]$GameDir, [switch]$Yes)
+param([string]$GameDir, [switch]$Yes, [switch]$RemoveBackups)
 
 $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName System.Windows.Forms
@@ -74,7 +77,8 @@ if (Get-Process -Name 'BatmanAK' -ErrorAction SilentlyContinue) { Fail 'the game
 if (-not $Yes) {
     Write-Host ''
     Write-Host '  This removes the VR mod and the geo-11 3D fix from that folder, including your VR' -ForegroundColor White
-    Write-Host '  settings, and puts back the files the first install replaced.' -ForegroundColor White
+    Write-Host '  settings, puts back the files the first install replaced, and sets the game''s graphics' -ForegroundColor White
+    Write-Host '  settings back to the game''s defaults.' -ForegroundColor White
     $answer = Read-Host '  Continue? (Y/N)'
     if ($answer -notmatch '^\s*[Yy]') { Say '   Nothing was changed.' 'Yellow'; exit 0 }
 }
@@ -112,11 +116,18 @@ Say "   $n file(s) removed" 'Green'
 
 # ---- 4. put back what was there before --------------------------------------------------------------
 Step '4. Putting back your original files'
-# The oldest vrmod_backup folder holds the files the FIRST install replaced (later ones hold earlier
-# versions of the mod itself). Files only: nothing that exists now is overwritten.
-$backups = @(Get-ChildItem -LiteralPath $GameDir -Directory -Filter 'vrmod_backup_*' | Sort-Object Name)
+# Only a backup taken BEFORE the mod was ever installed holds the player's own files. A backup made by
+# a reinstall holds the mod and the fix themselves (geo11.dll, the mod's dinput8.dll): restoring that
+# would put them straight back (JJ's clean-slate request, 2026-09-29). Files only; nothing is overwritten.
+function Test-PreModBackup([string]$dir) {
+    if (Test-Path -LiteralPath (Join-Path $dir 'geo11.dll')) { return $false }
+    $p = Join-Path $dir 'dinput8.dll'
+    if ((Test-Path -LiteralPath $p) -and ([System.Text.Encoding]::ASCII.GetString([System.IO.File]::ReadAllBytes($p))).Contains('AKVR')) { return $false }
+    return $true
+}
+$backups = @(Get-ChildItem -LiteralPath $GameDir -Directory -Filter 'vrmod_backup_*' | Sort-Object Name | Where-Object { Test-PreModBackup $_.FullName })
 if ($backups.Count -eq 0) {
-    Say '   nothing to put back (the game folder had none of these files before)' 'Green'
+    Say '   nothing to put back (no backup from before the mod was installed)' 'Green'
 } else {
     $first = $backups[0].FullName
     $restored = 0
@@ -130,7 +141,41 @@ if ($backups.Count -eq 0) {
         }
     }
     Say "   $restored file(s) put back from $(Split-Path $first -Leaf)" 'Green'
-    Say "   The vrmod_backup folders are kept; delete them yourself when you no longer need them." 'Gray'
+}
+
+# ---- 5. the game's graphics settings back to its defaults ------------------------------------------
+Step '5. Setting the game''s graphics back to its defaults'
+# The mod edits the game's config at every start (and the installer sets the tested graphics on a first
+# install); both keep the untouched original as *.akvr-original. The template the game builds its
+# settings from goes back to that original; the generated settings file is deleted, so the game makes a
+# fresh default one on its next start, exactly as after a new install.
+$cfg = Join-Path $GameDir '..\..\BmGame\Config'
+if (Test-Path -LiteralPath $cfg) {
+    $cfg = (Resolve-Path -LiteralPath $cfg).Path
+    $tmpl = Join-Path $cfg 'DefaultSystemSettings.ini'
+    if (Test-Path -LiteralPath "$tmpl.akvr-original") {
+        Copy-Item -LiteralPath "$tmpl.akvr-original" -Destination $tmpl -Force
+        Say '   the game''s settings template put back to its original' 'Green'
+    }
+    $n = Remove-IfThere (Join-Path $cfg 'BmSystemSettings.ini')
+    foreach ($o in Get-ChildItem -LiteralPath $cfg -File -Filter '*.akvr-original') { Remove-Item -LiteralPath $o.FullName -Force }
+    if ($n) { Say '   graphics settings reset: the game rebuilds its defaults the next time it starts' 'Green' }
+    else    { Say '   already at the defaults' 'Green' }
+} else {
+    Say '   the game''s config folder was not found - skipped' 'Yellow'
+}
+
+# ---- 6. the backup folders ---------------------------------------------------------------------------
+$all = @(Get-ChildItem -LiteralPath $GameDir -Directory -Filter 'vrmod_backup_*')
+if ($all.Count -gt 0) {
+    Step '6. Backup folders'
+    $del = $RemoveBackups
+    if (-not $del -and -not $Yes) {
+        $answer = Read-Host "  Delete the $($all.Count) vrmod_backup folder(s) as well, for a completely clean game folder? (Y/N)"
+        $del = $answer -match '^\s*[Yy]'
+    }
+    if ($del) { foreach ($b in $all) { Remove-Item -LiteralPath $b.FullName -Recurse -Force }; Say "   $($all.Count) backup folder(s) deleted" 'Green' }
+    else      { Say '   kept; delete them yourself when you no longer need them' 'Gray' }
 }
 
 # Run from the game folder: remove this uninstaller too (the .bat deletes itself when this file is gone).
