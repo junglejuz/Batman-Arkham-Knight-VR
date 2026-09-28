@@ -47,8 +47,8 @@ rest: it puts in geo-11, the 3D fix and the mod, and sets them up for VR.
 ### What you need
 
 - Batman: Arkham Knight on PC
-- A **Meta Quest 3 with Virtual Desktop** (the paid Quest app, with its free Streamer app on the
-  PC). This is the only setup the mod has been tested with. See "Other headsets" below.
+- A PC VR headset. So far the mod has only been tested with a Meta Quest 3 connected through
+  Virtual Desktop, so the steps below use that. For other headsets, see "Other headsets" below.
 - A strong graphics card: the game draws every picture twice, once for each eye. The mod is
   tested on an NVIDIA RTX 4070 Ti.
 
