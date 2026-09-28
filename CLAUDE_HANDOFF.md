@@ -5,6 +5,8 @@ Build-by-build detail: `PLAYBOOK_REVIEW.md` (sections from "VSID3" onwards are t
 
 ## Rules (all still apply)
 
+- **Packaging for any mod: read `../PACKAGING_GUIDE.md` first** (workspace root; everything learned packaging AKVR).
+
 - Plain language and short replies to JJ; no code or jargon in chat. Never propose SteamVR or changing the
   OpenXR runtime (the README may *mention* SteamVR for other players - see below).
 - **Every change to a file we did not write** (geo-11, the fix, the GAME's own config) goes into
