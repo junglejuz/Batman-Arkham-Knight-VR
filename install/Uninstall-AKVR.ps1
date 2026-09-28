@@ -168,8 +168,21 @@ if (Test-Path -LiteralPath $cfg) {
 # every start (display mode, resolution, detail, blur). The mod's answers while it runs (windowed + the VR
 # size) get saved there, so after removing the mod the game opened in a square window (JJ, 2026-09-29).
 # Without the file the game starts from its defaults again (fullscreen at the monitor's resolution).
-$store = Join-Path ([Environment]::GetFolderPath('MyDocuments')) 'WB Games\Batman Arkham Knight\GFXSettings.BatmanArkhamKnight.xml'
-if (Remove-IfThere $store) { Say '   the game''s saved graphics menu (Documents\WB Games) reset as well' 'Green' }
+# Documents can be moved (JJ's is D:\Documents): ask Windows for the CURRENT user's Documents - the same
+# lookup the game and the NVIDIA App use, and it follows a moved or OneDrive folder - then also try the
+# registry entry for the moved folder and the usual default places, in case one of them differs.
+$docs = @([Environment]::GetFolderPath('MyDocuments'))
+try {
+    $reg = (Get-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders' -ErrorAction Stop).Personal
+    if ($reg) { $docs += [Environment]::ExpandEnvironmentVariables($reg) }
+} catch { }
+$docs += (Join-Path $env:USERPROFILE 'Documents'), (Join-Path $env:USERPROFILE 'OneDrive\Documents')
+$storeDone = 0
+foreach ($d in ($docs | Where-Object { $_ } | Select-Object -Unique)) {
+    $store = Join-Path $d 'WB Games\Batman Arkham Knight\GFXSettings.BatmanArkhamKnight.xml'
+    if (Remove-IfThere $store) { $storeDone++; Say "   the game's saved graphics menu reset as well ($(Split-Path (Split-Path (Split-Path $store))))" 'Green' }
+}
+if (-not $storeDone) { Say "   no saved graphics menu found in Documents ($([Environment]::GetFolderPath('MyDocuments')))" 'Gray' }
 
 # ---- 6. the backup folders ---------------------------------------------------------------------------
 $all = @(Get-ChildItem -LiteralPath $GameDir -Directory -Filter 'vrmod_backup_*')
