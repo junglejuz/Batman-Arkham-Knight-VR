@@ -47,8 +47,10 @@ rest: it puts in geo-11, the 3D fix and the mod, and sets them up for VR.
 ### What you need
 
 - Batman: Arkham Knight on PC
-- A PC VR headset. So far the mod has only been tested with a Meta Quest 3 connected through
-  Virtual Desktop, so the steps below use that. For other headsets, see "Other headsets" below.
+- A PC VR headset and the PC software you normally use to play PC VR games with it, for
+  example Virtual Desktop, SteamVR or the Meta Quest Link app. The mod has been tested with
+  a Meta Quest 3 through Virtual Desktop. Other headsets and software haven't been tested
+  yet.
 - A strong graphics card: the game draws every picture twice, once for each eye. The mod is
   tested on an NVIDIA RTX 4070 Ti.
 
@@ -99,30 +101,30 @@ What the installer did:
   `akvr_fix_backup` folder.
 - Copied in the mod (`dinput8.dll`).
 
-### Step 4: set up Virtual Desktop (once)
+### Step 4: check your headset software (once)
 
-1. On the PC, open the **Virtual Desktop Streamer** app.
-2. Check that **OpenXR Runtime** is set to **VDXR** (the normal setting).
+The mod reaches the headset through OpenXR, the standard PC VR games use. Your headset
+software has to be the PC's active OpenXR app. It usually already is, but check:
+
+1. Open your headset software's settings on the PC and look for an **OpenXR** setting.
+2. Make sure that software is set as the active OpenXR runtime. For example:
+   - **Virtual Desktop** (tested): in the **Virtual Desktop Streamer** app, **OpenXR Runtime**
+     should be **VDXR**.
+   - **SteamVR:** in SteamVR's settings, the **OpenXR** section should say SteamVR is the
+     current OpenXR runtime.
+   - **Meta Quest Link app:** in its settings, under **General**, Meta Quest Link should be
+     the active **OpenXR Runtime**.
 
 ### Step 5: play
 
-1. Start the Virtual Desktop Streamer on the PC, put on the headset, and connect to your PC
-   in Virtual Desktop.
-2. In the headset, start Batman: Arkham Knight from Steam on your PC.
+1. Connect your headset to the PC the way you normally do for PC VR games.
+2. Start Batman: Arkham Knight from Steam on your PC. (With Virtual Desktop, do this from the
+   Virtual Desktop view of your PC.)
 3. The first start takes a few minutes while geo-11 prepares its shaders. The game may look
    frozen during that time; let it finish. Later starts are much quicker.
 4. Once the game is running, the picture moves into the headset in 3D and your head moves the
    camera. Press **F12** to face the view forward, and **F8** for the settings panel (see
    "The VR settings panel" below).
-
-### Other headsets (untested)
-
-The mod has only been tested on a Quest 3 with Virtual Desktop. It talks to the headset through
-OpenXR, the standard that SteamVR and the Meta Quest Link app also support, so it *might* work
-with other headsets or with Quest Link, but nobody has checked, and it may not work at all. If
-you want to try: set your headset's app (SteamVR or Meta Quest Link) as the PC's OpenXR runtime
-in that app's settings, then follow Step 5 with your headset connected. Please report what
-happens, working or not.
 
 ### Updating
 
@@ -139,7 +141,7 @@ Running the installer again never hurts: it repairs whatever is missing.
 | The installer stops with a red **STOPPED** message | Read the message: it says what's missing. The most common cause is the wrong fix file (the 3D Vision one instead of geo-11). |
 | "could not copy the fix into the game folder" | Right-click `Install-AKVR.bat` and choose **Run as administrator**. |
 | "some HUD edits could not be applied" | The 3D fix has changed since this version of the mod. Nothing broke: your previous files are in the `vrmod_backup` folder. Check for a newer version of the mod. |
-| The game runs on the monitor but never goes into the headset | Close the game. Make sure Virtual Desktop is connected before you start the game, and that Step 4 is done, then try again. If you played another VR game or mod before this one, restart the PC first. |
+| The game runs on the monitor but never goes into the headset | Close the game. Make sure your headset is connected to the PC before you start the game, and that Step 4 is done, then try again. If you played another VR game or mod before this one, restart the PC first. |
 | The game is flat (no 3D) after updating geo-11 or the fix by hand | Run the installer again. A geo-11 update puts back a file that stops VR from working. |
 
 ### Removing it
