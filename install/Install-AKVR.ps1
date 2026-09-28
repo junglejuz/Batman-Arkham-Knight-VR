@@ -18,6 +18,19 @@ $Game = @{
     FixPage      = 'https://helixmod.blogspot.com/2020/12/batman-arkham-knight-dx11.html'
     AddNonSquare = $true                         # keep 3D on the tall VR picture (FIX_CHANGES.md section 3)
     FixPatches   = 'AKVR-fix-patches.ps1'       # the mod's HUD edits to the fix (FIX_CHANGES.md sections 1-2)
+    # The game's graphics settings the mod was tested with (BmSystemSettings.ini [SystemSettings]),
+    # set on the first install only. = JJ's confirmed graphics menu, 2026-09-29: Max FPS 90, texture
+    # resolution / shadow quality / level of detail High, texture filtering 2x anisotropic (as the game
+    # saves them). The stock 60 fps cap was the cause of the blur and the changed pose delay.
+    GameGraphics = [ordered]@{
+        'MaxFPS'                         = '90.000000'
+        'TextureResolution'              = '2'
+        'ShadowQuality'                  = '2'
+        'LevelOfDetail'                  = '2'
+        'MaxDrawDistanceScale'           = '1.200000'
+        'SkeletalMeshDisplayFactorScale' = '0.800000'
+        'TextureFiltering'               = '1'
+    }
     OldProxy     = 'version.dll'
     BuildDirs    = @('build-dinput8', 'build')
 }
@@ -172,6 +185,37 @@ function Set-IniValue($doc, [string]$key, [string]$value, [string]$section) {
         if ($doc.Lines[$i] -match $srx) { $doc.Lines.Insert($i + 1, "$key = $value"); return }
     }
     Fail "$(Split-Path $doc.Path -Leaf) has no [$section] section. Is this the right fix?"
+}
+
+# Sets Key=Value lines in the [SystemSettings] section of a UE3 config (the game's own format: no
+# spaces around '='; other sections, e.g. the quality buckets, are left alone). Returns lines changed.
+function Set-SystemSettings([string]$path, $pairs) {
+    $doc = Read-Ini $path
+    $inSec = $false; $secEnd = -1; $secStart = -1; $seen = @{}; $changed = 0
+    for ($i = 0; $i -lt $doc.Lines.Count; $i++) {
+        $l = $doc.Lines[$i]
+        if ($l -match '^\s*\[') {
+            if ($inSec) { $secEnd = $i; break }
+            $inSec = $l -match '^\s*\[SystemSettings\]\s*$'
+            if ($inSec) { $secStart = $i }
+            continue
+        }
+        if (-not $inSec) { continue }
+        foreach ($k in $pairs.Keys) {
+            if ($l -match ('^' + [regex]::Escape($k) + '=')) {
+                $want = "$k=$($pairs[$k])"
+                if ($l -ne $want) { $doc.Lines[$i] = $want; $changed++ }
+                $seen[$k] = $true
+            }
+        }
+    }
+    if ($secStart -lt 0) { return 0 }
+    if ($secEnd -lt 0) { $secEnd = $doc.Lines.Count }
+    foreach ($k in $pairs.Keys) {
+        if (-not $seen[$k]) { $doc.Lines.Insert($secStart + 1, "$k=$($pairs[$k])"); $changed++ }
+    }
+    if ($changed) { Save-Ini $doc }
+    return $changed
 }
 
 function Add-IniBlock($doc, [string[]]$block) {
@@ -354,7 +398,25 @@ if (Test-Path (Join-Path $GameDir 'Uninstall-AKVR.bat')) { Say '   Uninstall-AKV
 $settings = Join-Path $GameDir 'akvr_settings.ini'
 $tested   = Join-Path $files 'akvr_settings.ini'
 if (Test-Path $settings) { Say '   your existing VR settings kept (akvr_settings.ini)' 'Green' }
-elseif (Test-Path $tested) { Copy-Item $tested $settings; Say '   tested VR settings copied in (akvr_settings.ini)' 'Green' }
+elseif (Test-Path $tested) {
+    Copy-Item $tested $settings
+    Say '   tested VR settings copied in (akvr_settings.ini)' 'Green'
+    # The game's own graphics settings the mod was tested with (JJ's fresh-install test,
+    # 2026-09-29: the stock 60 fps cap and higher detail blurred head movement). First install
+    # only, so later choices in the game's menu stand. FIX_CHANGES.md section 6.
+    if ($Game.GameGraphics) {
+        $cfg  = Join-Path $GameDir '..\..\BmGame\Config'
+        $gen  = Join-Path $cfg 'BmSystemSettings.ini'
+        $tmpl = Join-Path $cfg 'DefaultSystemSettings.ini'
+        # The generated file if the game has made one; before the first start, the template it is
+        # made from (editing the template once the generated file exists makes the game rebuild it).
+        $target = if (Test-Path $gen) { $gen } elseif (Test-Path $tmpl) { $tmpl } else { $null }
+        if ($target) {
+            $n = Set-SystemSettings $target $Game.GameGraphics
+            Say "   tested graphics settings applied ($n changed): Max FPS 90, High detail, 2x anisotropic filtering" 'Green'
+        }
+    }
+}
 
 Remove-Item $work -Recurse -Force -ErrorAction SilentlyContinue
 

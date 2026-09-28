@@ -105,7 +105,13 @@ them yourself once you're sure you don't need them.
 The game draws everything twice, once for each eye, so it needs about twice the graphics
 power it normally would. These settings make the biggest difference.
 
-**The mod already sets these, every time the game starts:**
+**The installer sets these once, on the first install** (the settings the mod was tested with;
+you can change them later in the game's graphics menu):
+
+- Max FPS 90. The game's own default of 60 makes head movement look blurred in the headset.
+- Texture resolution, shadow quality and level of detail High, texture filtering 2x anisotropic
+
+**The mod sets these every time the game starts:**
 
 - Windowed mode and the picture size. Don't change the display mode or resolution in the
   game's menu; the mod handles both.

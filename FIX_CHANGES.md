@@ -333,6 +333,34 @@ A new geo-11 release puts `d3d11.dll` back and breaks HOOK mode (memory `geo11-u
 
 ---
 
+## 6. The game's own config: BmGame\Config (AKVR installer + mod, 2026-09-29)
+
+Not geo-11 or the fix, but still a file we did not write.
+
+**Installer, first install only** (no `akvr_settings.ini` yet), `[SystemSettings]` section only, format `Key=Value`:
+`MaxFPS=90.000000`, `TextureResolution=2`, `ShadowQuality=2`, `LevelOfDetail=2`, `MaxDrawDistanceScale=1.200000`,
+`SkeletalMeshDisplayFactorScale=0.800000`, `TextureFiltering=1` = JJ's confirmed graphics menu (Max FPS 90, texture
+resolution / shadows / level of detail High, texture filtering 2x anisotropic, GameWorks off), read back from the file the
+game saved. Stock after a fresh Steam install differs only in `MaxFPS=60` and `TextureFiltering=0`; JJ confirmed that
+with this menu the pose delay is 3 again and the blur is gone, so the 60 fps cap was the cause. (JJ's older install had
+ShadowQuality / LevelOfDetail 1 and both scales 1.0 - lower detail, not needed.) Target: `BmSystemSettings.ini` if it exists, else the template `DefaultSystemSettings.ini`
+(never the template once the generated file exists: UE3 then regenerates and drops the player's config).
+**Why:** JJ's fresh-install test: with the stock cap of 60 and higher detail, head movement blurred and the pose delay
+had to change. Reference: `Set-SystemSettings` in `install/Install-AKVR.ps1` (unit-tested on both files: 6 changed,
+second run 0).
+
+**The mod itself, every start** (earlyres.cpp `force_comfort_settings`, older than this record): MotionBlur,
+ChromaticAberration, FilmGrain, UseVsync, UseAdaptiveVsync = False; Fullscreen=False, WindowDisplayMode=0 (with the
+forced render size); each also as its `Default*` key and in every section (buckets re-enable blur); MaxFPS / DefaultMaxFPS
+raised to 120 only when below 60; OneFrameThreadLag left alone under geo-11. Original kept as `*.akvr-original`.
+The game also keeps graphics options in NVIDIA's settings store (NvGsa.x64.dll) and saves them back to the file, which
+undid the MotionBlur fix between two starts of JJ's fresh install (log: "5 lines flipped" again). Build GSACOMFORT
+answers the store's `MotionBlur`, `Vsync` and `AdaptiveVsync` with 0 (off) in the mod's `GFSDK_GSA_GetOptionValue`
+hook (earlyres.cpp; names are the wide strings next to the `GFSDK_GSA_RegisterOption` calls in BatmanAK.exe). No file
+edit - status line "blur/vsync off N (store held blur X)". Untested in the game.
+
+---
+
 ## 5. RESOLVED 2026-09-29: these came from the fix's 2026-09-25 release (not AKVR)
 
 JJ: "the fix was recently updated so that ambient occlusion shaders worked correctly". HelixMod update note of

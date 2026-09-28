@@ -2360,6 +2360,18 @@ survives until reboot: unknown. SESSBACKOFF: retry after 3, 6, 12, 24, then ever
 Build SESSBACKOFF SHA256 e6214d689ff2b053e01e370161b11335f7c9ee26b0f785a4c0ca0ad72536b702. Rollback before-SESSBACKOFF-20260928/.
 Next data point: does restarting the VD Streamer (no reboot) clear it? -> NO (JJ). Parked (JJ suspects REFramework).
 
+## 2026-09-29: JJ's fresh-install test -> tested settings + game graphics in the installer; GSACOMFORT
+Fresh Steam install + the package: eyes swapped, flat 16:9, pose delay 1 (mod defaults are not the tested setup) ->
+install/files/akvr_settings.ini (first install only). Then pose delay had to be 2 and head movement blurred. The fresh
+game config: MaxFPS 60 (the mod only rescues < 60), MotionBlur=True in the first generated file, and at the next start
+the mod had to flip 5 comfort lines again (the game had put them back). JJ set his graphics menu (screenshot: Max FPS 90,
+High, 2x aniso, blur off, GameWorks off) -> pose delay 3 right again, blur gone (cap and blur changed together).
+Installer writes that menu to BmSystemSettings.ini (FIX_CHANGES 6). Motion blur / v-sync also live in NVIDIA's NvGsa
+store (MotionBlur, Vsync, AdaptiveVsync registered next to Display_Mode): GSACOMFORT answers them 0 in the existing
+GFSDK_GSA_GetOptionValue hook, now installed regardless of the render size. Pause/map size default 0.70 (JJ: smaller).
+Uninstaller added (placed in the game folder by the installer). Build GSACOMFORT installed; rollback
+before-GSACOMFORT-20260929/. Untested: whether the game asks the store for blur at start (status line counts it).
+
 ## 2026-09-28: lazy follow rejected -> HUDVIEW (HUD quad in VIEW space, lazy follow removed)
 User: lazy follow "locks the elements for a brief window to simulate stability"; Onimusha's locked-on health bars feel
 much steadier. Reading (source): LOCAL placement = head pose PREDICTED for the frame; settings had fpslock=0, so the

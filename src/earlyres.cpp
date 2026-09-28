@@ -2568,9 +2568,21 @@ namespace {
     typedef int (*GsaGetFn)(void* out, const wchar_t* name);
     GsaGetFn g_oGsaGet = nullptr;
     int      g_gsaMode = 0, g_gsaResX = 0, g_gsaResY = 0, g_gsaHits = 0;
+    int      g_gsaComfort = 0, g_gsaBlurWas = -1;
     int hkGsaGetOptionValue(void* out, const wchar_t* name)
     {
         const int r = g_oGsaGet ? g_oGsaGet(out, name) : 0;
+        // GSACOMFORT 2026-09-29 — JJ's fresh install: the config had MotionBlur=True, the mod flipped it,
+        // and by the next start the game had put 5 comfort lines back (it keeps these options in this
+        // store too and saves them back); head movement blurred. The store's names (wide strings in
+        // BatmanAK.exe next to the GFSDK_GSA_RegisterOption calls): MotionBlur, Vsync, AdaptiveVsync.
+        // Answer all three with 0 (off; bool or int, value at out+8), whatever the render size.
+        if (out && name)
+        {
+            int32_t* v = (int32_t*)((uint8_t*)out + 8);
+            if (wcscmp(name, L"MotionBlur") == 0) { if (g_gsaBlurWas < 0) g_gsaBlurWas = *v; *v = 0; ++g_gsaComfort; }
+            else if (wcscmp(name, L"Vsync") == 0 || wcscmp(name, L"AdaptiveVsync") == 0) { *v = 0; ++g_gsaComfort; }
+        }
         if (g_engOn && out && name && g_engW >= 64 && g_engH >= 64)
         {
             int32_t* v = (int32_t*)((uint8_t*)out + 8);
@@ -2691,8 +2703,8 @@ void akvr_early_init(HINSTANCE self)
     // (g_engW/g_engH were derived in load_settings — render_w() depends on them.)
     if (g_engH) install_engine_res();
     // GSAHOLD: the graphics menu's apply reads its values from NVIDIA's settings store.
-    if (g_engH)
-        g_oGsaGet = (GsaGetFn)patch_import(exe, "NvGsa.x64.dll", "GFSDK_GSA_GetOptionValue", (void*)&hkGsaGetOptionValue);
+    // Always installed since GSACOMFORT (motion blur / v-sync off); the size answers still need g_engH.
+    g_oGsaGet = (GsaGetFn)patch_import(exe, "NvGsa.x64.dll", "GFSDK_GSA_GetOptionValue", (void*)&hkGsaGetOptionValue);
 
     log_add("bigres %s: want %dx%d (%s), claiming screen %dx%d work %dx%d, %d imports redirected",
             g_enabled ? "ON" : "OFF (logging only)",
@@ -3799,8 +3811,8 @@ const char* akvr_menu_res_diag()
             for (int i = 0; i < c && i < 24 && *g_modeList && n + 16 < sizeof(modes); ++i)
                 n += snprintf(modes + n, sizeof(modes) - n, "%dx%d ", (*g_modeList)[i * 2], (*g_modeList)[i * 2 + 1]);
         } __except (EXCEPTION_EXECUTE_HANDLER) {}
-        snprintf(s, sizeof(s), "graphics menu: NvGsa answer %s, %d lookups (store held mode %d, %dx%d) | GFE copy hold: reset %d time(s) (first %dx%d), our size in the game's list: %s | list: %s",
-                 g_oGsaGet ? "ON" : "NOT HOOKED", g_gsaHits, g_gsaMode, g_gsaResX, g_gsaResY,
+        snprintf(s, sizeof(s), "graphics menu: NvGsa answer %s, %d lookups (store held mode %d, %dx%d), blur/vsync off %d (store held blur %d) | GFE copy hold: reset %d time(s) (first %dx%d), our size in the game's list: %s | list: %s",
+                 g_oGsaGet ? "ON" : "NOT HOOKED", g_gsaHits, g_gsaMode, g_gsaResX, g_gsaResY, g_gsaComfort, g_gsaBlurWas,
                  g_menuResFixes, g_menuResWasX, g_menuResWasY,
                  g_menuResInList < 0 ? "?" : (g_menuResInList ? "yes" : "NO"), modes);
     }
