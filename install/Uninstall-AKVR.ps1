@@ -164,6 +164,12 @@ if (Test-Path -LiteralPath $cfg) {
 } else {
     Say '   the game''s config folder was not found - skipped' 'Yellow'
 }
+# The game ALSO keeps its graphics menu in NVIDIA's settings store, a file in Documents that it reads at
+# every start (display mode, resolution, detail, blur). The mod's answers while it runs (windowed + the VR
+# size) get saved there, so after removing the mod the game opened in a square window (JJ, 2026-09-29).
+# Without the file the game starts from its defaults again (fullscreen at the monitor's resolution).
+$store = Join-Path ([Environment]::GetFolderPath('MyDocuments')) 'WB Games\Batman Arkham Knight\GFXSettings.BatmanArkhamKnight.xml'
+if (Remove-IfThere $store) { Say '   the game''s saved graphics menu (Documents\WB Games) reset as well' 'Green' }
 
 # ---- 6. the backup folders ---------------------------------------------------------------------------
 $all = @(Get-ChildItem -LiteralPath $GameDir -Directory -Filter 'vrmod_backup_*')

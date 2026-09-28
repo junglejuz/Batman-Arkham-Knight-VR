@@ -359,6 +359,13 @@ answers the store's `MotionBlur`, `Vsync` and `AdaptiveVsync` with 0 (off) in th
 hook (earlyres.cpp; names are the wide strings next to the `GFSDK_GSA_RegisterOption` calls in BatmanAK.exe). No file
 edit - status line "blur/vsync off N (store held blur X)". Untested in the game.
 
+**That store is a file:** `<Documents>\WB Games\Batman Arkham Knight\GFXSettings.BatmanArkhamKnight.xml` (UTF-16 GSA
+SDK XML; path from the NVIDIA App's `ApplicationOntology\...\batman_arkham_knight\current_game.lua`). The game reads it at
+every start and saves the menu to it, so the mod's GSAHOLD answers (Display_Mode 0, ResolutionX/Y = the VR size) end up
+stored there: after the uninstall JJ's game opened as a 2888x2860 window (2026-09-29). The uninstaller deletes it (the
+game recreates defaults); JJ's copy is in `akvr/diagnostics/gfxsettings-store-20260929/`. Outside the game folder, so a
+Steam reinstall or "verify files" does not reset it.
+
 ---
 
 ## 5. RESOLVED 2026-09-29: these came from the fix's 2026-09-25 release (not AKVR)
