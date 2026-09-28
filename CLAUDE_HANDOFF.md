@@ -2,6 +2,9 @@
 
 ## Start here
 
+**RULE (JJ 2026-09-28): every change to geo-11, the fix, or any other third-party file is documented in
+[FIX_CHANGES.md](FIX_CHANGES.md) in the same step. Another agent writes the install scripts from it.**
+
 Batman: Arkham Knight VR mod (AKVR). Quest 3 through Virtual Desktop / VDXR, true
 stereo from geo-11 (HOOK mode), AKVR loaded as `dinput8.dll`. Read the root
 `AGENTS.md`, this file, then the newest sections of `PLAYBOOK_REVIEW.md` (ROOTPITCH
@@ -21,7 +24,78 @@ handoff (`diagnostics/CLAUDE_HANDOFF_2026-09-26_archived.md`).
 
 ## Installed now
 
-Build **HUDLIVE** (2026-09-27, untested): (1) PAUSESTUTTER - the 1-2 s freeze ~3 s after pause/map was the
+**RULE (2026-09-28): every fix-shader edit is assembled and loaded into the NVIDIA driver by
+`tools/shader_driver_test` before it reaches the game (a bad edit killed the launch).** HUDSPLIT was re-applied
+after that test (position output per shader).
+
+Build **VSID2b** (2026-09-28, untested): split pairs game HUD shaders with geo-11's replacements (VSID found 0/13);
+slider width 42%. DIAG RB REMOVED (RB icon = font glyph in the shared text cache, cannot be tagged alone).
+
+Previous: Build **RETSQUASH** (2026-09-28, untested) = VSID + edge-squash correction (FIX_CHANGES 1d). VSID: split limited to the 13 patched HUD shaders (TARGET DETAIL panel was
+doubled), font 0.85, band 30. **DIAG RB is ON in d3dx.ini** (hunting=1, F13 frame record of HUD draws): after
+JJ presses 'record the HUD for geo-11', read FrameAnalysis-*, find the RB icon hash, tag it via the fix-patch
+script, then `python akvr/tools/diag_rb.py off`.
+
+Previous: Build **RETFLAT2** (2026-09-28 03:10, untested) = RETFLAT + adapter/window logging. The 'not entering VR' at
+03:01-03:08 hit the previous build and the Sekiro mod too (PC-side); user rebooted. If it recurs: read the
+session line (game GPU LUID vs headset LUID) and 'window at' in akvr_startup_log.txt.
+
+Previous: Build **RETFLAT** (2026-09-28, untested) + fix edit 1c: one scene depth per reticle piece (tilt test) and a
+compass band (the split made compass pieces flicker; confirmed by the user). Panel: HUD layer settings ->
+compass band %. Frame-rate choice always shown (6c).
+
+Previous: Build **HUDLAYER6b** (2026-09-28) + fix edit HUDSPLIT (FIX_CHANGES 1b, applied): HUD layer with the
+reticle kept at scene depth (each HUD draw issued twice with a cb13 switch), eye shift + lazy 0.3 deg default
+(user-confirmed), panel sections in closed drawers. After the next launch check the 13 HUD .bin files came back
+(geo-11 assembled the edit). PLAYBOOK_REVIEW "HUDLAYER5 result -> HUDLAYER6".
+
+Previous: Build **HUDLAYER5** (2026-09-28): plain-blend-only coverage (compass dark patch), "distance fix: add
+the eye difference" option (VD may draw quads without parallax), "lazy follow" option. User: layer only
+slightly steadier (repeat-frame mode), not a deal breaker. PLAYBOOK_REVIEW "HUDLAYER4 result -> HUDLAYER5".
+
+Previous: Build **HUDLAYER4** (2026-09-28): HUDLAYER3 LIVE but not steadier (JJ on VD SSW mode), lost distance,
+dark see-through pieces. HUDLAYER4: room-space placement per frame, colour conversion, additive blend fix.
+Test in "repeat the frame" mode. PLAYBOOK_REVIEW "HUDLAYER3 result -> HUDLAYER4".
+
+Previous: Build **HUDLAYER3** (2026-09-28): HUDLAYER2 found the real textures (+0x140, +0x190) but rejected them
+(single-slice test); HUDLAYER3 accepts arrays, copies slice 0.
+
+Previous: Build **HUDLAYER2** (2026-09-28): HUDLAYER turned itself off (geo-11 wraps textures);
+HUDLAYER2 finds the real texture inside geo-11's stand-in. Panel line lists what it found.
+
+Previous: Build **HUDLAYER** (2026-09-28): the HUD drawn into our own image and shown as a head-locked
+quad (checkbox "HUD on its own layer (steady HUD)", default on). Check the two panel lines under it
+(LIVE, coverage %, headset HUD layer frames sent). Next: RB icon depth (fix texture tag) and keeping the
+depth-following reticle out of the layer. PLAYBOOK_REVIEW "HUDSPLIT3 result -> HUDLAYER".
+
+Previous: Build **HUDSPLIT3** (2026-09-28): HUDSPLIT2 saw no HUD drawing on real contexts at all; HUDSPLIT3
+also watches geo-11's game-facing context and counts draws per layer per frame. Ask for F2 in gameplay
+(optionally a second F2 with the hide test ticked). PLAYBOOK_REVIEW "HUDSPLIT2 result -> HUDSPLIT3".
+
+Previous: Build **HUDSPLIT2** (2026-09-28): HUDSPLIT's hide test CONFIRMED (whole HUD vanished) but the
+immediate context saw 0 HUD binds/draws; HUDSPLIT2 also watches deferred contexts + command lists. Ask
+for F2 in gameplay; read <stamp>_hudsplit.csv. PLAYBOOK_REVIEW "HUDSPLIT result -> HUDSPLIT2".
+
+Previous: Build **HUDSPLIT** (2026-09-28): HUD distance CONFIRMED working by the user (HUDDEPTH), range now
+0-20 m. HUD jitter = step 1 of the HUD layer: a PROBE on the one function that draws every Flash movie
+(0x1405de350) + draw counters, and a never-saved test switch "TEST: hide the whole HUD". Ask the user to
+tick it in gameplay (does the WHOLE HUD vanish?), untick, then press F2 in gameplay; read
+<stamp>_hudsplit.csv. Details + step-2 plan: PLAYBOOK_REVIEW "HUDSPLIT". Rollback before-HUDSPLIT-20260928/.
+
+Build **HUDDEPTH** (2026-09-28, untested) + fix-pack script `tools/AKVR-fix-patches.ps1` (APPLIED to the game):
+HUD distance now through the fix's 13 HUD shaders (geo-11's HUD value was ignored by every shader). Steadiness
+parked (slider removed). HUD jitter = 45 Hz picture shown twice at 90 Hz; real fix = HUD on its own layer
+(backlog item 6) - the NEXT project. RULE: fix-pack changes only via install-time script (user).
+
+Previous: Build **HUDSTEADY2** (2026-09-28): steadiness pairs with the NEWEST pose (HUDSTEADY lagged without
+damping = stale pairing); HUD distance range 0-5 m (20 m looked like far away). Rollback before-HUDSTEADY2-20260928/.
+
+Previous: Build **HUDSTEADY** (2026-09-28): HUD distance link fixed (hooks geo-11's per-frame update for the
+wrapper), new "HUD steadiness" slider (HUD follows a smoothed head direction, 0 = off), slimmer F2. Pause stutter
+CONFIRMED fixed. E: drive is nearly full (~470 MB). See PLAYBOOK_REVIEW "HUDLIVE result -> HUDSTEADY".
+Rollback `diagnostics/before-HUDSTEADY-20260928/` (= HUDLIVE).
+
+Previous: Build **HUDLIVE** (2026-09-27): (1) PAUSESTUTTER - the 1-2 s freeze ~3 s after pause/map was the
 automatic HUD-part re-discovery's name search (VirtualQuery on ~1M pointers); the automatic pass now skips it.
 (2) HUD distance slider back, now live through geo-11's stereo object (obj+0x874, see PLAYBOOK_REVIEW
 PAUSESTUTTER + HUDLIVE). Check the HUD status line says LIVE. Rollback `diagnostics/before-HUDLIVE-20260927/` (= TIDY4).

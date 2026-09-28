@@ -1899,3 +1899,489 @@ checkout b955f2244f7c5d5f3b3e5f403b1b6721a3362423. Also SKVR/DS3VR's HUD route (
   which draws geo-11 classes as HUD (large holographic screens were not, GSAHOLD notes).
 Build HUDLIVE SHA256 44f8c5aed2c1806e912e4dd00f86dd18bc30fc3e1c02eb9e95a556097aea60a9.
 Rollback `diagnostics/before-HUDLIVE-20260927/` (= TIDY4; dll, settings, d3dxdm.ini).
+
+## 2026-09-28: HUDLIVE result -> HUDSTEADY (+ HUDLIVE2 fix, slimmer F2)
+User (HUDLIVE run): pause/map stutter FIXED (HUD-part re-find now 32.6 ms "quick"). HUD distance status "NOT
+found" (18570 misses). F2 "takes a long time". New: "micro movements of the head cause very minor jittering of
+all the HUD elements. Can we very slightly dampen it?"
+- HUDLIVE2 (STATIC): our Present hook sits on the REAL swapchain, one layer below geo-11's wrapper (wrapper
+  vtables at geo11+0x797A80 / 0x79BAE8 point at 0x205AB0 / 0x206D00 / 0x232110; the wrapper holds the real
+  swapchain at +8 and calls it). So [our sc + 0x1BD8] was never the stereo object. Now geo-11's per-frame
+  update 0x2078E0 is MinHooked (prologue byte-checked, 8th signature) and its rcx = the wrapper is used.
+- HUDSTEADY (playbook 04-ui-and-hud.md "Body-locked is the default", commit b955f224): the HUD is painted into
+  the picture and the picture is shown at the head pose it was drawn with, so the HUD rides every tremor. Now the
+  HUD is shifted inside the picture by (s - r): r = the exact headset orientation the game frame's camera used,
+  s = an exponentially smoothed r (tau 20-120 ms, capped 0.5-2.5 deg; panel "HUD steadiness", 0 = off, saved
+  hudsteady). Pairing is exact by value: camera.cpp keeps a ring of every delta triple handed to the epilogue
+  stub with its quat; after a finalize (camera rotator - saved base) mod 65536 == that triple. Computed once per
+  game frame in movie slot 27 (game thread, where the HUD is captured) and added to the render-root matrix
+  (tangent -> px at the camera FOV over the buffer width). Assumption (unverified): slot 27 runs AFTER the
+  camera finalize in the same game frame; if not, the shift is one frame stale and the HUD is about as jittery
+  as before, not worse. World-attached markers shift by the same small lag.
+- F2: the full-resolution katanga BMP (~45 MB) is no longer written; the HUD-layers dump uses the quick search
+  (the name search took 1-2 s, the same stall as the pause stutter).
+- E: was FULL (0 bytes): the first install copy was truncated. Moved 389 old capture files (~490 MB) from the
+  game folder to `diagnostics/game-captures-20260928/` (copied, compared, then removed), reinstalled, verified
+  identical. E: has ~470 MB free - tell the user.
+Build HUDSTEADY SHA256 21db546feae1acdc3c6e069769dbb24c30ddf878a84939d12ece535fb054eeee.
+Rollback `diagnostics/before-HUDSTEADY-20260928/` (= HUDLIVE; dll + settings).
+
+## 2026-09-28: HUDSTEADY result -> HUDSTEADY2
+User: steadiness 0.5 and 1.0 "doesn't seem to be dampening micro movements, it's just making the entire thing
+lag"; HUD distance "still doesn't work". Startup log (no F2): "HUD distance: LIVE, shift -0.00098 (S 0.00105,
+C 2500)", huddist saved 20 (the maximum). Eye view off this launch.
+- HUD distance (INFERENCE): the link works; 20 m is indistinguishable from far away (shift difference S*C/d =
+  0.0013 NDC at 20 m vs 0.026 at 1 m). Range now 0-5 m (saved 20 clamps to 5). Ask for a 1 m test + F2 (katanga
+  pair: measure HUD disparity) before assuming geo-11 ignores it.
+- Steadiness: lag without damping = the one-frame-stale pairing predicted in HUDSTEADY's notes -> slot 27 most
+  likely runs BEFORE the game frame's camera finalize. HUDSTEADY2 uses the NEWEST pose handed to the stub
+  (akvr_head_newest_quat) and keeps the camera-matched age as evidence (diag "camera match age 0/1/2/other":
+  mostly 1 supports "before"); tau 15-75 ms, cap 0.25-1.0 deg (was 20-120 ms, 0.5-2.5 deg). Diag also shows
+  px/deg used for the shift.
+Build HUDSTEADY2 SHA256 1ab07fb326eb74ed71e71a973e19f18440602bdd3562b00b1b0edee55100240d.
+Rollback `diagnostics/before-HUDSTEADY2-20260928/` (= HUDSTEADY).
+
+## 2026-09-28: HUDDEPTH - HUD distance through the fix's HUD shaders (install-time script); steadiness parked
+User: HUD distance "doesn't work" at ANY distance (not just 20 m); steadiness still jitters and lags ("don't
+leave the jitteriness, fix it"). Rule from the user: fix-pack changes must be applied by a script at install
+time, because users download the fix from its original source.
+- Why HUDLIVE could not move the HUD (STATIC, disassembled): geo-11's per-eye StereoParams (t125) = element 0
+  (S, C, eye, 1), element 1 (C2, +-h, S*k, -), element 2 (prev S, prev C). obj+0x874 -> element 1.y. NO shader
+  reads element 1: geo-11's own patched VS (169 in ShaderCacheDM) read elements 0 and 2 only, and every stereo
+  tail (the fix's and geo-11's) skips w == 1 draws. The fix's 13 HUD VS (ShaderOverride_HUD*/Icons*/letters1)
+  give flat HUD pieces no shift at all (= infinity); only texture-filter 2/42 icons get the depth-buffer
+  stereo cursor. So the live value reached the GPU and was ignored.
+- HUDDEPTH: `tools/AKVR-fix-patches.ps1` (+ .bat, -undo.bat; copied to Binaries\Win64). Edits the 13 HUD VS:
+  at the stereo tail, flat pieces get x += StereoParams[1].y unless x11 != 0 (menus) or filter 2/42 (cursor
+  icons); dcl_temps +1; the .bin is deleted so geo-11 reassembles. Also re-applies the HUDFIX [Stereo] keys and
+  the EXPOSURE sections to d3dxdm.ini. Idempotent (marker "// AKVR HUDDEPTH"), originals in akvr_fix_backup\,
+  -Mode undo restores. Tested on a copy first (13 patched, second run no-op, ini equivalent), then applied.
+  Unverified: geo-11 assembling the edited text (Sekiro's same method worked), and whether the HUD pieces JJ
+  cares about all come from these 13 VS (census of the caches: ~20 Scaleform-like VS, 13 in the fix).
+- Steadiness (HUDSTEADY/2) parked: slider removed, value forced 0. The jitter is the HUD baked into a 45 Hz
+  picture that the compositor shows twice and re-aims (plus VD SSW warping, fpslockssw=1) at 90 Hz; the
+  second showing moves head-locked content by head velocity x 11 ms, then it snaps back. No shift inside the
+  picture can fix that. The fix is the HUD on its own compositor layer (backlog item 6; playbook HUD-004,
+  ch04 "Get UI off the backbuffer and onto a layer"), which also gives HUD distance, size, and the eye-view
+  doubling. Next project; needs a runtime census of the HUD draws first.
+Build HUDDEPTH SHA256 9c12e79f5630e43e264497c1c0125883207b877463afb5622c57407a4a925823.
+Rollback `diagnostics/before-HUDDEPTH-20260928/` (dll, settings, d3dxdm.ini, the 13 original shaders) or
+AKVR-fix-patches-undo.bat for the fix files.
+
+## 2026-09-28: HUDSPLIT - HUD distance CONFIRMED; range 0-20 m; step 1 of the HUD layer (probe)
+User: "the HUD distance slider now works" (HUDDEPTH fix-shader route confirmed in the headset). Asked for a
+20 m maximum, then to fix the HUD jitter; the earlier attempts (HUDSTEADY/2) only made the HUD lag.
+- Range: slider and clamp 0-20 m (hooks.cpp SliderStep, geo11conv.cpp akvr_geo11_hud_dist_set).
+- Jitter plan = HUD on its own OpenXR layer, re-placed by the compositor every refresh. Playbook (commit
+  b955f2244f7c5d5f3b3e5f403b1b6721a3362423): docs/04-ui-and-hud.md "Get UI off the backbuffer and onto a
+  layer" (look for the engine's own render-UI-to-a-target switch first; tee from the confirmed UI family),
+  pattern HUD-004 (clear to transparent, SEPARATE alpha blend ONE/INV_SRC_ALPHA, premultiplied submit, kill
+  switch). vrframework guide 11 s4 (world/view-space quad) read too.
+- STATIC RE (BatmanAK.exe, offline capstone; scratch scripts not kept): strings FGFxRenderUI,
+  FGFxRenderUITextures, FGFxSetHudRenderTarget, FGFxDeleteHudRenderTarget, AdjustHUDRenderSize,
+  SendDummyHudTargetToFlash. Render-command vtables: FGFxRenderUI 0x141f99ad8 (Execute slot 1 = 0x1405de6f0
+  -> FGFxEngine::RenderUI_RenderThread 0x1405de350), RenderUITextures 0x141f99a48, SetHudRenderTarget
+  0x141f97698 (body 0x1405cd3c0), DeleteHudRenderTarget 0x141f97670. RenderUI params: +0x8 movie count,
+  +0x10 render-to-scene-colour flag; flag set -> Scaleform target [engine+0x7c], clear -> [engine+0x74].
+  [engine+0x74] is built by SetHudRenderTarget from the main viewport [engine+0x6c] (HAL vfunc +0x278), so
+  it is NOT a separate HUD texture: the HUD is drawn straight onto the frame. Two passes (r14 0..1) over
+  the movies, HAL vfunc +0x280 = set target, +0xb8 = release target.
+- HUDSPLIT (probe, installed): MinHook on 0x1405de350 (22-byte code signature checked) and pass-through
+  counters on the REAL context's DrawIndexed/Draw/DrawIndexedInstanced/DrawInstanced (vtable 12/13/20/21);
+  the existing OMSetRenderTargets(+UAV) observer reports binds made during the call. Records per call:
+  scene-colour flag, movie count, thread (Present thread or not), target bound at entry, every target bound
+  inside (size, format, array, bind/misc flags) with its draw count. Panel line under HUD distance; F2 writes
+  <stamp>_hudsplit.csv; status.txt has the line. Test switch (never saved): "TEST: hide the whole HUD" skips
+  the screen pass (flag 0).
+- Questions the probe answers before step 2 (redirect into our own image): (1) does hiding remove the WHOLE
+  HUD (compass, radar, prompts, subtitles)? (2) are the HUD binds seen at game level (one mono target) or at
+  geo-11's level (two per-eye targets, equal draw counts = geo-11 draws each HUD piece twice)? (3) same
+  thread as Present? The redirect design depends on (2): per-eye capture -> projection layer in VIEW space
+  keeping geo-11's HUD depth; mono -> one quad at the HUD distance.
+- Known risk for step 2: VIEW-space quad was mishandled by Virtual Desktop in 2025-07 (xr.cpp overlay note:
+  "scaled it backwards as you leaned"). Test a VIEW-space layer on its own first.
+Build HUDSPLIT SHA256 84db657a0383290fdccd36b5c9c2fec20a77e97958311416fc665b59a37bb031.
+Rollback `diagnostics/before-HUDSPLIT-20260928/` (= HUDDEPTH dll + settings).
+
+## 2026-09-28: HUDSPLIT result -> HUDSPLIT2 (deferred contexts)
+User (runtime, headset): "TEST: hide the whole HUD" -> the HUD disappeared. RenderUI_RenderThread 0x1405de350
+(screen pass, flag 0, 7 movies) is the single chokepoint for the whole HUD.
+F2 capture (diagnostics/hudsplit-20260928/akvr_20260928_012607_836_*), RUNTIME: 512 frames, one call per
+frame, on the Present thread. Inside it the REAL immediate context saw 0 render-target binds, and 0 draws in
+499 frames (1 in 13). The target bound on the immediate context at entry was 2888x2860 fmt 27
+(R8G8B8A8_TYPELESS), untouched during the call. Matches 2026-08 "AK renders invisible to our hooks" (only ~15
+binds/frame ever seen, never a depth bind). Leading hypothesis (NOT yet observed): the HUD, like the scene, is
+recorded into a DEFERRED context and played later with ExecuteCommandList.
+HUDSPLIT2 (probe, installed): creates one throwaway deferred context to read its function table; wherever
+that code differs from the immediate context's, hooks DrawIndexed/Draw/DrawIndexedInstanced/DrawInstanced,
+OMSetRenderTargets(+UAV) there too; hooks FinishCommandList (deferred 114) and ExecuteCommandList (immediate
+58). Inside the HUD call it records every context that binds or draws (pointer, GetType immediate/deferred,
+same thread or not), each target per context with binds/draws, lists recorded/played, draws from other
+threads. Panel line shows per-frame lists played/recorded. F2 -> <stamp>_hudsplit.csv (rows scope/ctx/target).
+If the deferred table is the SAME code as the immediate one (panel "same code as immediate"), the deferred
+theory is wrong: next suspects are geo-11 replaying the game's calls later, or a UE3 RHI command buffer.
+Build HUDSPLIT2 SHA256 936e016e07570d4baf7a101a57f0619379139552844fd3f1356eb9a8f789e373.
+Rollback `diagnostics/before-HUDSPLIT2-20260928/` (= HUDSPLIT).
+
+## 2026-09-28: HUDSPLIT2 result -> HUDSPLIT3 (game-facing context + per-layer census)
+F2 (diagnostics/hudsplit-20260928/akvr_20260928_013332_663_*), RUNTIME, gameplay: the real deferred context
+functions are separate code from the immediate ones (hooked). Per frame: 52 command lists recorded
+(FinishCommandList on real deferred contexts), 0 played through the real immediate ExecuteCommandList entry.
+Inside the HUD call (1/frame, Present thread, 6-7 movies): 0 lists recorded, 0 played, 0 other-thread draws;
+one real immediate context (type 0) appeared in 3 of 250 frames with 1 draw and no bind. So none of the
+HUD's drawing reaches ANY real-context entry point while RenderUI runs, and list playback bypasses our hook
+entirely (someone reaches ExecuteCommandList's code without passing its entry = likely a pre-existing hook's
+trampoline, or a different code path).
+d3dx.ini [System] hook= is commented (geo-11 WRAPS: the game holds geo-11's wrapper context objects).
+HUDSPLIT3 (probe, installed): also hooks the GAME-FACING context: geo-11 swapchain wrapper (from the hooked
+per-frame update, geo11conv akvr_geo11_wrapper) -> GetDevice -> GetImmediateContext; if its function table
+differs from the real one, hooks draws/binds/ExecuteCommandList/FinishCommandList there (layer "game").
+Whole-frame census per layer (game / real-imm / real-def): draws, binds, lists recorded, lists played. Panel
+line + <stamp>_hudsplit.csv (one row per frame with the census, plus scope/ctx/target rows) + hide_test column.
+Reading: if game-layer draws inside the HUD call are > 0, the HUD is visible there and step 2 can redirect on
+the game layer. If the game layer is also silent inside the call, AK's renderer defers D3D work past
+RenderUI (own command buffer / RHI thread), and the redirect must be positional in the replayed stream.
+Build HUDSPLIT3 SHA256 b36c03b91c8cd8f05f2baf9de8f890a92034e251116078e5eaa07acaaa97f6cb.
+Rollback `diagnostics/before-HUDSPLIT3-20260928/` (= HUDSPLIT2).
+
+## 2026-09-28: HUDSPLIT3 result -> HUDLAYER (HUD on its own head-locked layer)
+F2 x2 (diagnostics/hudsplit-20260928/akvr_20260928_014355_852_* HUD on, _014410_135_* hide test), RUNTIME:
+- Game side hooked (geo11.dll wrapper context, 8 fns). Per frame: game layer ~1000 draws, 187 binds, 47 lists
+  recorded AND 47 played (AK itself uses deferred contexts + ExecuteCommandList); real deferred ~1200 draws,
+  47 lists recorded; real immediate ~5 draws, 0 lists played. => real-context hooks under geo-11 see geo-11's
+  re-issued work, not the game's; list playback never passes the real ExecuteCommandList entry.
+- The HUD call (1/frame, Present thread): all its work is on the GAME immediate context (000000007BF3F4F0):
+  6 binds, 33 draws - 3 binds / 30 draws on the main target 2888x2860 f28 (R8G8B8A8_UNORM, bind 0xa8 =
+  RT|SRV|UAV), plus 1 draw each into 32x32 and 96x128 f28 targets (Scaleform filter/cache targets).
+  The real side's matching target is 2888x2860 f27 (TYPELESS) at another pointer: geo-11 keeps its own copy.
+User: 4 m is a good default HUD distance (now the code default; JJ's ini already 4.00).
+HUDLAYER (installed, untested), playbook 04 "Get UI off the backbuffer and onto a layer" + HUD-004
+(commit b955f2244f7c5d5f3b3e5f403b1b6721a3362423):
+- hudsplit.cpp: while RenderUI runs (screen pass, Present thread, steady gameplay gate from xr.cpp
+  g_eyeWantGameplay, checkbox "HUD on its own layer (steady HUD)", setting hudlayer, default ON), every
+  game-context bind of a >=1000x1000 target is swapped for our image H (same size/format, made through the
+  game device), cleared to 0 at the first swap; OMSetBlendState (game slot 35) is hooked and, while H is
+  bound, replaced by a cached copy with alpha ONE/INV_SRC_ALPHA/ADD and alpha writes on (HUD-004). Filter
+  targets pass through (game blend restored). After the call the game's last requested targets + blend are
+  re-bound (UE3 RHI state caching). H must be a real d3d11 texture (H->GetDevice == real device), else the
+  layer turns itself off and the HUD stays in the picture (panel "stand-in image").
+- HUD-004 proof in the panel: alpha census of H every ~2 s (covered / solid / see-through %).
+- geo11conv: HUD shift forced to 0 while the layer is live, so H holds one flat HUD.
+- xr.cpp: HUD swapchain (_SRGB sibling of H's byte layout), CopyResource on the real context at Present,
+  XrCompositionLayerQuad in VIEW space (head-locked, compositor re-places it every refresh), premultiplied,
+  at the HUD distance (0 -> 10 m), sized to the game frame's angles (symmetric fov), pitched by TILTFILL's
+  tilt. Also added to FPSLOCK re-shown frames. Layer order: world, HUD, panel.
+Open risks: (1) Virtual Desktop mishandled a VIEW-space quad in 2025-07 ("scaled backwards as you leaned");
+(2) GPU order - geo-11 plays the game's lists on a path we cannot see; if that is after our Present hook the
+HUD image lags a frame or is empty (coverage 0%); (3) geo-11 may draw into its own stereo copy of H rather
+than H (coverage 0%); (4) the depth-following reticle icons (fix filter 2/42) go flat into the layer.
+RB icon (user): the icon next to the grapple reticle sits at the HUD distance while the reticle follows scene
+depth. The fix gives depth only to textures tagged filter_index 2/42 in d3dx.ini [TextureOverride_Icons5_*]
+(HUD VS 05154232f7872d0d etc.: per-vertex 200-step depth-buffer march; filter 2 also needs clip y < 0.65 or
+atlas-UV windows). The RB glyph is not tagged. Plan: find its texture hash (geo-11 frame analysis log, needs
+hunting=2 in d3dx.ini - a fix-file change, record in FIX_CHANGES.md; log only, no dump_tex: E: nearly full),
+then tag it filter 42 via AKVR-fix-patches.ps1. With HUDLAYER, depth-following pieces must also be kept out
+of H (e.g. per-draw target switch when a tagged texture is bound) - after the layer is confirmed.
+Build HUDLAYER SHA256 573beabc188d7c0dcd740d19b6f870acbbfe961b1aed49a542b4a73da07fb4e1.
+Rollback `diagnostics/before-HUDLAYER-20260928/` (= HUDSPLIT3).
+
+## 2026-09-28: HUDLAYER result -> HUDLAYER2 (unwrap geo-11's texture stand-in)
+User: panel said "HUD layer: OFF - geo-11 gave a stand-in image". Status (diagnostics/hudsplit-20260928/
+HUDLAYER_status_0200.txt), RUNTIME: image 2888x2860 f28 created through the game device has its function
+table in geo11.dll - geo-11 (this fork, direct mode) WRAPS textures, unlike stock 3Dmigoto. The safety
+gate worked: no redirect, HUD stayed in the picture, no crash. Game side hooked with 9 fns (blend added).
+HUDLAYER2: finds the real texture inside geo-11's object without calling unknown code: a real d3d11
+texture is recognised by its exact function-table pointer (read from a 1x1 texture made on the real
+device); H's first 0x200 bytes are scanned, and one pointer deeper (0x80). Every real texture found is
+listed in the panel ("real: +0xNN: WxH fN; ..."); the first of H's size and byte layout is used for the
+headset copy and the coverage readback. If none matches, the layer stays off and the list shows the layout.
+Expect possibly two (per-eye) copies; with the HUD shift at 0 either should hold the same HUD. If geo-11
+draws the HUD into a copy that is not the first match, coverage reads 0%: pick another from the list.
+Build HUDLAYER2 SHA256 42bf19232719ba51e3aa4c979c22e063282bf131f8dbe8777ac80fcde3755e3c.
+Rollback `diagnostics/before-HUDLAYER2-20260928/` (= HUDLAYER).
+
+## 2026-09-28: HUDLAYER2 result -> HUDLAYER3 (real copy may be a per-eye array)
+RUNTIME (diagnostics/hudsplit-20260928/HUDLAYER2_status_0205.txt): the unwrap found two REAL textures inside
+geo-11's stand-in, at +0x140 and +0x190, both 2888x2860 f28, but used neither: the only remaining filter was
+ArraySize == 1, so they are most likely 2-slice arrays (per eye) - UNCONFIRMED, the list now prints arr/ms.
+HUDLAYER3 accepts any slice count (single-sampled) and copies subresource 0 (mip 0, slice 0) for the headset
+image and the coverage readback (CopySubresourceRegion). If coverage stays 0%, try +0x190 or slice 1 next.
+Build HUDLAYER3 SHA256 b95c167024283223376fab9437eb16de1800f99a52b8159f9fecd4eddc24a7d5.
+Rollback `diagnostics/before-HUDLAYER3-20260928/` (= HUDLAYER2).
+
+## 2026-09-28: HUDLAYER3 result -> HUDLAYER4 (room-space placement, colour conversion, additive blends)
+RUNTIME (diagnostics/hudsplit-20260928/HUDLAYER3_status.txt): LIVE. Real copies inside geo-11's stand-in are
+per-eye ARRAYS (+0x140 and +0x190: 2888x2860 f28 arr2 ms1) - confirmed. Coverage 0.92% (solid 0.06%,
+see-through 0.86%): HUD pixels reach the layer. 1404 frames sent, fmt 29 (R8G8B8A8_UNORM_SRGB), 3.0 m.
+User (headset): live, but (1) not noticeably steadier, (2) "loses its correct distance", (3) see-through pieces
+wrong - the compass line at the top is dark, not as bright or as transparent as it should be; (4) the position
+should follow the distance slider.
+Reading: (1) JJ's frame lock is "Virtual Desktop SSW" (fpslockssw=1): only 45 xrEndFrame/s, VD's SSW warps the
+whole image in between, HUD layer included - a layer cannot be steadier in that mode. (2) VIEW-space quad:
+VD mishandled view space before (2025-07 panel note); likely the same. (3) premultiplied gamma-space pixels read
+as sRGB and blended linearly darken see-through pixels over bright backgrounds; additive pieces got coverage.
+HUDLAYER4: quad in LOCAL space, placed in front of the head pose located for each xrEndFrame's display time,
+re-placed in FPSLOCK repeated frames too (90/s in "repeat the frame" mode); "glued to the head" (VIEW) kept as
+an option (hudlayerspace). Colour pass (default, hudlayercolour=1): shader on the real context, straight =
+c/a -> sRGB-to-linear -> x a, written through an _SRGB view (additive pixels with a~0 kept as light); state
+saved/restored; D3DCompile loaded at run time. Blend copies: colour dest factor ONE (additive) -> alpha
+untouched (ZERO/ONE). Distance = the HUD distance slider (live), as before. Panel warns when SSW mode is on.
+Build HUDLAYER4 SHA256 15a3a0495f0a53eb35cfa836049d3eee708df2a6373b08c4232b553f16349da2.
+Rollback `diagnostics/before-HUDLAYER4-20260928/` (= HUDLAYER3).
+
+## 2026-09-28: HUDLAYER4 result -> HUDLAYER5 (plain-blend coverage only, eye-shift option, lazy follow)
+User (headset): blending a bit better but a segment of the compass strip has a dark rectangular background that
+should not be there; distance slider still changes nothing; "slightly better" with VD SSW off + "repeat the
+frame", not as stable as hoped, "not a deal breaker". Asked whether other mods should put UI on a layer too.
+RUNTIME: layer log shows the quad placed at 3.0 m (slider value) - the slider reaches the quad; the quad keeps
+its angular size, so only binocular disparity shows its depth. Hypothesis (UNVERIFIED): Virtual Desktop
+composites quad layers without per-eye parallax. Game frames (diagnostics/hudlayer4-20260928/akvr_frame_0x.bmp):
+layer on = HUD absent from the world picture (redirect confirmed); the compass is a thin additive-looking
+blue line.
+HUDLAYER5:
+- Blend copies: only PLAIN see-through blends (op ADD, dest INV_SRC_ALPHA, src ONE or SRC_ALPHA) add coverage;
+  every other mode (add, screen, multiply, MIN/MAX, subtract) leaves the layer alpha untouched (multiply on a
+  cleared image was the likely dark patch). Panel counts "special" blend states.
+- Option "distance fix: add the eye difference": left/right quads (eyeVisibility) moved +-half IPD (from
+  xrLocateViews) along the quad's right axis = the disparity a HUD at the distance has when both eyes are
+  drawn from the head centre. Correct runtime + this = double disparity: the user picks what works.
+- Option "lazy follow" (room-space only): the HUD keeps its room direction until the head turns more than N
+  deg (default 1.5) away, then trails by exactly N (slerp by the excess); >45 deg snaps. Tremor below N does
+  not move it. Playbook 04 "Body-locked is the default, not head-locked or world-locked" is the precedent.
+Build HUDLAYER5 SHA256 45a96dac19bcf98e8285cf7d4440cd0fc854bf84c583e07b9fda9ac771787b10.
+Rollback `diagnostics/before-HUDLAYER5-20260928/` (= HUDLAYER4).
+
+## 2026-09-28: HUDLAYER5 result -> HUDLAYER6 (reticle stays in the picture; defaults; panel drawers)
+User (headset, RUNTIME): "distance fix" (per-eye quads shifted +-half IPD) makes the HUD distance slider work
+correctly => CONFIRMED: Virtual Desktop composites quad layers WITHOUT per-eye parallax (both eyes from the head
+centre). Lazy follow at ~0.3 deg "works reasonably well". The reticle and the "target distance" element are not
+at the depth they point at (the layer took every HUD piece). User asked to remove the panel test section, and
+then to put every panel section in closed drawers.
+HUDLAYER6:
+- HUDSPLIT fix edit (FIX_CHANGES.md 1b, AKVR-fix-patches.ps1 Patch-HudSplit, applied): the 13 HUD VS read
+  cb13[0].x; 1 = flat pieces only, 2 = scene-depth pieces only (fix decision r0.z before its depth march, only in
+  9938094af96353c0 and 05154232f7872d0d), 0/unbound = all. hudsplit.cpp: while H is bound, each game-context
+  draw is issued twice - cb13=1 into H, then the game's own target + blend with cb13=2 (geo-11 + the fix place
+  those pieces at scene depth), then back to H. Slot 13 restored at the end. Only when both marker files are
+  present; panel checkbox "keep the reticle at the depth it points at" (hudlayersplit, default on).
+- Defaults: eye shift ON, lazy follow ON at 0.3 deg (range 0.1-6).
+- Panel: test section removed; VIEW / HUD / MENUS AND SCREENS / FRAME RATE are closed CollapsingHeaders
+  (window NoSavedSettings -> closed each launch); HUD layer options + status lines in a "HUD layer settings"
+  tree node.
+Open: whether the "target distance" element is a scene-depth piece in the fix at all (if not, it stays in the
+layer); the RB icon still needs its texture tagged (hash from a geo-11 frame analysis).
+Build HUDLAYER6b SHA256 39ec863e37701ca0dfd7a99679595dd6896e7fd3b8b60373f899aa5b95e7a3b4.
+Rollback `diagnostics/before-HUDLAYER6-20260928/` (dll, settings, script, the 13 shaders before HUDSPLIT) or
+AKVR-fix-patches-undo.bat (back to the ORIGINAL fix, which also removes HUDDEPTH).
+
+## 2026-09-28: HUDSPLIT crash -> fixed (position output per shader)
+User: "game is not launching now". RUNTIME: Windows Application log, two launches 02:41:55 / 02:42:33:
+BatmanAK.exe, faulting module nvwgf2umx.dll 32.0.16.1088, 0xc0000409, offset 0xea9a0d; akvr_startup_log not
+written, no HUD .bin rebuilt => the driver died compiling a shader during load. Cause (confirmed offline): the
+HUDSPLIT tail wrote `o4` in all 13 HUD VS, but the position output is o2 in 6 and o3 in 3 of them (undeclared
+or wrong output = invalid DXBC). Immediate recovery: the 13 pre-HUDSPLIT texts restored (crashing texts kept in
+diagnostics/hudsplit-crash-20260928/). Fix: Patch-HudSplit reads `dcl_output_siv oN.xyzw, position`.
+Offline driver test (new, akvr/tools/shader_driver_test): geo-11 0.6.90 cmd_Decompiler -a assembles each text,
+vstest.exe loads it into the NVIDIA driver, one process each. Originals 13/13 OK; crashing set crashes (exit 127)
+exactly on the wrong-output shaders; fixed set 13/13 OK. Fixed edit applied; installed texts byte-identical to the
+tested ones. LESSON: every fix-shader edit goes through the driver test before it reaches the game.
+
+## 2026-09-28: HUDLAYER6b result -> HUDLAYER6c (frame-rate panel)
+User (headset): the reticle is now at object distance (HUDSPLIT works). New: (1) "when you tilt your head right
+up or down and it reaches the edge of the screen, you can see it tilt" (what "it" is: asked); (2) the compass at the
+top flickers; (3) the repeat/SSW choice is missing from the FRAME RATE drawer.
+RUNTIME (diagnostics/hudlayer6-20260928): layer LIVE 14162 frames, 14155 sent, split ON (29 pieces drawn twice),
+all 256 captured frames redirected (2-3 swaps, 28-30 draws) - the flicker is NOT the layer dropping frames. The
+13 HUD .bin files were rebuilt by geo-11 (assembly OK). Settings: fpslock=0 (lock off), lazy 0.20 deg, 6.5 m.
+(3) the choice was drawn only while a lock rate was set; HUDLAYER6c always shows it, with a note that it only
+works with a lock and that with the lock off the HUD layer only moves when the game draws.
+Compass flicker suspects, to test: (a) untick "keep the reticle at the depth it points at" - if the flicker goes,
+compass pieces are being classified as scene-depth pieces (fix filter 2 region test uses per-vertex clip y < 0.65
+and atlas UV windows) and sent to the picture; (b) lock off = the layer moves at the game's rate only.
+
+## 2026-09-28: reticle tilt -> RETFLAT (fix edit prepared, not yet applied)
+User: the reticle tilts when it gets towards the edges of the view; cannot tell whether it rotates in depth or
+squishes. Two candidate causes: (a) the fix's depth search is per VERTEX (each corner marches from its own screen
+position; a slanted surface gives each corner its own depth); (b) a flat screen-space sprite in a wide rectilinear
+view is foreshortened near the edges. RETFLAT tests (a): the search starts from the piece's origin (Scaleform
+matrix translation, rows' .w; fallback to the corner when v1.w != 1), so one depth per piece. If only the squish
+remains, (b) needs a separate per-piece scale correction. Driver-tested 13/13; waits for the game to close.
+Pending user tests: compass flicker with "keep the reticle at the depth it points at" unticked; FRAME RATE choice
+shown (6c).
+
+## 2026-09-28: compass flicker -> RETFLAT band (applied, build RETFLAT)
+User: compass flicker STOPS with "keep the reticle at the depth it points at" unticked => compass pieces were
+classified as scene-depth pieces. The fix's rule: filter 42, or filter 2 AND (clip y < 0.65 OR atlas-UV windows);
+the 0.65 "top strip" test was per corner (a piece on the line is cut in two by the split) and AKVR's HUD size /
+position moves the compass below it. RETFLAT (1c) now tests the piece origin, and with AKVR's layer a piece whose
+origin is in the top N% of the view (cb13[0].y; panel "compass band", default 33%, hudlayerband) stays flat.
+cb13 buffers are now DEFAULT usage, updated through the game context when the band changes. Driver test 13/13,
+applied; build RETFLAT SHA256 5d446cb2ba5fb5e1acc9edbff4478752039612af08fbd56130675e80886fddab.
+Rollback: diagnostics/before-RETFLAT-20260928/ (two shader texts, dll, settings, script).
+
+## 2026-09-28 03:05: RETFLAT launch problem -> reverted to HUDLAYER6c for an A/B
+User: with RETFLAT the game "kind of hangs" and does not enter VR, twice; the start window opened in a different
+place ("something's changed"). RUNTIME: akvr_startup_log: "session: xrCreateSession failed (-2)" (VDXR
+RUNTIME_FAILURE), HUD layer never reached (game-side context not hooked, 0 binds). geo-11 still in HOOK mode
+(no d3d11.dll). Settings diff vs the working 6c run: only hudlayerband=33. BmSystemSettings.ini unchanged since
+09-27. Windows Application log: OnimushaWotS.exe HUNG and was closed at 02:58:53 (between the last good 6c session
+and the failing launches); SteamVR vrserver.exe running since 03:04:41; geo11.dll AV (0xc0000005 at +0x214f68 /
++0x214f7b) at 02:51, 02:57 (exits of GOOD sessions), 03:02, 03:03 (the failed launches being closed) - the same
+exit crash as after good sessions, not the cause. Code reading: RETFLAT differs from 6c only in the band code in
+layer_begin (runs after VR starts) and two shader texts (drawn only in gameplay).
+Action: RETFLAT pulled (kept in diagnostics/retflat-pulled-20260928/), 6c DLL + the two pre-RETFLAT shader texts
+restored (.bin deleted). If 6c ALSO fails, the environment (VD session stuck after the Onimusha hang, SteamVR) is
+the cause - reboot / restart VD, close SteamVR; then re-apply RETFLAT unchanged.
+
+## 2026-09-28 03:10: not-entering-VR is environmental -> RETFLAT2 installed (RETFLAT + adapter/window log)
+User: the reverted 6c build ALSO fails (xrCreateSession -2) while Onimusha runs in VR fine, and the SEKIRO mod
+fails too -> PC-side, not AKVR. Rebooting. PC facts (runtime): DXGI lists the RTX 4070 Ti THREE times (LUIDs
+00019b0b with both monitors, 00024809, 00023a63 = virtual display drivers: Virtual Desktop Monitor [Error], Meta
+Virtual Monitor, SudoMaker Virtual Display Adapter) plus AMD iGPU [Error]; two MSI MPG 274URF monitors, the second
+at X=2560. Hypothesis (unconfirmed): the game device lands on an adapter the VD runtime does not accept.
+RETFLAT2 = RETFLAT + LUIDCHECK: the session line now prints the game device's adapter LUID vs the runtime's
+required LUID ("DIFFERENT ADAPTER"), and the startup log prints the window rect + monitor. RETFLAT shader texts
+re-applied (the tested ones from diagnostics/retflat-pulled-20260928/).
+
+## 2026-09-28 (after reboot): VR back; RETFLAT results; DIAG RB prepared
+User: VR works again after the reboot (the refusal was PC-side). ~30 s of heavy stutter on first entry (expected:
+geo-11 rebuilding the edited shaders + cold caches after a reboot). Compass band 30% is good; above that the
+reticles stop following depth. The reticle still SQUASHES near the window edge but no longer rotates in depth
+(=> RETFLAT fixed the per-corner depth; the squash is the flat-sprite foreshortening; user "not too bothered").
+Panel font too wide -> FontGlobalScale 0.85. RB icon next to the reticle still at the HUD distance: its texture is
+not tagged filter 2/42 in the fix. Next: find its hash with a geo-11 frame record limited to HUD draws (FIX_CHANGES
+3b, akvr/tools/diag_rb.py, panel button, build DIAGRB), then tag it (filter 42 or 2) through the fix-patch script.
+
+## 2026-09-28: split doubles the TARGET DETAIL panel -> VSID; DIAG RB switched on
+User: "keep the reticle at the depth it points at" breaks the top-right HUD element - doubled, hard to read; two F2
+captures (diagnostics/split-doubled-20260928/). RUNTIME: split-ON game frame (akvr_frame_01) contains the
+"TARGET DETAIL - Use the Pressure Sensor Antenna to pinpoint Scarecrow's location" panel + green marker IN THE 3D
+PICTURE; split off = not in the picture. Cause: that panel is drawn by a Scaleform VS outside the fix's 13 HUD VS,
+so it ignored the cb13 switch and was drawn fully in both passes (layer + picture).
+VSID (build VSID): the second pass runs only while one of the 13 patched VS is bound on the game context (game
+slot 11 VSSetShader tracked). The 13 are recognised at creation: CreateVertexShader hooked on every device
+function table seen at creation time (D3D11CreateDeviceAndSwapChain outDev, CreateSwapChain(ForHwnd) dev, the
+real device in hook_present_on); 3Dmigoto shader hash = FNV-1 64 (offset 0, prime 0x100000001b3) over the
+original bytecode. Split line shows "patched HUD shaders recognised: N of 13". If N=0 (shaders created before our
+hooks) or pieces drawn twice = 0 (geo-11 hands the game a different object), the reticle goes flat again but
+nothing is doubled.
+Also installed: FontGlobalScale 0.85, band default 30, the "record the HUD for geo-11" button, and DIAG RB
+(FIX_CHANGES 3b) switched on (hunting=1 -> geo-11 text in a corner of the view until switched off).
+Build VSID SHA256 cb1c4882cd366f4fbf39ae09f1ab83889e1d7b5624ac868ecab0f81621dcbc51. Rollback before-VSID-20260928/.
+
+## 2026-09-28: RETSQUASH (edge-squash correction), installed with VSID + DIAG RB
+User: the reticle still squashes near the edge ("not too bothered"; "try if you can"); noted the game probably keeps
+the reticle on screen by clamping it. RETSQUASH (FIX_CHANGES 1d): scene-depth pieces are enlarged about their origin
+by the inverse rectilinear foreshortening at the origin; the game's tan half-angles (xr.cpp g_subHalfH/V, the
+submitted frame) go into cb13[0].zw; panel "reticle keeps its size near the edges" (hudlayersquash, default on).
+Near the edge the enlarged piece may clip slightly at the frame border. Driver test 13/13, applied.
+Build RETSQUASH SHA256 0e5b1d1c57435f2067798efc9fb8609ddfcb5695c7765fe00859faaf1815ff72 (includes VSID, font 0.85,
+band 30, the frame-record button). Rollback before-RETSQUASH-20260928/ (or before-VSID-20260928/).
+
+## 2026-09-28: VSID -> VSID2 (pairing via geo-11's real shaders); RB icon = font glyph (not taggable); DIAG RB removed
+User: with RETSQUASH/VSID the reticle was no longer at object depth and still squashed. RUNTIME status: "recognised
+0 of 13 (0 objects; 22964 shaders created, 1 watch hooks)" - the only CreateVertexShader hook sat on the REAL device,
+which receives geo-11's auto-patched / replacement bytecode, never the game's original, so the FNV names never
+matched; split drew nothing twice -> everything flat (squash fix only runs in the depth pass).
+VSID2: geo-11's 13 HUD replacements are recognised at real creation by the HUDSPLIT drop constant l(-10,-10,0,1) in
+their bytecode; game shader objects are paired with the real VS geo-11 binds while the game's VSSetShader (or its
+first draw) runs on the same thread (thread-local, real immediate + deferred slot 11 hooks). Split line now:
+"patched HUD shaders: N by name, M geo-11 copies, K game shaders paired".
+RB icon (frame record, diagnostics/rb-frame-analysis-20260928/): HUD draws used ~10 textures. The reticle rings
+are in the icon atlas ece57e47 (2048x1984 BC3, already filter 2 in the fix: TextureOverrideMenu_HUD5). The RB
+button is a GLYPH in Scaleform's dynamic font cache be6e8067 (1024x1024 R8, '!U!' = updated at run time), drawn by
+the letters VS 91e2b2225bf3ea04 with all other HUD text. Tagging that texture would give every HUD text depth, so
+the RB icon cannot be split off by texture; left at the HUD distance (told the user).
+DIAG RB removed (d3dx.ini restored, hunting=0). Panel: PushItemWidth 42% (sliders no longer push labels out).
+Build VSID2b SHA256 06a97bb94cd0457fa260ac594c7b5f99742e0d2527f97548f0ad337886f75ca3. Rollback before-VSID2-20260928/.
+
+## 2026-09-28: VSID2 result -> VSID3 (read geo-11's own current-shader hash)
+RUNTIME (status 04:06): "0 by name, 64 geo-11 copies, 0 game shaders paired (22765 created, 1 watch hooks)" - the
+drop-constant scan hit its 64-entry cap (so the constant is not unique to our 13) and the thread-local pairing never
+fired: geo-11 forwards the game immediate context's calls later, not inside the call. User: reticle still at the HUD
+distance; squash "don't actually mind it, maybe leave it".
+VSID3: 3Dmigoto's HackerContext keeps UINT64 mCurrentVertexShader (HackerContext.h:204), updated in SetShader whenever
+ShaderOverrides exist (HackerContext.cpp:2017; this fix has many). The mod scans the game-facing context object
+(first 0x4000 bytes, SEH) for one of the 13 hashes right after a game VSSetShader inside the HUD call, remembers the
+offset, and at each HUD draw splits only if the field holds one of the 13. Offset unknown -> draws twice as in
+HUDLAYER6b (reticle at depth, TARGET DETAIL doubled). Status line: "HUD shader check: geo-11 current-shader field
+FOUND / looking / NOT found".
+Build VSID3 SHA256 c2ccac78ccc38e1720328d575fb0134140d344a5b611b9f4c25d8382b3d7317a. Rollback before-VSID3-20260928/.
+
+VSID3b (same day): panel font 0.78, every Text* wraps at the window edge (PushTextWrapPos), long control labels
+shortened, the DIAG RB record button removed. SHA256 6dbf17c54a13dabfd1f246e34fc0e1f8ce04771bb4faa93481647b911ad820e1.
+
+## 2026-09-28: VSID3 result -> VSID4 (name the shaders on the GAME's device at creation)
+User: TARGET DETAIL still doubled with the split on. RUNTIME (akvr_startup_log, VSID3b): "field NOT found - drawing all
+HUD pieces twice | 0 by name, 64 geo-11 copies, 0 paired (22765 created, 1 hooks)". Why VSID3 could never work: geo-11's
+own frame-analysis log (diagnostics/rb-frame-analysis-20260928/.../log.txt) prints VSSetShader "hash=0000000000000017"
+(also 07, 2f) - geo-11 keeps flags there, not the 3Dmigoto hash. Region cut-off rejected: in akvr_frame_01 the panel
+sits ~38% down the view, beside where reticles go.
+Static (file bytes): BatmanAK.exe delay-loads d3d11.dll; its only d3d11 name is D3D11CreateDevice (delay name table at
+file offset 0x3011D72, next to CreateDXGIFactory and the flex* names); no D3D11CreateDeviceAndSwapChain string.
+VSID4: at startup (after install_creation_hooks) the exe's delay-IAT slot for D3D11CreateDevice (fallback: plain import)
+points at our entry, which calls the export (geo-11's hook runs inside, as for the game) and passes the device the game
+receives (geo-11's wrapper) to akvr_hudsplit_watch_device. That CreateVertexShader sees the ORIGINAL bytecode (FNV-1 =
+ShaderFixesDM names) and returns the object the game binds. split_vs_ok: once any of the 13 are named, the second
+(depth) pass runs only while one of them is bound; everything else (TARGET DETAIL) is drawn once, into the layer.
+Status line: "HUD shader check: game device names the HUD shaders | N of 13 by name, M objects; game device hook
+delay slot/import/NOT FOUND, calls, devices". Untested in the game.
+Build VSID4 SHA256 b5e7db7b96fe460c54021741d216b7121c58d20f7be3aacf94b5b6275aafbada. Rollback before-VSID4-20260928/.
+
+## 2026-09-28: VSID4 result -> PANELTIDY (panel options removed, name list enlarged)
+RUNTIME (akvr_startup_log, VSID4 16:46): "13 of 13 by name, 64 objects; game device hook delay slot, 1 calls, 1
+devices; 30492 created, 2 hooks", 23 pieces drawn twice => VSID4 recognition works. 64 objects = the list cap was hit
+(the game creates the 13 repeatedly), so copies made later would have lost depth: cap raised to 1024.
+User: "reticle keeps its size near the edges" still does not work -> removed; RETSQUASH off for good (g_squashWant
+false; the shader edit FIX_CHANGES 1d stays but is inert with cb13[0].zw = 0). User asked to drop options new users do
+not need: removed from the panel and from the settings file, fixed at the values in use (akvr_settings.ini had
+space 0, colour 1, eyes 1): placement "in the room, each frame" (room space re-placed per frame; lazy follow needs it),
+"correct see-through colours" (on), "distance fix: add the eye difference" (on; required under Virtual Desktop).
+TARGET DETAIL readability after VSID4: not yet reported by the user.
+Build PANELTIDY SHA256 61a0c5cd496d482e60fd5d1710ea190fe3338f8dbeedc242d2c7c0df0af6eb80. Rollback before-PANELTIDY-20260928/.
+
+## 2026-09-28: objective marker flat -> DEPTHALL (fix edit, FIX_CHANGES 1e)
+User: the objective-distance reticle sits at the HUD distance; it should follow the object like the grapple reticle.
+Source inspection: d3dx.ini tags scene-depth pieces by texture in many HUD shaders (filter 2 in Icons2/3/4/HUD5, 32
+in Icons3, 22 = all letters), and every one of the 11 "non-42" HUD VS has its own depth decision + search. HUDSPLIT
+(1b) had forced those 11 to "flat", so with AKVR's layer their depth pieces went only into the layer. DEPTHALL copies
+each shader's own decision (`ine rN.x, rX.c, l(0)` before its top-level if_nz). No DLL change. Driver test 13/13 OK;
+applied. Expect more HUD pieces at scene depth than before (whatever the original fix put there, incl. mid-screen
+text and the RB glyph). Untested in the headset. Rollback before-DEPTHALL-20260928/.
+
+## 2026-09-28 21:46: no VR after Onimusha -> SESSBACKOFF
+User: after Onimusha VR, AKVR "stumbles back to half a frame a second" and never enters VR until a reboot.
+RUNTIME: akvr_startup_log "xrCreateSession failed (-2) | LUID same"; C:\ProgramData\Virtual Desktop\OpenXR.log (VDXR
+1.0.10): every attempt `HRESULT failure [80004002] Origin: device->QueryInterface(m_ovrSubmissionDevice)`
+(d3d11_native.cpp:204) - the QI on VD's OWN submission device (see skvr/SEKIRO_PLAN.md run log: VDXR creates it with
+D3D11CreateDevice, which in HOOK mode runs through geo-11). One attempt per second = one per Present, each ~1 s.
+No leftover Onimusha process, no Onimusha error event; ReShade XR layer inactive (no ReShade.ini). Why the state
+survives until reboot: unknown. SESSBACKOFF: retry after 3, 6, 12, 24, then every 30 s; the session line says so.
+Build SESSBACKOFF SHA256 e6214d689ff2b053e01e370161b11335f7c9ee26b0f785a4c0ca0ad72536b702. Rollback before-SESSBACKOFF-20260928/.
+Next data point: does restarting the VD Streamer (no reboot) clear it? -> NO (JJ). Parked (JJ suspects REFramework).
+
+## 2026-09-28: lazy follow rejected -> HUDVIEW (HUD quad in VIEW space, lazy follow removed)
+User: lazy follow "locks the elements for a brief window to simulate stability"; Onimusha's locked-on health bars feel
+much steadier. Reading (source): LOCAL placement = head pose PREDICTED for the frame; settings had fpslock=0, so the
+quad is re-placed only when the game Presents (~45/s) - prediction error + 45 Hz steps = HUD motion, which lazy follow
+masked. VIEW space = the compositor places the quad from the actual head pose every refresh. The only VIEW-space test
+(HUDLAYER3, "not noticeably steadier") ran with VD SSW on (warps the whole picture) - it never measured this.
+HUDVIEW: g_hudSpace = 1 fixed, lazy follow off and gone from panel + settings file; per-eye shift still applies.
+Risk to watch: the 2025-07 note "VD scaled a view-space quad backwards as you leaned" (panel, unverified for the HUD).
+Build HUDVIEW SHA256 db3c86d058043e35f8c427f18fe0c234f88bfe45db2800e416e020bb94e68c18. Rollback before-HUDVIEW-20260928/.
+
+## 2026-09-29: compass band fixed at 28 (BAND28); open-world grapple stutter - needs an F2 capture
+User: at band 30 the compass split into two pieces when moving the head; 28 fixed it; slider not needed. BAND28: band
+fixed at 28% (hudsplit.cpp), slider + hudlayerband setting removed. (HUDVIEW session ran; no HUD complaint reported.)
+User: heavy stutter during certain actions while grappling around an outdoor area - mod or engine? No capture yet.
+Startup log (00:05) had nothing suspicious for this: window resync stops acting after 40 tries (counter keeps
+counting). Method: F2 right after a stutter -> frames.csv (last 8192 frames): interval_ms spike with small
+hook_total_ms = not our Present work (game / GPU / streaming); compare with [[ak-batmobile-stutter-is-game-side]].
+Build BAND28 SHA256 6af1871e2551d9f386bedce0db19f23ed3e7935e2eac778348558df46aa75178. Rollback before-BAND28-20260929/.
+RESULT (JJ: "much better that time, not as much stuttering"; capture akvr_20260929_001949_864, BAND28, lock off):
+130 s gameplay, frame interval median 15.9 ms (p90 18.1, p99 20.5, max 87.1); >33 ms: 21 frames, >50 ms: 7, >100 ms: 0.
+6 of the 7 >50 ms hitches had mod Present time < 2.5 ms (game side). The worst (84 ms at 123.6 s) and a burst at
+123.5-124.8 s followed xr_submit stalls of 20-78 ms with a normal frame interval before them (also 6.5 s, 104.6 s,
+129.7 s): time spent in OUR submit step, i.e. waiting in the Virtual Desktop hand-off (xrWaitSwapchainImage with
+infinite timeout on 3 swapchains, copies, xrEndFrame) - VD compositor/stream or GPU contention; not split further yet.
+Next if it matters: time acquire/wait per swapchain, the copies and xrEndFrame separately in frames.csv.

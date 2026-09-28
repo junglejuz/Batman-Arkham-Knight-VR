@@ -55,6 +55,10 @@ void           akvr_head_toggle();     // on/off; auto-recenters on enable, disa
 void           akvr_head_recenter();   // set the current head pose as the zero reference
 void           akvr_head_update();     // call each Present: pose -> delta -> cave int32 slots
 HeadTrackState akvr_head_state();
+// HUDSTEADY: the headset orientation (OpenXR quat x,y,z,w) the last finalized camera was built
+// from, recovered from the delta the stub applied. False when it cannot be matched.
+bool           akvr_head_frame_quat(float q[4], int* age = nullptr);   // age: 0 = newest written
+bool           akvr_head_newest_quat(float q[4]);
 void           akvr_head_pos_scale_mul(float f);  // multiply the lean gain (live dial)
 float          akvr_head_pos_scale();
 void           akvr_head_pos_scale_set(float v);  // set lean gain directly (slider)

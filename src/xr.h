@@ -157,6 +157,19 @@ void        akvr_xr_notify_resize();   // hooks.cpp calls on ResizeBuffers so th
 // size the engine chose, and a whole night gets spent matching against our own draws.
 void        akvr_xr_our_sizes(uint32_t& eyeW, uint32_t& eyeH, uint32_t& ovW, uint32_t& ovH);
 void        akvr_xr_backbuffer_size(uint32_t& w, uint32_t& h);  // the game's live render resolution
+const char* akvr_xr_hud_layer_diag();   // HUDLAYER: the head-locked HUD quad
+void        akvr_xr_game_tan(float& th, float& tv);   // RETSQUASH: tan half-angles of the game frame
+int         akvr_xr_hud_space();        // HUDLAYER4: 0 room space re-placed per frame, 1 view space
+void        akvr_xr_hud_space_set(int v);
+int         akvr_xr_hud_colour();       // HUDLAYER4: 0 raw copy, 1 converted to linear premultiplied
+void        akvr_xr_hud_colour_set(int v);
+int         akvr_xr_hud_eyes();         // HUDLAYER5: 1 = one quad per eye with the eye shift
+void        akvr_xr_hud_eyes_set(int v);
+int         akvr_xr_hud_lazy();         // HUDLAYER5: 1 = lazy follow (small head wobble ignored)
+void        akvr_xr_hud_lazy_set(int v);
+float       akvr_xr_hud_lazy_deg();
+void        akvr_xr_hud_lazy_deg_set(float d);
+float       akvr_xr_hud_half_ipd();
 void        akvr_xr_eye_image_size(uint32_t& w, uint32_t& h);   // ONE eye's image (half the width in geo-11 SBS)
 void        akvr_xr_submitted_fov_deg(float& h, float& v);      // FULL angles we actually submitted last frame
 ID3D11Texture2D* akvr_xr_katanga_texture();                     // geo-11's shared surface (F2 grab), may be null

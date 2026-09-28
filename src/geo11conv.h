@@ -25,5 +25,7 @@ float       akvr_geo11_hud_depth_now();
 // through the swapchain the game presents with (passed every Present, before the tick).
 void        akvr_geo11_swapchain(void* sc);
 const char* akvr_geo11_hud_diag();
+// HUDSPLIT3: geo-11's swapchain wrapper (the object the game presents through), or null.
+void*       akvr_geo11_wrapper();
 const char* akvr_geo11conv_diag();
 void        akvr_geo11conv_commit();                // write dm_convergence for the next launch

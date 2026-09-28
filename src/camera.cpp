@@ -219,6 +219,7 @@ bool      akvr_camera_installed()      { return g_installed; }
 uintptr_t akvr_camera_target()         { return g_target; }
 uint64_t  akvr_camera_finalize_count() { return g_counter ? *g_counter : 0; }
 
+
 CameraView akvr_camera_read()
 {
     CameraView v{};
@@ -1002,6 +1003,52 @@ float akvr_head_render_hfov()
     return hfov;
 }
 
+// HUDSTEADY 2026-09-28 — which head pose built the frame the game just finalized. Every
+// delta triple handed to the epilogue stub is kept with the headset orientation it came
+// from. The stub adds the triple to the game's fresh base and saves that base, so after a
+// finalize (camera rotator - saved base) IS the triple that frame used, exactly (compared
+// modulo 65536 in case the game normalises the rotator). Written on the Present thread,
+// read on the game thread; the newest match wins (a still head repeats triples).
+namespace {
+    struct DeltaRec { int32_t y, p, r; float q[4]; };
+    DeltaRec      g_dRing[32];
+    volatile LONG g_dHead = 0;
+}
+static void head_ring_push(int32_t y, int32_t p, int32_t r, float qx, float qy, float qz, float qw)
+{
+    DeltaRec& d = g_dRing[g_dHead & 31];
+    d.q[0] = qx; d.q[1] = qy; d.q[2] = qz; d.q[3] = qw;
+    d.y = y; d.p = p; d.r = r;
+    InterlockedIncrement(&g_dHead);
+}
+// HUDSTEADY2: the newest orientation handed to the stub (what the NEXT finalize will use if
+// no Present lands before it).
+bool akvr_head_newest_quat(float q[4])
+{
+    const LONG h = g_dHead;
+    if (h <= 0 || !g_htOn) return false;
+    memcpy(q, g_dRing[(h - 1) & 31].q, sizeof(float) * 4);
+    return true;
+}
+bool akvr_head_frame_quat(float q[4], int* age)
+{
+    const uintptr_t b = cam_base();
+    if (!b || !g_bYaw || !g_htOn) return false;
+    uint32_t cy = 0, cp = 0, cr = 0;
+    __try { cy = *(uint32_t*)(b + OFF_YAW); cp = *(uint32_t*)(b + OFF_PITCH); cr = *(uint32_t*)(b + OFF_ROLL); }
+    __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
+    const uint32_t dy = (cy - (uint32_t)*g_bYaw) & 0xFFFF, dp = (cp - (uint32_t)*g_bPitch) & 0xFFFF,
+                   dr = (cr - (uint32_t)*g_bRoll) & 0xFFFF;
+    const LONG h = g_dHead;
+    for (int k = 0; k < 32 && k < h; ++k)
+    {
+        const DeltaRec& d = g_dRing[(h - 1 - k) & 31];
+        if (((uint32_t)d.y & 0xFFFF) == dy && ((uint32_t)d.p & 0xFFFF) == dp && ((uint32_t)d.r & 0xFFFF) == dr)
+        { memcpy(q, d.q, sizeof(d.q)); if (age) *age = k; return true; }
+    }
+    return false;
+}
+
 bool akvr_head_install()
 {
     if (g_htInstalled) return true;
@@ -1371,6 +1418,7 @@ void akvr_head_update()
     *g_dYaw   = (int32_t)(wrapPi(fyaw   - b2yaw)   * RAD2ROT);
     *g_dPitch = (int32_t)(wrapPi(fpitch - b2pitch) * RAD2ROT);
     *g_dRoll  = (int32_t)(wrapPi(froll  - b2roll)  * RAD2ROT);
+    head_ring_push(*g_dYaw, *g_dPitch, *g_dRoll, qx, qy, qz, qw);   // HUDSTEADY
 
     // --- positional lean (world units) ---
     // OpenXR LOCAL delta, meters: +X room-right, +Y up, -Z forward.

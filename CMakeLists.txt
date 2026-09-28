@@ -54,6 +54,7 @@ add_library(akvr SHARED
     src/frameid.cpp
     src/geo11conv.cpp
     src/hudprobe.cpp
+    src/hudsplit.cpp
     src/camera.cpp
     src/xr.cpp
     src/openvr_beacon.cpp

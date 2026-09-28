@@ -28,6 +28,7 @@
 // (playbook ch09 #convergence-implementation). Geo-11's own keys keep working: a value we
 // did not write is adopted into the slider.
 #include "geo11conv.h"
+#include "hudsplit.h"   // HUDLAYER
 #include <windows.h>
 #include <cstdio>
 #include <cstring>
@@ -35,6 +36,7 @@
 #include <cstdint>
 #include <cmath>
 #include <string>
+#include <MinHook.h>   // HUDLIVE2: geo-11 per-frame update hook
 
 namespace {
     constexpr float kConvAt1 = 500.0f;
@@ -79,7 +81,7 @@ namespace {
     // eye view): it follows world scale. 0 = far away (depth 1, the far-field slide).
     constexpr float kUnitsPerM = 100.0f;   // UE3 units ~ cm (AK lean calibration 102/m)
     uint32_t  g_hudDepthOff = 0, g_hudMinOff = 0, g_hudMaxOff = 0;
-    float     g_hudDistM = 0.0f, g_hudDepthNow = 1.0f;
+    float     g_hudDistM = 4.0f, g_hudDepthNow = 1.0f;
     // EYEVIEW 2026-09-27 (SKVR port): while on, geo-11 is held at S = the eye turn and
     // C = -(sep * conv) / S, which keeps the eye translation S*C (so the world scale) exactly
     // as the sliders set it. Written instantly (no easing: a half-way S/C pair is a wrong
@@ -402,6 +404,8 @@ namespace {
             { 0x208007, "488b83d81b0000f30f1080740800000f57c2f30f11806c030000" },
             // stereo setup: movss [rbx+0x874],[rbx+0x870],[rbx+0x654] = h
             { 0x1CD7FC, "f30f119b74080000f30f119b70080000f30f119b54060000" },
+            // the per-frame update itself (hooked, HUDLIVE2): prologue, then mov rbx,rcx (= wrapper)
+            { 0x2078E0, "48895c241055488d6c24d04881ec30010000" },
         };
         const uint8_t* b = (const uint8_t*)m;
         auto dos = (const IMAGE_DOS_HEADER*)b;
@@ -421,6 +425,26 @@ namespace {
         return true;
     }
     bool hud_code_ok_safe() { __try { return hud_code_ok(); } __except (EXCEPTION_EXECUTE_HANDLER) { return false; } }
+    // HUDLIVE2 2026-09-28 — first run: "stereo object NOT found" every frame. The Present we
+    // hook is the REAL swapchain's, one layer below geo-11's wrapper (the wrapper holds the real
+    // one at +8 and calls it), so [our swapchain + 0x1BD8] was never geo-11's. The wrapper is the
+    // argument of geo-11's own per-frame update (0x2078E0, rcx), so that is hooked instead.
+    typedef uintptr_t (*G11UpdateFn)(void* wrapper);
+    G11UpdateFn        g_origUpd = nullptr;
+    volatile uintptr_t g_ctx = 0;
+    int                g_updHook = 0;       // 0 not tried, 1 on, -1 failed
+    uintptr_t hkG11Update(void* wrapper) { g_ctx = (uintptr_t)wrapper; return g_origUpd(wrapper); }
+    void hook_update()
+    {
+        HMODULE m = GetModuleHandleW(L"geo11.dll");
+        if (!m) m = GetModuleHandleW(L"d3d11.dll");
+        g_updHook = -1;
+        if (!m) return;
+        void* fn = (uint8_t*)m + 0x2078E0;
+        MH_Initialize();                         // already initialised elsewhere: harmless
+        if (MH_CreateHook(fn, (void*)&hkG11Update, (void**)&g_origUpd) == MH_OK && MH_EnableHook(fn) == MH_OK)
+            g_updHook = 1;
+    }
     bool near_eq(float a, float b) { return fabsf(a - b) <= 1e-3f * fmaxf(fabsf(a), fabsf(b)) + 1e-5f; }
 
     // Every Present, after live_tick (so S and C are this frame's).
@@ -428,6 +452,9 @@ namespace {
     {
         if (g_hudCode == 0) g_hudCode = hud_code_ok_safe() ? 1 : -1;
         if (g_hudCode < 0 || g_sp.live != kGSep || !g_cv.live) return;
+        if (g_updHook == 0) hook_update();
+        if (g_updHook < 0) return;
+        g_sc = g_ctx;                           // the wrapper geo-11 last updated
         uintptr_t p = 0;
         float S = 0.0f, C = 0.0f, sep = 0.0f;
         if (!seh_read_ptr(g_liveG, p) || !p || !seh_read_f(p + kGFinalSep, S) || !seh_read_f(p + g_cv.live, C) ||
@@ -448,6 +475,9 @@ namespace {
         }
         float h = S;                                            // far away: the far-field slide
         if (g_hudDistM > 0.05f) h = S * (1.0f - C / (g_hudDistM * kUnitsPerM));
+        // HUDLAYER: the HUD is drawn into our own image and shown as a layer at the HUD distance;
+        // geo-11 must draw it identically in both eyes (shift 0) so that image holds ONE flat HUD.
+        if (akvr_hudsplit_layer_live()) h = 0.0f;
         const float lim = 60.0f * fabsf(S);
         if (h > lim) h = lim;
         if (h < -lim) h = -lim;
@@ -600,8 +630,9 @@ void  akvr_geo11sep_set(float v) { g_sep = v < 0.0f ? 0.0f : (v > 100.0f ? 100.0
 bool  akvr_geo11sep_available() { return g_sp.ok || g_startSep >= 0.0f; }
 bool  akvr_geo11sep_live() { return g_sp.ok; }
 void  akvr_geo11_eyeview(bool on, float S) { g_evOn = on; g_evS = S; }
-void  akvr_geo11_hud_dist_set(float m) { g_hudDistM = m < 0.0f ? 0.0f : (m > 100.0f ? 100.0f : m); }
+void  akvr_geo11_hud_dist_set(float m) { g_hudDistM = m < 0.0f ? 0.0f : (m > 20.0f ? 20.0f : m); }   // HUDSPLIT: 0-20 m (JJ)
 float akvr_geo11_hud_dist() { return g_hudDistM; }
+void* akvr_geo11_wrapper() { return (void*)g_ctx; }   // HUDSPLIT3
 bool  akvr_geo11_hud_dist_ok() { return g_hudCode > 0 && g_stereo != 0; }   // HUDLIVE
 void  akvr_geo11_swapchain(void* sc) { g_sc = (uintptr_t)sc; }
 const char* akvr_geo11_hud_diag()
@@ -609,7 +640,9 @@ const char* akvr_geo11_hud_diag()
     static char d[240];
     if (g_hudCode < 0) snprintf(d, sizeof(d), "HUD distance: OFF - this geo-11 build is not the one analysed (0.7.11)");
     else if (g_hudCode == 0 || !g_liveG) snprintf(d, sizeof(d), "HUD distance: waiting for geo-11");
-    else if (!g_stereo) snprintf(d, sizeof(d), "HUD distance: geo-11 stereo object NOT found yet (%ld misses)", g_hudMiss);
+    else if (g_updHook < 0) snprintf(d, sizeof(d), "HUD distance: OFF - could not hook geo-11's per-frame update");
+    else if (!g_stereo) snprintf(d, sizeof(d), "HUD distance: geo-11 stereo object NOT found yet (%ld misses, update hook %s, wrapper %s)",
+                                 g_hudMiss, g_updHook > 0 ? "on" : "not yet", g_ctx ? "seen" : "never seen");
     else snprintf(d, sizeof(d), "HUD distance: LIVE, shift %.5f (S %.5f, C %.3f), writes %ld, eye-block writes %ld",
                   g_hudShift, g_hudS, g_hudC, g_hudWrites, g_hudBlockWrites);
     return d;

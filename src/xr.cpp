@@ -25,6 +25,8 @@
 #define _CRT_SECURE_NO_WARNINGS
 #include "xr.h"
 #include "frameid.h"  // FRAMEID: engine frame identity for pose pairing
+#include "hudsplit.h" // HUDLAYER: the HUD image
+#include "geo11conv.h" // HUDLAYER: HUD distance
 #include "camera.h" // akvr_camera_finalize_count() — the per-rendered-frame clock for AER eye sync
 
 // earlyres.cpp — "is geo-11 installed next to us?", answered from d3dxdm.ini in
@@ -35,6 +37,7 @@ bool akvr_early_geo11();
 #include <cstdio>
 #include <cstring>
 #include <d3d11.h>
+#include <d3dcompiler.h>   // HUDLAYER4: ID3DBlob (D3DCompile loaded at run time)
 #include <dxgi.h>
 #include <openxr/openxr.h>
 #include <openxr/openxr_platform.h>
@@ -61,7 +64,7 @@ XrSpace g_viewSpace = XR_NULL_HANDLE;
 XrSessionState g_state = XR_SESSION_STATE_UNKNOWN;
 bool g_running = false;  // session in begun state
 bool g_posValid = false; // has 6DOF position tracking ever been valid?
-char g_sessStatus[128] = "session: not started";
+char g_sessStatus[320] = "session: not started";
 
 // Overlay panel anchor — the panel is a screen FIXED in the room (world-locked),
 // not glued to your head. We capture a pose in front of you the moment the panel
@@ -126,6 +129,19 @@ bool g_nativeSwapEyes = false; // source-half routing only; never alters the eye
 // the panel just extends further down.
 const uint32_t g_ovW = 1440, g_ovH = 1440;
 XrSwapchain g_ovSwap = XR_NULL_HANDLE;
+// HUDLAYER 2026-09-28: the HUD's own swapchain, copied from hudsplit.cpp's HUD image each frame and
+// submitted as a quad in VIEW space, so the compositor keeps it head-locked at every refresh.
+XrSwapchain g_hudSwap = XR_NULL_HANDLE;
+std::vector<ID3D11Texture2D *> g_hudImages;
+uint32_t g_hudW = 0, g_hudH = 0;
+int g_hudSrcFmt = 0;
+int64_t g_hudFmt = 0;
+int g_hudErr = 0;          // 1 no compatible format, 2 create failed
+long g_hudSubmits = 0;
+float g_hudDistUsed = 0.0f, g_hudSizeW = 0.0f, g_hudSizeH = 0.0f;
+XrCompositionLayerQuad g_rpHud{XR_TYPE_COMPOSITION_LAYER_QUAD};
+XrCompositionLayerQuad g_rpHudL{XR_TYPE_COMPOSITION_LAYER_QUAD}, g_rpHudR{XR_TYPE_COMPOSITION_LAYER_QUAD};
+bool g_rpHasHud = false;
 std::vector<ID3D11Texture2D *> g_ovImages; // swapchain images (copy targets)
 // ImGui renders into this PRIVATE linear-store (UNORM) texture, then we
 // raw-copy its bytes into the _SRGB swapchain. Rendering ImGui straight into an
@@ -493,10 +509,29 @@ bool create_session() {
   XrSessionCreateInfo sci{XR_TYPE_SESSION_CREATE_INFO};
   sci.next = &binding;
   sci.systemId = g_sys;
+  // LUIDCHECK 2026-09-28 — JJ: "not entering VR", xrCreateSession -2, window opening somewhere new; the PC
+  // shows the RTX 4070 Ti as three DXGI adapters (virtual display drivers) and two monitors. The runtime can
+  // only take a device on the adapter it names; we never compared. Report both.
+  char luidNote[128] = "";
+  {
+    IDXGIDevice *dd = nullptr;
+    IDXGIAdapter *ad = nullptr;
+    DXGI_ADAPTER_DESC desc{};
+    if (SUCCEEDED(g_device->QueryInterface(__uuidof(IDXGIDevice), (void **)&dd)) && dd &&
+        SUCCEEDED(dd->GetAdapter(&ad)) && ad && SUCCEEDED(ad->GetDesc(&desc))) {
+      const bool same = memcmp(&desc.AdapterLuid, &req.adapterLuid, sizeof(LUID)) == 0;
+      snprintf(luidNote, sizeof(luidNote), " | game GPU LUID %08lx:%08lx, headset wants %08lx:%08lx%s",
+               (unsigned long)desc.AdapterLuid.HighPart, desc.AdapterLuid.LowPart,
+               (unsigned long)req.adapterLuid.HighPart, req.adapterLuid.LowPart,
+               same ? " (same)" : " - DIFFERENT ADAPTER");
+    }
+    if (ad) ad->Release();
+    if (dd) dd->Release();
+  }
   XrResult r = xrCreateSession(g_inst, &sci, &g_session);
   if (XR_FAILED(r)) {
     snprintf(g_sessStatus, sizeof(g_sessStatus),
-             "session: xrCreateSession failed (%d)", (int)r);
+             "session: xrCreateSession failed (%d)%s", (int)r, luidNote);
     return false;
   }
 
@@ -906,6 +941,317 @@ float g_lastGameFov = 90.0f; // retained for status only
 // Quest's real per-eye FOV, so we present the FULL frame at that same FOV (no
 // crop, no 16:9 aspect-fit). Set by camera.cpp when the projection hook is live.
 bool g_projvrOn = false;
+
+// HUDLAYER 2026-09-28 — (re)create the HUD swapchain for the HUD image's size and byte layout.
+bool hud_swapchain(uint32_t w, uint32_t h, int srcFmt) {
+  if (g_hudSwap != XR_NULL_HANDLE && g_hudW == w && g_hudH == h && g_hudSrcFmt == srcFmt)
+    return true;
+  if (g_hudSwap != XR_NULL_HANDLE) {
+    xrDestroySwapchain(g_hudSwap);
+    g_hudSwap = XR_NULL_HANDLE;
+    g_hudImages.clear();
+  }
+  g_hudW = w; g_hudH = h; g_hudSrcFmt = srcFmt;
+  uint32_t n = 0;
+  xrEnumerateSwapchainFormats(g_session, 0, &n, nullptr);
+  std::vector<int64_t> formats(n);
+  xrEnumerateSwapchainFormats(g_session, n, &n, formats.data());
+  // The HUD bytes are display-ready (gamma-encoded), so the _SRGB sibling of the same byte
+  // layout makes the compositor decode them exactly once (same trick as the panel overlay).
+  const DXGI_FORMAT fam = copy_family((DXGI_FORMAT)srcFmt);
+  DXGI_FORMAT want = DXGI_FORMAT_UNKNOWN;
+  if (fam == copy_family(DXGI_FORMAT_R8G8B8A8_UNORM)) want = DXGI_FORMAT_R8G8B8A8_UNORM_SRGB;
+  else if (fam == copy_family(DXGI_FORMAT_B8G8R8A8_UNORM)) want = DXGI_FORMAT_B8G8R8A8_UNORM_SRGB;
+  int64_t chosen = 0;
+  for (int64_t f : formats)
+    if ((DXGI_FORMAT)f == want) { chosen = f; break; }
+  if (!chosen)
+    for (int64_t f : formats)
+      if (copy_family((DXGI_FORMAT)f) == fam) { chosen = f; break; }
+  if (!chosen) { g_hudErr = 1; return false; }
+  g_hudFmt = chosen;
+  XrSwapchainCreateInfo sci{XR_TYPE_SWAPCHAIN_CREATE_INFO};
+  sci.usageFlags = XR_SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT | XR_SWAPCHAIN_USAGE_TRANSFER_DST_BIT;
+  sci.format = chosen;
+  sci.sampleCount = 1;
+  sci.width = w;
+  sci.height = h;
+  sci.faceCount = 1;
+  sci.arraySize = 1;
+  sci.mipCount = 1;
+  if (XR_FAILED(xrCreateSwapchain(g_session, &sci, &g_hudSwap))) {
+    g_hudSwap = XR_NULL_HANDLE;
+    g_hudErr = 2;
+    return false;
+  }
+  uint32_t imgCount = 0;
+  xrEnumerateSwapchainImages(g_hudSwap, 0, &imgCount, nullptr);
+  std::vector<XrSwapchainImageD3D11KHR> imgs(imgCount, {XR_TYPE_SWAPCHAIN_IMAGE_D3D11_KHR});
+  xrEnumerateSwapchainImages(g_hudSwap, imgCount, &imgCount, (XrSwapchainImageBaseHeader *)imgs.data());
+  for (auto &i : imgs)
+    g_hudImages.push_back(i.texture);
+  g_hudErr = 0;
+  return true;
+}
+
+// HUDLAYER4 2026-09-28 — JJ on HUDLAYER3: live, but not steadier, the distance was lost, and see-through
+// pieces (the compass line) look dark and too solid.
+// - Space: Virtual Desktop mishandled VIEW-space quads before (2025-07 panel note), and the lost distance
+//   fits that. The quad is now placed in LOCAL space in front of the head pose predicted for each
+//   xrEndFrame's display time - re-placed in every frame we end, including FPSLOCK's repeated frames, so
+//   in "repeat the frame" mode it moves 90 times a second. (In "Virtual Desktop SSW" mode only 45 frames
+//   are ended; VD's SSW warps the whole image in between, HUD included.) hudlayerspace=1 keeps VIEW space.
+// - Colour: the HUD image is premultiplied in gamma space; the compositor blends in linear light, so raw
+//   bytes read as sRGB darken every see-through pixel over bright backgrounds. Mode 1 (default) converts
+//   each pixel: straight colour = c / a, to linear, times a (additive pixels with a ~ 0 kept as light).
+XrQuaternionf hud_qmul(const XrQuaternionf &a, const XrQuaternionf &b) {
+  return XrQuaternionf{a.w * b.x + a.x * b.w + a.y * b.z - a.z * b.y,
+                       a.w * b.y - a.x * b.z + a.y * b.w + a.z * b.x,
+                       a.w * b.z + a.x * b.y - a.y * b.x + a.z * b.w,
+                       a.w * b.w - a.x * b.x - a.y * b.y - a.z * b.z};
+}
+// HUDVIEW 2026-09-28 — JJ: lazy follow "locks the elements for a brief window to simulate stability"; Onimusha's
+// locked-on bars feel far steadier. LOCAL placement puts the quad at the head pose PREDICTED for the frame, and
+// with the frame lock off that happens only when the game draws (~45/s); every prediction error and every
+// 45 Hz step shows as HUD motion, which lazy follow only masked. VIEW space: the compositor places the quad from
+// the actual head pose at every refresh - nothing to predict. The HUDLAYER3 view-space test ("not steadier") ran
+// with VD SSW on, which warps the whole picture, so it never measured this. Lazy follow is off for good.
+int g_hudSpace = 1;          // 0 LOCAL (re-placed per frame), 1 VIEW
+// HUDLAYER5 — JJ on HUDLAYER4: the HUD distance slider still changes nothing, though the log shows the
+// quad moving (3.0 m). The quad keeps its angular size, so only the two eyes' difference shows depth:
+// if the runtime composites a quad without that difference, depth never changes. Eye shift (option):
+// one quad per eye, moved by +-half the eye distance, which puts back exactly the difference a HUD at
+// the distance has when both eyes are drawn from the head centre. (Right runtime + shift = double.)
+int g_hudEyes = 1;           // 0 one quad, 1 one per eye with the eye shift (JJ: this makes the slider work)
+float g_hudHalfIpd = 0.0315f;
+// Lazy follow (option): the HUD keeps its room direction until the head has turned more than g_hudLazyDeg
+// away, then follows so it trails by exactly that angle - tremor does not move it, turns do.
+int g_hudLazy = 0;           // HUDVIEW: off for good (room-space only; the HUD is in view space now)
+float g_hudLazyDeg = 0.3f;
+XrQuaternionf g_hudLazyOri{0, 0, 0, 1};
+bool g_hudLazyOk = false;
+int g_hudColour = 1;         // 0 raw copy, 1 converted to linear premultiplied
+XrPosef g_hudViewPose{};     // the quad's pose relative to the head (view space)
+long g_hudPlaceFails = 0;
+char g_hudConvDiag[96] = "";
+// Place the quad for display time t. LOCAL: head pose at t composed with the head-relative pose.
+bool hud_place(XrCompositionLayerQuad &q, XrTime t) {
+  if (g_hudSpace == 1) { q.space = g_viewSpace; q.pose = g_hudViewPose; return true; }
+  XrSpaceLocation loc{XR_TYPE_SPACE_LOCATION};
+  if (XR_FAILED(xrLocateSpace(g_viewSpace, g_localSpace, t, &loc)) ||
+      !(loc.locationFlags & XR_SPACE_LOCATION_ORIENTATION_VALID_BIT)) { ++g_hudPlaceFails; return false; }
+  XrQuaternionf head = loc.pose.orientation;
+  if (g_hudLazy) {
+    // angle between the held direction and the head, then turn the held one just enough to keep it
+    // within g_hudLazyDeg (slerp by the excess); a jump over 45 deg (recentre, cut) snaps.
+    XrQuaternionf a = g_hudLazyOri, b = head;
+    float dot = a.x * b.x + a.y * b.y + a.z * b.z + a.w * b.w;
+    if (dot < 0.0f) { b = {-b.x, -b.y, -b.z, -b.w}; dot = -dot; }
+    if (dot > 1.0f) dot = 1.0f;
+    const float ang = 2.0f * acosf(dot);
+    const float dead = g_hudLazyDeg * (3.14159265f / 180.0f);
+    if (!g_hudLazyOk || ang > 0.785f) { g_hudLazyOri = head; g_hudLazyOk = true; }
+    else if (ang > dead) {
+      const float f = (ang - dead) / ang, half = ang * 0.5f, sn = sinf(half);
+      const float wa = sinf((1.0f - f) * half) / sn, wb = sinf(f * half) / sn;
+      XrQuaternionf r{wa * a.x + wb * b.x, wa * a.y + wb * b.y, wa * a.z + wb * b.z, wa * a.w + wb * b.w};
+      const float n = sqrtf(r.x * r.x + r.y * r.y + r.z * r.z + r.w * r.w);
+      if (n > 1e-6f) { r.x /= n; r.y /= n; r.z /= n; r.w /= n; }
+      g_hudLazyOri = r;
+    }
+    head = g_hudLazyOri;
+  } else g_hudLazyOk = false;
+  const XrVector3f o = quat_rotate(head, g_hudViewPose.position);
+  q.space = g_localSpace;
+  q.pose.orientation = hud_qmul(head, g_hudViewPose.orientation);
+  q.pose.position = {loc.pose.position.x + o.x, loc.pose.position.y + o.y, loc.pose.position.z + o.z};
+  return true;
+}
+
+// HUDLAYER5: the placed quad as a left/right pair, each moved along the quad's own right axis.
+void hud_eye_pair(const XrCompositionLayerQuad &q, XrCompositionLayerQuad &l, XrCompositionLayerQuad &r) {
+  l = q; r = q;
+  l.eyeVisibility = XR_EYE_VISIBILITY_LEFT;
+  r.eyeVisibility = XR_EYE_VISIBILITY_RIGHT;
+  const XrVector3f s = quat_rotate(q.pose.orientation, XrVector3f{g_hudHalfIpd, 0.0f, 0.0f});
+  l.pose.position = {q.pose.position.x + s.x, q.pose.position.y + s.y, q.pose.position.z + s.z};
+  r.pose.position = {q.pose.position.x - s.x, q.pose.position.y - s.y, q.pose.position.z - s.z};
+}
+
+// Colour conversion pass (real context, our own state saved and restored).
+ID3D11VertexShader *g_hcVS = nullptr;
+ID3D11PixelShader *g_hcPS = nullptr;
+int g_hcState = 0;                       // 0 not built, 1 ok, -1 failed
+ID3D11ShaderResourceView *g_hcSRV = nullptr;
+ID3D11Texture2D *g_hcSRVTex = nullptr;
+std::vector<ID3D11RenderTargetView *> g_hcRTV;
+typedef HRESULT(WINAPI *D3DCompileFn)(LPCVOID, SIZE_T, LPCSTR, const void *, void *, LPCSTR, LPCSTR, UINT, UINT,
+                                      ID3DBlob **, ID3DBlob **);
+bool hud_conv_build() {
+  if (g_hcState) return g_hcState == 1;
+  g_hcState = -1;
+  HMODULE m = LoadLibraryW(L"d3dcompiler_47.dll");
+  D3DCompileFn compile = m ? (D3DCompileFn)GetProcAddress(m, "D3DCompile") : nullptr;
+  if (!compile) { snprintf(g_hudConvDiag, sizeof(g_hudConvDiag), "no shader compiler"); return false; }
+  static const char vs[] =
+      "float4 main(uint id : SV_VertexID) : SV_Position {"
+      " float2 uv = float2((id << 1) & 2, id & 2);"
+      " return float4(uv * float2(2, -2) + float2(-1, 1), 0, 1); }";
+  static const char ps[] =
+      "Texture2DArray<float4> t : register(t0);"
+      "float3 lin(float3 c) { return c <= 0.04045 ? c / 12.92 : pow((c + 0.055) / 1.055, 2.4); }"
+      "float4 main(float4 pos : SV_Position) : SV_Target {"
+      " float4 p = t.Load(int4(pos.xy, 0, 0));"
+      " float a = saturate(p.a);"
+      " float3 o = a > 0.004 ? lin(saturate(p.rgb / a)) * a : lin(saturate(p.rgb));"
+      " return float4(o, a); }";
+  ID3DBlob *vb = nullptr, *pb = nullptr, *err = nullptr;
+  bool ok = SUCCEEDED(compile(vs, sizeof(vs) - 1, "hudvs", nullptr, nullptr, "main", "vs_5_0", 0, 0, &vb, &err));
+  if (err) { err->Release(); err = nullptr; }
+  ok = ok && SUCCEEDED(compile(ps, sizeof(ps) - 1, "hudps", nullptr, nullptr, "main", "ps_5_0", 0, 0, &pb, &err));
+  if (err) err->Release();
+  ok = ok && SUCCEEDED(g_device->CreateVertexShader(vb->GetBufferPointer(), vb->GetBufferSize(), nullptr, &g_hcVS));
+  ok = ok && SUCCEEDED(g_device->CreatePixelShader(pb->GetBufferPointer(), pb->GetBufferSize(), nullptr, &g_hcPS));
+  if (vb) vb->Release();
+  if (pb) pb->Release();
+  snprintf(g_hudConvDiag, sizeof(g_hudConvDiag), ok ? "colour conversion ready" : "colour shaders failed");
+  g_hcState = ok ? 1 : -1;
+  return ok;
+}
+// Draw src slice 0 into swapchain image idx through the conversion shader. False = use a raw copy.
+bool hud_conv_draw(ID3D11Texture2D *src, uint32_t idx) {
+  if (!hud_conv_build()) return false;
+  if (g_hcSRVTex != src) {
+    if (g_hcSRV) { g_hcSRV->Release(); g_hcSRV = nullptr; }
+    g_hcSRVTex = src;
+    D3D11_TEXTURE2D_DESC sd{};
+    src->GetDesc(&sd);
+    D3D11_SHADER_RESOURCE_VIEW_DESC vd{};
+    vd.Format = (DXGI_FORMAT)g_hudSrcFmt;
+    if (vd.Format == DXGI_FORMAT_R8G8B8A8_TYPELESS) vd.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    if (vd.Format == DXGI_FORMAT_B8G8R8A8_TYPELESS) vd.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+    vd.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2DARRAY;
+    vd.Texture2DArray.MostDetailedMip = 0;
+    vd.Texture2DArray.MipLevels = 1;
+    vd.Texture2DArray.FirstArraySlice = 0;
+    vd.Texture2DArray.ArraySize = 1;
+    if (!(sd.BindFlags & D3D11_BIND_SHADER_RESOURCE) || FAILED(g_device->CreateShaderResourceView(src, &vd, &g_hcSRV))) {
+      g_hcSRV = nullptr;
+      snprintf(g_hudConvDiag, sizeof(g_hudConvDiag), "HUD image cannot be read by a shader (bind 0x%x)", sd.BindFlags);
+    }
+  }
+  if (!g_hcSRV) return false;
+  if (g_hcRTV.size() != g_hudImages.size()) {
+    for (auto *r : g_hcRTV) if (r) r->Release();
+    g_hcRTV.assign(g_hudImages.size(), nullptr);
+  }
+  if (!g_hcRTV[idx]) {
+    D3D11_RENDER_TARGET_VIEW_DESC rd{};
+    rd.Format = (DXGI_FORMAT)g_hudFmt;
+    rd.ViewDimension = D3D11_RTV_DIMENSION_TEXTURE2D;
+    if (FAILED(g_device->CreateRenderTargetView(g_hudImages[idx], &rd, &g_hcRTV[idx]))) {
+      g_hcRTV[idx] = nullptr;
+      snprintf(g_hudConvDiag, sizeof(g_hudConvDiag), "headset HUD image cannot be drawn into");
+      return false;
+    }
+  }
+  // save what we touch
+  ID3D11RenderTargetView *oRTV = nullptr; ID3D11DepthStencilView *oDSV = nullptr;
+  g_ctx->OMGetRenderTargets(1, &oRTV, &oDSV);
+  UINT nvp = D3D11_VIEWPORT_AND_SCISSORRECT_OBJECT_COUNT_PER_PIPELINE;
+  D3D11_VIEWPORT ovp[D3D11_VIEWPORT_AND_SCISSORRECT_OBJECT_COUNT_PER_PIPELINE];
+  g_ctx->RSGetViewports(&nvp, ovp);
+  ID3D11VertexShader *oVS = nullptr; ID3D11PixelShader *oPS = nullptr;
+  g_ctx->VSGetShader(&oVS, nullptr, nullptr);
+  g_ctx->PSGetShader(&oPS, nullptr, nullptr);
+  ID3D11ShaderResourceView *oSRV = nullptr;
+  g_ctx->PSGetShaderResources(0, 1, &oSRV);
+  ID3D11InputLayout *oIL = nullptr; g_ctx->IAGetInputLayout(&oIL);
+  D3D11_PRIMITIVE_TOPOLOGY oTop; g_ctx->IAGetPrimitiveTopology(&oTop);
+  ID3D11BlendState *oBS = nullptr; FLOAT oBF[4]; UINT oBM = 0; g_ctx->OMGetBlendState(&oBS, oBF, &oBM);
+  ID3D11DepthStencilState *oDS = nullptr; UINT oRef = 0; g_ctx->OMGetDepthStencilState(&oDS, &oRef);
+  ID3D11RasterizerState *oRS = nullptr; g_ctx->RSGetState(&oRS);
+  // draw
+  D3D11_VIEWPORT vp{0.0f, 0.0f, (float)g_hudW, (float)g_hudH, 0.0f, 1.0f};
+  g_ctx->OMSetRenderTargets(1, &g_hcRTV[idx], nullptr);
+  g_ctx->RSSetViewports(1, &vp);
+  g_ctx->IASetInputLayout(nullptr);
+  g_ctx->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+  g_ctx->VSSetShader(g_hcVS, nullptr, 0);
+  g_ctx->PSSetShader(g_hcPS, nullptr, 0);
+  g_ctx->PSSetShaderResources(0, 1, &g_hcSRV);
+  g_ctx->OMSetBlendState(nullptr, nullptr, 0xffffffff);
+  g_ctx->OMSetDepthStencilState(nullptr, 0);
+  g_ctx->RSSetState(nullptr);
+  g_ctx->Draw(3, 0);
+  ID3D11ShaderResourceView *none = nullptr;
+  g_ctx->PSSetShaderResources(0, 1, &none);
+  // restore
+  g_ctx->OMSetRenderTargets(1, &oRTV, oDSV);
+  if (nvp) g_ctx->RSSetViewports(nvp, ovp);
+  g_ctx->VSSetShader(oVS, nullptr, 0);
+  g_ctx->PSSetShader(oPS, nullptr, 0);
+  g_ctx->PSSetShaderResources(0, 1, &oSRV);
+  g_ctx->IASetInputLayout(oIL);
+  g_ctx->IASetPrimitiveTopology(oTop);
+  g_ctx->OMSetBlendState(oBS, oBF, oBM);
+  g_ctx->OMSetDepthStencilState(oDS, oRef);
+  g_ctx->RSSetState(oRS);
+  if (oRTV) oRTV->Release();
+  if (oDSV) oDSV->Release();
+  if (oVS) oVS->Release();
+  if (oPS) oPS->Release();
+  if (oSRV) oSRV->Release();
+  if (oIL) oIL->Release();
+  if (oBS) oBS->Release();
+  if (oDS) oDS->Release();
+  if (oRS) oRS->Release();
+  snprintf(g_hudConvDiag, sizeof(g_hudConvDiag), "colour converted");
+  return true;
+}
+
+// HUDLAYER: copy this frame's HUD image into the HUD swapchain and describe the quad, at the HUD
+// distance, covering exactly the angles the game frame covers, turned down by the same TILTFILL
+// pitch the frame was drawn with, so every HUD piece sits where it sat in the picture.
+bool hud_layer_build(XrCompositionLayerQuad &q, const XrFovf &fov) {
+  unsigned w = 0, h = 0;
+  int fmt = 0;
+  ID3D11Texture2D *src = akvr_hudsplit_layer_image(w, h, fmt);
+  if (!src || !g_ctx || g_viewSpace == XR_NULL_HANDLE || !w || !h) return false;
+  if (!hud_swapchain(w, h, fmt)) return false;
+  uint32_t idx = 0;
+  XrSwapchainImageAcquireInfo ai{XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO};
+  if (XR_FAILED(xrAcquireSwapchainImage(g_hudSwap, &ai, &idx))) return false;
+  XrSwapchainImageWaitInfo wi{XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO};
+  wi.timeout = XR_INFINITE_DURATION;
+  const bool ok = XR_SUCCEEDED(xrWaitSwapchainImage(g_hudSwap, &wi)) && idx < g_hudImages.size();
+  // Subresource 0 = mip 0 of slice 0: geo-11's real copy may be a per-eye array (HUDLAYER3).
+  if (ok && !(g_hudColour == 1 && hud_conv_draw(src, idx)))
+    g_ctx->CopySubresourceRegion(g_hudImages[idx], 0, 0, 0, 0, src, 0, nullptr);
+  XrSwapchainImageReleaseInfo ri{XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};
+  xrReleaseSwapchainImage(g_hudSwap, &ri);
+  if (!ok) return false;
+
+  float D = akvr_geo11_hud_dist();
+  if (D < 0.3f) D = 10.0f;                       // "far away"
+  const float tl = tanf(fov.angleLeft), tr = tanf(fov.angleRight);
+  const float tu = tanf(fov.angleUp), td = tanf(fov.angleDown);
+  const XrQuaternionf ident{0.0f, 0.0f, 0.0f, 1.0f};
+  const XrQuaternionf ori = g_tiltUsed != 0.0f ? pitch_postmul(ident, -g_tiltUsed) : ident;
+  g_hudViewPose.orientation = ori;
+  g_hudViewPose.position = quat_rotate(ori, XrVector3f{D * (tr + tl) * 0.5f, D * (tu + td) * 0.5f, -D});
+  q.layerFlags = XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT;   // premultiplied (HUD-004)
+  q.eyeVisibility = XR_EYE_VISIBILITY_BOTH;
+  q.subImage.swapchain = g_hudSwap;
+  q.subImage.imageArrayIndex = 0;
+  q.subImage.imageRect.offset = {0, 0};
+  q.subImage.imageRect.extent = {(int32_t)w, (int32_t)h};
+  q.size = {D * (tr - tl), D * (tu - td)};
+  if (!hud_place(q, g_predicted)) return false;
+  g_hudDistUsed = D; g_hudSizeW = q.size.width; g_hudSizeH = q.size.height;
+  ++g_hudSubmits;
+  return true;
+}
 } // namespace
 
 void  akvr_xr_set_projvr(bool on) { g_projvrOn = on; }
@@ -1123,8 +1469,25 @@ void akvr_xr_frame_begin() {
     return;
 
   if (g_session == XR_NULL_HANDLE) {
-    if (!create_session())
+    // SESSBACKOFF 2026-09-28 — JJ: after Onimusha VR, Arkham "stumbles at half a frame a second" and never
+    // enters VR. VD's OpenXR.log: every xrCreateSession fails (QueryInterface on VD's own submission device,
+    // 80004002) and each attempt blocks ~1 s - we retried on EVERY Present. Back off 3, 6, 12, 24, then 30 s,
+    // so the game stays playable and still enters VR once the runtime recovers.
+    static ULONGLONG s_nextTry = 0;
+    static int s_fails = 0;
+    const ULONGLONG now = GetTickCount64();
+    if (now < s_nextTry)
       return;
+    if (!create_session()) {
+      ++s_fails;
+      const ULONGLONG wait = s_fails >= 5 ? 30000ull : 3000ull << (s_fails - 1);
+      s_nextTry = GetTickCount64() + wait;
+      const size_t n = strlen(g_sessStatus);
+      snprintf(g_sessStatus + n, sizeof(g_sessStatus) - n, " | try %d, next in %llus (restart VD Streamer or reboot)",
+               s_fails, wait / 1000ull);
+      return;
+    }
+    s_fails = 0;
   }
 
   pump_events();
@@ -1172,9 +1535,18 @@ void akvr_xr_frame_begin() {
       XrFrameBeginInfo rb{XR_TYPE_FRAME_BEGIN_INFO};
       if (XR_FAILED(xrBeginFrame(g_session, &rb)))
         break;
-      const XrCompositionLayerBaseHeader *rl[2];
+      const XrCompositionLayerBaseHeader *rl[4];
       uint32_t rn = 0;
       if (g_rpHasProj) rl[rn++] = (const XrCompositionLayerBaseHeader *)&g_rpLayer;
+      // HUDLAYER4: the HUD is re-placed for THIS frame's display time (head-locked at 90 Hz).
+      if (g_rpHasProj && g_rpHasHud && hud_place(g_rpHud, fs.predictedDisplayTime)) {
+        if (g_hudEyes) {   // HUDLAYER5
+          hud_eye_pair(g_rpHud, g_rpHudL, g_rpHudR);
+          rl[rn++] = (const XrCompositionLayerBaseHeader *)&g_rpHudL;
+          rl[rn++] = (const XrCompositionLayerBaseHeader *)&g_rpHudR;
+        } else
+          rl[rn++] = (const XrCompositionLayerBaseHeader *)&g_rpHud;
+      }
       if (g_rpHasQuad) rl[rn++] = (const XrCompositionLayerBaseHeader *)&g_rpQuad;
       XrFrameEndInfo re{XR_TYPE_FRAME_END_INFO};
       re.displayTime = fs.predictedDisplayTime;
@@ -1295,6 +1667,13 @@ void akvr_xr_frame_begin() {
     XrView vv[2]{{XR_TYPE_VIEW}, {XR_TYPE_VIEW}};
     if (XR_SUCCEEDED(xrLocateViews(g_session, &vli, &vst, 2, &nv, vv)) &&
         nv == 2) {
+      {   // HUDLAYER5: half the eye distance, for the HUD's optional eye shift
+        const float dx = vv[1].pose.position.x - vv[0].pose.position.x;
+        const float dy = vv[1].pose.position.y - vv[0].pose.position.y;
+        const float dz = vv[1].pose.position.z - vv[0].pose.position.z;
+        const float ipd = sqrtf(dx * dx + dy * dy + dz * dz);
+        if (ipd > 0.04f && ipd < 0.09f) g_hudHalfIpd = 0.5f * ipd;
+      }
       float hH = ((vv[0].fov.angleRight - vv[0].fov.angleLeft) +
                   (vv[1].fov.angleRight - vv[1].fov.angleLeft)) *
                  0.25f;
@@ -1490,6 +1869,7 @@ void akvr_xr_frame_submit(IDXGISwapChain *swapChain, float gameFovDeg,
     const ULONGLONG t = GetTickCount64();
     if (!gp) s_gpSince = 0; else if (!s_gpSince) s_gpSince = t;
     g_eyeWantGameplay = gp && t - s_gpSince > 1500;
+    akvr_hudsplit_layer_gate(g_eyeWantGameplay);   // HUDLAYER: redirect the HUD only in steady gameplay
   }
   if (effGameplay) {
     g_wasGameplay = true;
@@ -1959,10 +2339,20 @@ void akvr_xr_frame_submit(IDXGISwapChain *swapChain, float gameFovDeg,
   // the settings labels and the resolution diagnostic were being clipped at 1024.
   quad.size = {0.984f, 0.984f};
 
-  const XrCompositionLayerBaseHeader *layers[2];
+  // HUDLAYER: the HUD image (hudsplit.cpp), head-locked by the compositor at every refresh.
+  XrCompositionLayerQuad hudq{XR_TYPE_COMPOSITION_LAYER_QUAD};
+  const bool hasHud = submitted && hud_layer_build(hudq, fov);
+  const XrCompositionLayerBaseHeader *layers[4];
   uint32_t nLayers = 0;
   if (submitted)
     layers[nLayers++] = (const XrCompositionLayerBaseHeader *)&layer;
+  XrCompositionLayerQuad hudL{XR_TYPE_COMPOSITION_LAYER_QUAD}, hudR{XR_TYPE_COMPOSITION_LAYER_QUAD};
+  if (hasHud && g_hudEyes) {   // HUDLAYER5: eye shift
+    hud_eye_pair(hudq, hudL, hudR);
+    layers[nLayers++] = (const XrCompositionLayerBaseHeader *)&hudL;
+    layers[nLayers++] = (const XrCompositionLayerBaseHeader *)&hudR;
+  } else if (hasHud)
+    layers[nLayers++] = (const XrCompositionLayerBaseHeader *)&hudq;
   if (g_ovDrewThisFrame)
     layers[nLayers++] = (const XrCompositionLayerBaseHeader *)&quad;
   else
@@ -1984,6 +2374,8 @@ void akvr_xr_frame_submit(IDXGISwapChain *swapChain, float gameFovDeg,
     g_rpLayer.views = g_rpViews;
   }
   g_rpHasQuad = g_ovDrewThisFrame;
+  g_rpHasHud = hasHud;
+  if (hasHud) g_rpHud = hudq;
   if (g_rpHasQuad) g_rpQuad = quad;
   g_lastEndDisplay = g_predicted;
 
@@ -2335,4 +2727,33 @@ void akvr_xr_head_quat(float &qx, float &qy, float &qz, float &qw) {
     if (!(s0 & 1) && s0 == s1)
       return;
   }
+}
+
+const char *akvr_xr_hud_layer_diag() {
+  static char d[400];
+  if (g_hudErr == 1) snprintf(d, sizeof(d), "headset HUD layer: no swapchain format matches the HUD image");
+  else if (g_hudErr == 2) snprintf(d, sizeof(d), "headset HUD layer: could not create its swapchain");
+  else if (g_hudSwap == XR_NULL_HANDLE) snprintf(d, sizeof(d), "headset HUD layer: not started");
+  else snprintf(d, sizeof(d), "headset HUD layer: %ld frames sent, %ux%u fmt %d, at %.1f m, %.2f x %.2f m, %s, %s, place fails %ld%s",
+                g_hudSubmits, g_hudW, g_hudH, (int)g_hudFmt, g_hudDistUsed, g_hudSizeW, g_hudSizeH,
+                g_hudSpace == 1 ? "view space" : "room space, re-placed each frame",
+                g_hudColour == 1 ? g_hudConvDiag : "raw colour copy", g_hudPlaceFails,
+                g_rpHasHud ? "" : " (not in the last frame)");
+  return d;
+}
+int  akvr_xr_hud_space() { return g_hudSpace; }
+void akvr_xr_hud_space_set(int v) { g_hudSpace = v == 1 ? 1 : 0; }
+int  akvr_xr_hud_colour() { return g_hudColour; }
+void akvr_xr_hud_colour_set(int v) { g_hudColour = v == 0 ? 0 : 1; }
+int  akvr_xr_hud_eyes() { return g_hudEyes; }
+void akvr_xr_hud_eyes_set(int v) { g_hudEyes = v ? 1 : 0; }
+int  akvr_xr_hud_lazy() { return g_hudLazy; }
+void akvr_xr_hud_lazy_set(int v) { g_hudLazy = v ? 1 : 0; }
+float akvr_xr_hud_lazy_deg() { return g_hudLazyDeg; }
+void akvr_xr_hud_lazy_deg_set(float d) { g_hudLazyDeg = d < 0.1f ? 0.1f : (d > 6.0f ? 6.0f : d); }
+float akvr_xr_hud_half_ipd() { return g_hudHalfIpd; }
+// RETSQUASH: tan of the game frame's half-angles (what the shader needs to undo the edge squash).
+void akvr_xr_game_tan(float &th, float &tv) {
+  th = g_subHalfH > 0.01f ? tanf(g_subHalfH) : 0.0f;
+  tv = g_subHalfV > 0.01f ? tanf(g_subHalfV) : 0.0f;
 }

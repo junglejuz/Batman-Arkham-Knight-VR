@@ -1,0 +1,381 @@
+# AKVR changes to third-party files (geo-11 and the Arkham Knight fix)
+
+This is the record the install scripts are built from. Users download geo-11 and the Arkham Knight
+geo-11 fix themselves, so every difference AKVR needs must be recreated by a script on their copy.
+**Every AKVR change to a file we did not write is listed here, with the exact edit.** Update this file
+in the same step as any new change (rule from JJ, 2026-09-28).
+
+- **Baseline (the fix as shipped) - CURRENT: release of 2026-09-25** ("fixed ambient occlusion. Fixed cubemaps
+  inside building windows. Fixed non 16:9 resolutions", geo-11 build v0.7.11), same file name
+  `Batman_Arkham_Knight_geo11_fix.7z`, from https://masterotaku.s3.amazonaws.com/Batman+Arkham+Knight/Batman_Arkham_Knight_geo11_fix.7z
+  (linked from the HelixMod page), SHA1 `5ff54551890a29f8e8017ffb4686e1817805aa15`, 4.6 MB. It already contains the
+  `[TextureOverrideAllNonSquareRT]` block (section 3) and the new ambient occlusion / UE3_BatmanAK.ini files (section 5).
+- Older baseline: `E:\Games\# MODS\Geo-11 Fixes\Batman_Arkham_Knight_geo11_fix.7z` (SHA1
+  `3ba80a45dfa890022d12ef79fe8e7cd3bac09ee7`, 2025-02-16, geo-11 0.6.182). It contains `FixFiles.7z`, which
+  unpacks to `FixFiles\` (the contents of `Binaries\Win64`). The patch script gives identical results on both.
+- **Target folder:** `<game>\Binaries\Win64`.
+- **Last full comparison of the installed game against the baseline:** 2026-09-28. Shader caches
+  (`ShaderCache`, `ShaderCacheDM`) are skipped because geo-11 regenerates them itself.
+- **Reference script:** `akvr/tools/AKVR-fix-patches.ps1` performs sections 1-1e and 2 on an installed
+  fix (idempotent, backups in `akvr_fix_backup\`, `-Mode undo`, `-GameDir <Binaries\Win64>`; exit code 2 if any
+  edit could not be applied).
+- **Installer (2026-09-29):** `akvr/install/Install-AKVR.ps1` does sections 3 (load_library_redirect,
+  NonSquareRT block) and 4 (geo-11 0.7.11 as geo11.dll, dxgi.dll parked, bundled d3dxdm.ini = section 2), then
+  runs the patch script (step 6b) and stops if it reports a failure. Package: `akvr/dist/AKVR-ArkhamKnight/`
+  (+ zip), not in git. **Verified 2026-09-29** on practice folders from the baseline archive: all 13 HUD shader
+  texts byte-identical to the live game; d3dx.ini differs only by geo-11's help include and the NonSquareRT
+  block's position; d3dxdm.ini same settings (comments/order); a second run changes nothing. Not reproduced:
+  section 5 files.
+
+Status key: **AKVR** = required by the mod, origin documented. **UNKNOWN** = differs from the baseline, but
+no AKVR note records who changed it. Ask JJ before scripting these.
+
+---
+
+## 1. ShaderFixesDM: 13 HUD vertex shaders (AKVR, build HUDDEPTH, 2026-09-28)
+
+**Files** (each `ShaderFixesDM\<hash>-vs.txt`, and the matching `-vs.bin` is deleted):
+
+```
+9938094af96353c0  3b819a7e86e9d631  05154232f7872d0d  599bd060016570bb  fd60f2d764b91756
+c9b47e60935f3f03  4b432a87d072f988  54cd897e5ce3b8b3  e12863b9484b4660  7d8fcdc225ce3fc7
+ef1c1604346331e2  9689d605c06946bf  91e2b2225bf3ea04
+```
+
+These are the shaders the fix's `d3dx.ini` names in `[ShaderOverride_HUD5]`, `[ShaderOverride_HUD_Icons1..11]`
+and `[ShaderOverride_HUD_letters1]`.
+
+**Why:** flat HUD pieces (clip `w == 1`) got no left/right shift in these shaders, so they always sat at
+infinity. The per-eye HUD value geo-11 uploads (StereoParams, `t125` element 1, `.y`), which AKVR's
+"HUD distance" slider sets live, was never read. See `PLAYBOOK_REVIEW.md` "HUDDEPTH".
+
+**Edit (identical rule in all 13):**
+
+1. `dcl_temps N` becomes `dcl_temps N+1`. The new register `rN` is used below.
+2. Each file has exactly one stereo tail of this shape (register names differ per file):
+   ```
+   ne A.y, l(1.000000), B.w
+   movc B.x, A.y, A.x, B.x
+   ```
+   It is replaced by:
+   ```
+   // AKVR HUDDEPTH 2026-09-28: flat HUD pieces (w == 1) take geo-11's live HUD shift, StereoParams[1].y
+   // (per eye; AKVR's HUD distance slider). Not in menus (x11), not the icons that follow scene depth (filter 2 / 42).
+   ld_indexable(buffer)(float,float,float,float) rN.xyzw, l(1, 0, 0, 0), t125.xyzw
+   ld_indexable(texture1d)(float,float,float,float) rN.x, l(11, 0, 0, 0), t120.xyzw
+   ld_indexable(texture1d)(float,float,float,float) rN.z, l(2, 0, 0, 0), t120.xyxw
+   eq rN.x, rN.x, l(0.000000)
+   eq rN.zw, rN.zzzz, l(0.000000, 0.000000, 2.000000, 42.000000)
+   or rN.z, rN.z, rN.w
+   not rN.z, rN.z
+   and rN.x, rN.x, rN.z
+   and rN.y, rN.y, rN.x
+   add rN.y, rN.y, B.x
+   ne A.y, l(1.000000), B.w
+   movc B.x, A.y, A.x, rN.y
+   ```
+   Keep the file's line endings (the originals are LF) and write **no BOM**.
+3. Delete `<hash>-vs.bin` so geo-11 rebuilds it from the text on the next launch. (Confirmed: geo-11
+   rebuilt all 13 on the 2026-09-28 00:48 launch.)
+
+**Detect already applied:** the text contains `// AKVR HUDDEPTH`.
+**Safety:** if the tail pattern is not found exactly once, leave that file untouched and report it.
+
+---
+
+## 1b. ShaderFixesDM: the same 13 HUD vertex shaders, HUDSPLIT switch (AKVR, build HUDLAYER6, 2026-09-28)
+
+**Files:** the same 13 `ShaderFixesDM\<hash>-vs.txt` as section 1 (apply section 1 first); the matching
+`-vs.bin` is deleted again.
+
+**Why:** AKVR can draw the HUD into its own headset layer. Pieces the fix places at scene depth (the grapple
+reticle and other icons tagged `filter_index = 2 / 42` in `d3dx.ini`) must stay in the 3D picture, so AKVR
+draws each HUD piece twice with a switch in constant buffer slot 13: `1` keeps flat pieces only (the layer),
+`2` keeps scene-depth pieces only (the picture). With nothing bound in slot 13 (the value reads 0, which is the
+case without AKVR's layer) every piece is drawn exactly as before. See `PLAYBOOK_REVIEW.md` "HUDSPLIT".
+
+**Edit (per file; `rN` = the NEW temp register after section 1, i.e. `dcl_temps` goes up by one more):**
+
+1. `dcl_temps N` becomes `dcl_temps N+1`.
+2. After the first `dcl_constantbuffer ...` line, add `dcl_constantbuffer CB13[1], immediateIndexed`.
+3. Only in the two files that contain the fix's scene-depth test (`9938094af96353c0`, `05154232f7872d0d`):
+   find the line `eq rA.xyz, rA.xyxx, l(42.000000, 42.000000, 2.000000, 0.000000)`; the first `if_nz rB.c`
+   after it holds the decision (`r0.z` in both). Directly before that `if_nz`, add:
+   ```
+   // AKVR HUDSPLIT: remember the fix's scene-depth decision
+   mov rN.x, r0.z
+   ```
+4. Directly before the file's single `ret` (code section, before `// HLSL Code`), add (the `mov rN.x, l(0)`
+   line only in the 11 files WITHOUT the scene-depth test):
+   ```
+   // AKVR HUDSPLIT 2026-09-28: cb13[0].x = 1 keeps flat pieces only (AKVR's HUD layer), 2 keeps the
+   // scene-depth pieces only (filter 2 / 42, the 3D picture), 0 / unbound keeps everything. Dropped = off screen.
+   mov rN.x, l(0)
+   eq rN.yz, cb13[0].xxxx, l(0.000000, 1.000000, 2.000000, 0.000000)
+   and rN.y, rN.y, rN.x
+   not rN.w, rN.x
+   and rN.z, rN.z, rN.w
+   or rN.y, rN.y, rN.z
+   if_nz rN.y
+     mov oP.xyzw, l(-10.000000, -10.000000, 0.000000, 1.000000)
+   endif
+   ```
+   `oP` = the shader's OWN position output, from its `dcl_output_siv oP.xyzw, position` line (o2 in
+   3b819a7e, 599bd060, 4b432a87, e12863b9, 7d8fcdc2, 91e2b222; o3 in fd60f2d7, c9b47e60, ef1c1604; o4 in the
+   rest). **Writing o4 in all 13 crashed the NVIDIA driver at game start (2026-09-28 02:41) - an undeclared
+   output is invalid bytecode.**
+5. Delete `<hash>-vs.bin`. LF line endings, no BOM.
+
+**Detect already applied:** the text contains `// AKVR HUDSPLIT`. AKVR itself reads that marker in
+`05154232f7872d0d` and `9938094af96353c0` and only draws twice when both have it.
+**Safety:** skip (and report) a file with no `dcl_temps`, no `dcl_constantbuffer`, more than one `ret`, an
+existing `cb13`, or an `eq ... l(42...` line without a following `if_nz`.
+**Reference implementation:** `Patch-HudSplit` in `akvr/tools/AKVR-fix-patches.ps1` (tested on a copy: 13
+patched, second run no-op; applied to the installed fix 2026-09-28). Every edited shader was assembled with geo-11's
+`cmd_Decompiler -a` and loaded into the NVIDIA driver by `akvr/tools/shader_driver_test` (all 13 OK; the
+crashing first version fails there). Check that the 13 `.bin` files reappear after the next launch.
+
+---
+
+## 1c. ShaderFixesDM: flat reticle, one scene depth per piece (AKVR, RETFLAT, 2026-09-28)
+
+**Files:** `05154232f7872d0d-vs.txt`, `9938094af96353c0-vs.txt` (the two with the fix's scene-depth search;
+apply 1 and 1b first); their `-vs.bin` deleted.
+
+**Why:** JJ: the reticle "tilts" (rotates in depth or squishes) towards the edges of the view. The fix's
+depth search starts from each VERTEX's screen position, so on a slanted surface the corners land at
+different depths. Now every corner searches from the piece's own origin (its Scaleform matrix
+translation), so the piece gets one depth. If only the squish remains, that is the flat-sticker
+foreshortening of a wide view, a different change.
+
+**Edit** (`rT` = new temp, `dcl_temps` +1; exact text, each needle must occur exactly once, else skip):
+
+| file | insert after | origin x / y | row line becomes | column line becomes |
+|---|---|---|---|---|
+| 05154232f7872d0d | `dp4 r3.y, v1.xyzw, cb0[r1.w + 0].xyzw` | `cb0[r1.z + 0].w` / `cb0[r1.w + 0].w` (corner `r3.x` / `r3.y`) | `mad r2.z, rT.z, l(-0.500000), l(0.500000)` | `add r5.y, r2.z, rT.y` |
+| 9938094af96353c0 | `dp4 r1.y, v1.xyzw, cb0[7].xyzw` | `cb0[6].w` / `cb0[7].w` (corner `r1.x` / `r1.y`) | `mad r3.x, rT.z, l(-0.500000), l(0.500000)` | `add r4.w, rT.y, r4.x` |
+
+Inserted block:
+```
+// AKVR RETFLAT 2026-09-28: search scene depth from the piece's origin (matrix translation) instead of
+// each corner, so the whole piece gets one depth. Falls back to the corner when the vertex w is not 1.
+eq rT.x, v1.w, l(1.000000)
+movc rT.y, rT.x, <origin x>, <corner x>
+movc rT.z, rT.x, <origin y>, <corner y>
+```
+**Compass band (same step; JJ: the compass flickered with the reticle split on).** Also in both files:
+- the fix's "not the top strip" test uses the piece origin: `lt r1.x, r3.y, l(0.650000)` -> `lt r1.x, rT.z, l(0.650000)`
+  (05154232f7872d0d) and `lt r0.w, r1.y, l(0.650000)` -> `lt r0.w, rT.z, l(0.650000)` (9938094af96353c0);
+- directly before the HUDSPLIT line `// AKVR HUDSPLIT: remember the fix's scene-depth decision` (so section 1b first):
+  ```
+  // AKVR RETFLAT band: with AKVR's HUD layer (cb13 bound), a piece whose origin is above clip y = cb13[0].y stays flat
+  eq rT.x, cb13[0].y, l(0.000000)
+  lt rT.w, rT.z, cb13[0].y
+  or rT.x, rT.x, rT.w
+  and r0.z, r0.z, rT.x
+  ```
+  (cb13 unbound -> .y = 0 -> no change.)
+
+**Detect:** `// AKVR RETFLAT`. **Reference:** `Patch-RetFlat` in `AKVR-fix-patches.ps1`. **Driver test:** 13/13 OK
+(assembled with cmd_Decompiler, loaded by `tools/shader_driver_test`). **Applied** 2026-09-28 (installed texts
+byte-identical to the tested ones).
+
+---
+
+## 1d. ShaderFixesDM: reticle keeps its size near the view edges (AKVR, RETSQUASH, 2026-09-28)
+
+**Files:** `05154232f7872d0d-vs.txt`, `9938094af96353c0-vs.txt` (after 1, 1b, 1c); `-vs.bin` deleted.
+**Why:** JJ: the reticle squashes near the window edge. A fixed-size screen sprite on a flat (rectilinear) picture
+covers a smaller angle off-centre: narrower by sqrt(1+v^2)/(1+u^2+v^2), shorter by sqrt(1+u^2)/(1+u^2+v^2), with
+(u, v) = (clip x * tanH, clip y * tanV) at the piece origin. The inverse is applied to each vertex's offset from the
+piece origin, for scene-depth pieces only, only when AKVR binds cb13 with tanH / tanV in `.z / .w`.
+**Edit:** `dcl_temps` +1 (`rS`); directly after the HUDSPLIT lines (`// AKVR HUDSPLIT: remember ...` + `mov rN.x, r0.z`)
+insert, with `rT` = the RETFLAT origin register (`rT.y` x, `rT.z` y) and position registers `r3.x/r3.y`
+(05154232f7872d0d) or `r1.x/r1.y` (9938094af96353c0):
+```
+// AKVR RETSQUASH 2026-09-28: scene-depth pieces keep their angular size near the view edges (cb13[0].zw = tan half-angles)
+ne rS.w, cb13[0].z, l(0.000000)
+and rS.w, rS.w, r0.z
+if_nz rS.w
+  mul rS.xy, rT.yzyy, cb13[0].zwzz
+  mul rS.xy, rS.xyxx, rS.xyxx
+  add rS.z, rS.x, rS.y
+  add rS.z, rS.z, l(1.000000)
+  add rS.xy, rS.yxyy, l(1.000000, 1.000000, 0.000000, 0.000000)
+  sqrt rS.xy, rS.xyxx
+  div rS.xy, rS.zzzz, rS.xyxx
+  add PX, PX, -rT.y
+  mad PX, PX, rS.x, rT.y
+  add PY, PY, -rT.z
+  mad PY, PY, rS.y, rT.z
+endif
+```
+**Detect:** `// AKVR RETSQUASH`. **Reference:** `Patch-RetSquash`. **Driver test:** 13/13 OK. **Applied** 2026-09-28
+(installed texts identical to the tested ones).
+**Status (PANELTIDY, 2026-09-28):** JJ: never worked; AKVR no longer sends the tan half-angles (cb13[0].zw = 0), so
+this edit is inert. It can stay in or be dropped by an installer; it changes nothing either way.
+
+---
+
+## 1e. ShaderFixesDM: the other 11 HUD shaders keep their scene-depth pieces in the picture (AKVR, DEPTHALL, 2026-09-28)
+
+**Files:** the 11 HUD `-vs.txt` WITHOUT the filter-42 test: `3b819a7e86e9d631`, `599bd060016570bb`,
+`fd60f2d764b91756`, `c9b47e60935f3f03`, `4b432a87d072f988`, `54cd897e5ce3b8b3`, `e12863b9484b4660`,
+`7d8fcdc225ce3fc7`, `ef1c1604346331e2`, `9689d605c06946bf`, `91e2b2225bf3ea04` (after 1 and 1b); `-vs.bin` deleted.
+
+**Why:** JJ: the objective marker (its distance readout) sat at the HUD distance while the grapple reticle followed
+the object. 1b copied the fix's scene-depth decision only in the two filter-42 shaders and wrote `mov rN.x, l(0)`
+("every piece flat") in the other 11. But each of those 11 has its own decision too (texture filter 2 / 32 / 42 / 22
+in gameplay, sometimes a screen region; e.g. the letters shader puts filter-22 text between clip y -0.5 and 0.75 at
+scene depth): the first top-level `if_nz rX.c` after the first IniParams (`t120`) load, whose block starts with the
+StereoParams test and holds the depth-search `loop`. Without AKVR's layer those pieces follow scene depth; with the
+layer they were drawn only into the flat layer.
+
+**Edit (per file; `rN` = the HUDSPLIT register from 1b):**
+1. Delete the 1b line `mov rN.x, l(0)` (directly before `eq rN.yz, cb13[0].xxxx, ...`).
+2. Directly before that first top-level `if_nz rX.c`, insert:
+   ```
+   // AKVR DEPTHALL 2026-09-28: remember the fix's own scene-depth decision (split: picture vs layer)
+   ine rN.x, rX.c, l(0)
+   ```
+   Decision registers found: r1.x (3b819a7e, fd60f2d7, c9b47e60, e12863b9, 9689d605, 91e2b222), r0.x (599bd060,
+   4b432a87, 7d8fcdc2), r0.z (54cd897e, ef1c1604).
+No `dcl_temps` change (rN already exists). Without cb13 bound nothing changes (the tail only acts on 1 or 2).
+
+**Detect:** `// AKVR DEPTHALL`. **Safety:** skip (and report) a file whose block after the `if_nz` has no t125 load and
+`loop`, or whose decision register is `rN`. **Reference:** `Patch-DepthAll` in `akvr/tools/AKVR-fix-patches.ps1`
+(run on a copy: 11 patched, the two filter-42 shaders left alone). **Driver test:** 13/13 assembled
+(cmd_Decompiler 0.6.90) and loaded OK by `tools/shader_driver_test`. **Applied** 2026-09-28 (installed texts
+byte-identical to the tested ones). Rollback: `akvr/diagnostics/before-DEPTHALL-20260928/` (11 texts + bins).
+Note: AKVR's compass band (1c) exists only in the two filter-42 shaders; if compass pieces from these 11 flicker
+with the split on, the band needs adding here too.
+
+---
+
+## 2. d3dxdm.ini
+
+| Key / section | Baseline | AKVR value | Status and reason |
+|---|---|---|---|
+| `[Direct Mode] direct_mode` | `sbs` | `katanga_vr` | **AKVR.** AKVR reads geo-11's two-eye picture through the Katanga shared surface. |
+| `shader_regex_patch_mode` | `5` | `4` | **AKVR.** Mode 5 stalled on AK's shaders (memory `geo11-july-failure-rediagnosed`, `geo11-update-reverts-hook-mode`). |
+| `[Stereo] dm_hud_detection` | `0` | `1` | **AKVR** (HUDFIX, 2026-09-27). |
+| `[Stereo] dm_static_hud_depth` | absent | `1.0` | **AKVR** (HUDFIX). Add if missing. |
+| `[Stereo] dm_auto_hud_depth` | absent | `0` | **AKVR** (HUDFIX). Add if missing. |
+| `[Stereo] dm_auto_hud_offset_min` | absent | `0.0` | **AKVR** (HUDFIX). Add if missing. |
+| `[Stereo] dm_auto_hud_offset_max` | absent | `1.0` | **AKVR** (HUDFIX). Add if missing. |
+| `[Stereo] dm_convergence` | `168.0` | `2500.0` | **AKVR, written by the mod itself** (world-scale slider saves it). The installer only needs a sane start value; 2500 = world scale 1.00 at separation 1. |
+| `[Stereo] dm_separation` | `100` | `1.00` | **AKVR, written by the mod itself** (VRSEP holds separation at 1). |
+| `[Stereo] dm_auto_convergence` | `1` | `0` | **UNKNOWN** origin; AKVR's live convergence assumes it is off. Likely needed. |
+| `upscaling` | `0` | `1` | **UNKNOWN** origin. |
+| `fps_show_hide` | commented out | `ctrl F` | **UNKNOWN** origin (a key binding; harmless). |
+| new sections `[TextureOverrideAKVRTinyRT]` and `[TextureOverrideAKVRTinyUAV]` | absent | see below | **AKVR** (EXPOSURE, 2026-09-27): both eyes share one auto-exposure. |
+
+EXPOSURE sections (insert once, anywhere among the TextureOverride sections):
+
+```
+[TextureOverrideAKVRTinyRT]
+match_type = Texture2D
+match_bind_flags = +render_target
+match_width = <5
+match_height = <5
+StereoMode = 2
+
+[TextureOverrideAKVRTinyUAV]
+match_type = Texture2D
+match_bind_flags = +unordered_access
+match_width = <5
+match_height = <5
+StereoMode = 2
+```
+
+Not AKVR: the installed file also has an `[Anaglyph]` section, the key-preset block (Ctrl+F3..F7) and extra
+comment lines. Those came with the newer geo-11 release's template (see section 4). AKVR's live world-scale
+slider works without the Ctrl+F keys, but the Ctrl+F7 save line in `d3dx_user.ini` can override
+`dm_convergence` (the mod warns about it).
+
+---
+
+## 3. d3dx.ini
+
+| Change | Baseline | AKVR | Status and reason |
+|---|---|---|---|
+| `load_library_redirect` | `2` | `0` | **AKVR, HOOK mode.** geo-11 is loaded by AKVR as `geo11.dll`; done by `AKVR-geo11-mode.ps1 -Mode hook`. |
+| `[TextureOverrideAllNonSquareRT]` (uncommented from the commented `;[TextureOverrideAllRT]` example) | commented example | `match_type = Texture2D`, `match_bind_flags = +render_target`, `match_width = !height`, `StereoMode = 1` | **AKVR.** Keeps stereo on AKVR's non-16:9 render size (memory `geo11-contact-non-16x9`). |
+| `include = ShaderFixes\help_text\help.ini` | absent | present | Not AKVR: came with the newer geo-11 release (its help overlay). |
+| `hunting` | `0` | `0` | Unchanged (it was 2 during a test on 2026-09-27 and set back). |
+
+---
+
+## 3b. d3dx.ini TEMPORARY diagnostic "AKVR DIAG RB" (2026-09-28) - REMOVED 2026-09-28 (diag_rb.py off), NOT for the installer
+
+To find the RB icon's texture hash (JJ: the RB icon next to the grapple reticle stays at the HUD distance; the fix
+only gives scene depth to textures tagged `filter_index = 2 / 42`). `akvr/tools/diag_rb.py on` sets `hunting=1`,
+adds `analyse_frame = no_modifiers VK_F13` + `analyse_options = log` under `[Hunting]`, and
+`analyse_options = dump_tex mono` to every `[ShaderOverride_HUD*]` section that has none (so only HUD draws dump
+their textures). Every added line follows a `; AKVR DIAG RB` comment. Backup: `d3dx.ini.before-akvr-diag-rb`;
+`diag_rb.py off` restores it. The AKVR panel button "record the HUD for geo-11" holds F13 for 250 ms.
+
+---
+
+## 4. geo-11 itself (HOOK mode and version)
+
+| File | Baseline (fix pack) | Installed | Status |
+|---|---|---|---|
+| `d3d11.dll` | geo-11 0.6.182 | absent (renamed) | **AKVR HOOK mode:** geo-11 lives as `geo11.dll`. |
+| `geo11.dll` | absent | geo-11 **0.7.11**, SHA1 `600ea47f1d75805aed9402e90c0969182ca629b0` | **AKVR.** The mod's live geo-11 links (world scale, HUD distance, eye view) are verified against this exact build and switch off on any other. |
+| `dxgi.dll` | the fix's dxgi.dll | renamed `dxgi.dll.wrapmode` | **AKVR HOOK mode** (the rename script does it). |
+| `nvapi64.dll` | fix version | SHA1 `be0f4f6572a5fa16d7ad86d9007d8397c862b452` | Came with the geo-11 0.7.11 update. |
+| `uninstall.bat` | fix version | newer | Came with the geo-11 update. |
+| `ShaderFixesDM\help.hlsl-{cs,gs,ps}.{txt,bin}` | absent | present | Came with the geo-11 update (help overlay). |
+
+Rename/undo logic: `akvr/tools/AKVR-geo11-mode.ps1` (+ `AKVR-geo11-HOOK.bat`, `AKVR-geo11-WRAP.bat`).
+A new geo-11 release puts `d3d11.dll` back and breaks HOOK mode (memory `geo11-update-reverts-hook-mode`).
+
+---
+
+## 5. RESOLVED 2026-09-29: these came from the fix's 2026-09-25 release (not AKVR)
+
+JJ: "the fix was recently updated so that ambient occlusion shaders worked correctly". HelixMod update note of
+2026-09-25 confirms it. A practice install of the CURRENT release matches the live game in both files below, so
+nothing to script. Left over in JJ's live game from the old release: `ShaderFixes\0c8fb661657fcc9a-ps.txt/.bin` and
+its `ShaderFixesDM` copies ("MANUALLY DUMPED [ShaderRegex\...UE3_BatmanAK.ini\_Regex2]", 2020) - absent from the new
+release, and as a ShaderFixes file it overrides the new pattern file's correction for that shader. Not an AKVR file.
+
+### (original notes, before the cause was known)
+
+| File | What differs |
+|---|---|
+| `ShaderFixes\536b2b31d22e6bd7-cs.txt` / `.bin` and `ShaderFixesDM\536b2b31d22e6bd7-cs.txt` / `.bin` | A compute shader (tiled lighting) rebuilt "using 3Dmigoto v0.6.181 on Fri Sep 25 22:52:57 2026": `dcl_temps 13` becomes `33`, `CB12` moved, and stereo corrections `x += cb12[0].x * (cb12[0].y - z) / cb0[6].x` added at several light positions. Files dated 2026-09-26 06:26. Possibly from a newer fix release or an earlier session; no AKVR note mentions it. |
+| `ShaderFixes\UE3_BatmanAK.ini` | Regex corrections in geo-11's Unreal 3 shader patterns: `.xyz` escaped as `\.xyz` (two lines), `temps = stereo tmp1` becomes `stereo tmp0 tmp1`, and an extra pattern section (`dp3 / rsq / mul` normalisation) with its replacement. Looks like the fix author's or geo-11's own update. |
+
+2026-09-29 closer look: `ShaderFixes\536b2b31d22e6bd7-cs.txt` is the fix's "Ambient occlusion CS 1" (header: 3Dmigoto
+1.3.16, 2020, same as the baseline); the live copy adds ~370 lines of per-light stereo corrections by hand (irregular
+tab indentation). The `ShaderFixesDM` copy is geo-11's own "AUTOMATICALLY CONVERTED FROM SHADER FIXES" output, so it
+regenerates from the ShaderFixes one. `UE3_BatmanAK.ini`: fixes unescaped `.xyz` in three patterns, `tmp0` added, and a
+new hand-written specular-lighting stereo correction (`[ShaderRegex_SpecularPS3...]`, with a "//Useless comment." line).
+Both look hand-made, not tool output. Only 2 source files to account for.
+2026-09-29 search: these files are dated 2026-09-26 05:58 / 06:26, the morning of JJ's geo-11 0.6.182 -> 0.7.11
+update (PLAYBOOK_REVIEW 2026-09-26; `Win64\_geo11_backup_before_update_swap_20260926\d3dx.ini.as-shipped-by-update`
+= the baseline d3dx.ini + geo-11's help include + the NonSquareRT block). Not in `_disabled_mods_backup`, not in any
+geo-11 folder under `E:\Games\# MODS\Geo-11`, no newer Arkham fix archive on the PC. Most likely from that update
+download (a newer fix or geo-11 package). The installer does not reproduce them (the practice install keeps the
+baseline versions). Needs JJ: where the 2026-09-26 update came from, or an in-game check of lights without them.
+
+---
+
+## Change log
+
+| Date | Build | Files | Section |
+|---|---|---|---|
+| 2026-08-06 → 09-26 | GEO11 plan, HOOK mode, non-16:9 | d3dxdm.ini `direct_mode`, `shader_regex_patch_mode`; d3dx.ini `load_library_redirect`, `TextureOverrideAllNonSquareRT`; geo-11 renamed and updated to 0.7.11 | 2, 3, 4 |
+| 2026-09-27 | HUDFIX (MENUMODE) | d3dxdm.ini `[Stereo]` HUD keys | 2 |
+| 2026-09-27 | GSAHOLD (EXPOSURE) | d3dxdm.ini TinyRT / TinyUAV sections | 2 |
+| 2026-09-28 | HUDDEPTH | 13 HUD vertex shaders in ShaderFixesDM | 1 |
+| 2026-09-28 | HUDLAYER6 (HUDSPLIT) | 13 HUD vertex shaders: cb13 flat / scene-depth switch | 1b |
+| 2026-09-28 | HUDLAYER6 fix | 1b corrected: position output per shader (first version crashed the driver; reverted, fixed, re-applied) | 1b |
+| 2026-09-28 | RETFLAT | 2 HUD vertex shaders: depth search + top-strip test from the piece origin, compass band via cb13 | 1c |
+| 2026-09-28 | RETSQUASH | 2 HUD vertex shaders: edge-squash correction for scene-depth pieces | 1d |
+| 2026-09-28 | DIAG RB (temporary) | d3dx.ini hunting=1, F13 record, HUD dump_tex - remove with diag_rb.py off | 3b |
+| 2026-09-28 | DEPTHALL | 11 HUD vertex shaders: copy the fix's own scene-depth decision into the split | 1e |
+| 2026-09-29 | PANELTIDY / BAND28 (DLL only) | none - RETSQUASH (1d) now inert; compass band fixed at 28% by the mod | 1c, 1d |
+| 2026-09-29 | installer | Install-AKVR.ps1 runs the patch script; NonSquareRT block on for Arkham; verified on practice folders | all |

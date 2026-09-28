@@ -29,3 +29,6 @@ diagnostics/**
 
 # Tested geo-11 files the installer copies in
 !install/files/*.dll
+
+# Built install packages (made from install/ + the build)
+dist/

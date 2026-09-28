@@ -31,6 +31,7 @@
 #include "frameid.h"
 #include "geo11conv.h"
 #include "hudprobe.h"
+#include "hudsplit.h"   // HUDSPLIT: the one HUD draw, watched
 #include "openvr_beacon.h"
 #include "gamepad.h"
 #include <string>
@@ -112,6 +113,9 @@ const char* akvr_hud_piece_xf_list();
 void        akvr_hud_piece_xf_list_set(const char* list);
 int         akvr_hud_id_depth();
 void        akvr_hud_layers_discover();                 // HUDLAYERS (earlyres.cpp)
+void        akvr_hud_steady_set(float v);               // HUDSTEADY (earlyres.cpp)
+float       akvr_hud_steady();
+const char* akvr_hud_steady_diag();
 const char* akvr_hud_layers_diag();
 int         akvr_hud_layer_count();
 bool        akvr_hud_layer_get(int i, int& depth, int& parent, int& kids, const char*& label,
@@ -776,6 +780,10 @@ namespace
         fprintf(f, "eyebaseshape=%d\n", g_eyeBaseShape);
         fprintf(f, "overscanv=%.2f\n", g_ovV);
         fprintf(f, "huddist=%.2f\n", akvr_geo11_hud_dist());
+        fprintf(f, "hudlayer=%d\n", akvr_hudsplit_layer() ? 1 : 0);   // HUDLAYER
+        // PANELTIDY: hudlayerspace / hudlayercolour / hudlayereyes / hudlayersquash are fixed now, not saved.
+        fprintf(f, "hudlayersplit=%d\n", akvr_hudsplit_split() ? 1 : 0);   // HUDSPLIT
+        fprintf(f, "hudsteady=%.2f\n", akvr_hud_steady());
         fprintf(f, "convergence=%.4f\n", akvr_head_convergence());
         fprintf(f, "spinfoldon=%d\n", akvr_xr_yawfold_on() ? 1 : 0);
         fprintf(f, "spinfold=%.4f\n", akvr_xr_yawfold());
@@ -874,6 +882,9 @@ namespace
             else if (sscanf(line, "eyebaseshape=%d", &iv) == 1) g_eyeBaseShape = iv;
             else if (sscanf(line, "overscanv=%f", &v) == 1) g_ovV = v < 0.0f ? -1.0f : (v > 40.0f ? 40.0f : v);
             else if (sscanf(line, "huddist=%f", &v) == 1) akvr_geo11_hud_dist_set(v);
+            else if (sscanf(line, "hudlayer=%d", &iv) == 1) akvr_hudsplit_layer_set(iv != 0);   // HUDLAYER
+            else if (sscanf(line, "hudlayersplit=%d", &iv) == 1) akvr_hudsplit_split_set(iv != 0);   // HUDSPLIT
+            else if (sscanf(line, "hudsteady=%f", &v) == 1) akvr_hud_steady_set(0.0f);   // HUDDEPTH: parked, always off
             else if (sscanf(line, "depth=%f",      &v) == 1) akvr_head_stereo_set(v);
             else if (sscanf(line, "convergence=%f", &v) == 1) akvr_head_convergence_set(v);
             else if (sscanf(line, "spinfoldon=%d", &iv) == 1)
@@ -1282,6 +1293,7 @@ namespace
     void __stdcall hkOMSetRT(ID3D11DeviceContext* ctx, UINT n, ID3D11RenderTargetView* const* rtvs, ID3D11DepthStencilView* dsv)
     {
         observe_rts(n, rtvs, dsv);
+        akvr_hudsplit_note_bind(ctx, rtvs, n);   // HUDSPLIT: only records while the HUD draw runs
         oOMSetRT(ctx, n, rtvs, dsv);
     }
     // Slot 34: OMSetRenderTargetsAndUnorderedAccessViews — the other way a DX11 game binds
@@ -1293,6 +1305,7 @@ namespace
                                 UINT uavStart, UINT numUAV, ID3D11UnorderedAccessView* const* uavs, const UINT* counts)
     {
         observe_rts(n, rtvs, dsv);
+        akvr_hudsplit_note_bind(ctx, rtvs, n);   // HUDSPLIT
         oOMSetRTUAV(ctx, n, rtvs, dsv, uavStart, numUAV, uavs, counts);
     }
     void install_rt_hook()
@@ -1307,6 +1320,7 @@ namespace
         void* t34 = vtbl[34];               // OMSetRenderTargetsAndUnorderedAccessViews
         if (MH_CreateHook(t34, (void*)&hkOMSetRTUAV, (void**)&oOMSetRTUAV) == MH_OK)
             MH_EnableHook(t34);
+        akvr_hudsplit_install(g_context);   // HUDSPLIT: HUD draw + draw counters
     }
     void rt_frame_tick()
     {
@@ -1409,6 +1423,7 @@ namespace
         akvr_present_probe_dump_frames((capture + L"frames.csv").c_str());
         akvr_hud_dump_viewports((capture + L"viewports.csv").c_str());
         akvr_hudprobe_dump((capture + L"hudprobe.csv").c_str());
+        akvr_hudsplit_dump((capture + L"hudsplit.csv").c_str());   // HUDSPLIT
         akvr_hud_layers_dump((capture + L"hudlayers.txt").c_str());   // HUDLAYERS phase 1
         CopyFileW((base + L"akvr_camera_trace.csv").c_str(), (capture + L"camera.csv").c_str(), TRUE);
         CopyFileW((base + L"akvr_mode_trace.csv").c_str(), (capture + L"mode.csv").c_str(), TRUE);
@@ -1675,13 +1690,18 @@ namespace
     void draw_panel()
     {
         ImGuiIO& io = ImGui::GetIO();
-        io.FontGlobalScale = 1.0f;
+        io.FontGlobalScale = 0.78f;   // FONTFIT 2026-09-28 (JJ): the text did not fit the panel width (0.85 -> 0.78)
         ImGui::SetNextWindowPos(ImVec2(0, 0), ImGuiCond_Always);
         ImGui::SetNextWindowSize(io.DisplaySize, ImGuiCond_Always);
         ImGui::SetNextWindowBgAlpha(0.86f);
         ImGui::Begin("AKVR", nullptr,
             ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
             ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoSavedSettings);
+        // SLIDERFIT 2026-09-28 (JJ): sliders were too long and pushed their labels past the window edge.
+        // Every slider / box is 42% of the width, leaving the rest for its label.
+        ImGui::PushItemWidth(ImGui::GetContentRegionAvail().x * 0.42f);
+        // TEXTWRAP 2026-09-28 (JJ): no text may run past the window edge; every Text* call wraps there.
+        ImGui::PushTextWrapPos(0.0f);
 
         // When the menu is first opened, give this window nav focus so the very
         // first controller press moves the highlight instead of doing nothing.
@@ -1705,7 +1725,7 @@ namespace
 
         ImGui::TextColored(ImVec4(1.0f, 0.85f, 0.2f, 1.0f), "Arkham Knight VR");
         ImGui::SameLine();
-        ImGui::TextDisabled("   build: HUDLIVE  " __DATE__ " " __TIME__);
+        ImGui::TextDisabled("   build: VSID3b  " __DATE__ " " __TIME__);
 
         // ---- one status line ----------------------------------------------------
         // TIDY4 2026-09-27 (JJ: "cleaned up and reformatted to be a bit more consistent with the
@@ -1738,8 +1758,11 @@ namespace
             ImGui::TextDisabled("both stick clicks (L3 + R3) = use this menu with the controller");
 
         // ---- VIEW ---------------------------------------------------------------
+        // DRAWERS 2026-09-28 (JJ): "put all VR overlay elements in drawers and close the drawers by
+        // default". Each section is a closed collapsing header; the status line and the two buttons
+        // above stay visible.
         ImGui::Separator();
-        ImGui::TextColored(kHead, "VIEW");
+        if (ImGui::CollapsingHeader("VIEW"))
         {
             if (akvr_xr_native())
             {
@@ -1870,8 +1893,7 @@ namespace
         }
 
         // ---- HUD ----------------------------------------------------------------
-        ImGui::Separator();
-        ImGui::TextColored(kHead, "HUD");
+        if (ImGui::CollapsingHeader("HUD"))
         {
             static bool s_hudDirty = false;
             float hud = akvr_hud_scale();
@@ -1889,8 +1911,35 @@ namespace
                 { akvr_geo11_hud_dist_set(dist); s_hudDirty = true; }
                 ImGui::SameLine();
                 if (ImGui::Button("far away##hd")) { akvr_geo11_hud_dist_set(0.0f); s_hudDirty = true; }
-                ImGui::TextDisabled("   %s", akvr_geo11_hud_diag());
             }
+            // HUDLAYER: the HUD on its own head-locked headset layer (steady at 90 Hz).
+            {
+                bool lay = akvr_hudsplit_layer();
+                if (ImGui::Checkbox("HUD on its own layer (steady HUD)", &lay)) { akvr_hudsplit_layer_set(lay); s_hudDirty = true; }
+                if (lay && ImGui::TreeNode("HUD layer settings"))
+                {
+                    // PANELTIDY 2026-09-28 (JJ: confusing for new users): placement (view space since HUDVIEW),
+                    // see-through colour conversion and the per-eye distance fix are fixed in xr.cpp.
+                    bool split = akvr_hudsplit_split();
+                    if (ImGui::Checkbox("   keep the reticle at the depth it points at##hsp", &split)) { akvr_hudsplit_split_set(split); s_hudDirty = true; }
+                    ImGui::TextDisabled("      %s", akvr_hudsplit_split_diag());
+                    // Compass band slider removed 2026-09-29 (JJ): fixed at 28% in hudsplit.cpp.
+                    // DIAG RB record button removed 2026-09-28 (done: the RB icon is a glyph in the shared font cache).
+                    // HUDVIEW 2026-09-28: lazy follow removed (JJ: a "cheap trick"); the HUD is glued to the head
+                    // by the headset itself every refresh (xr.cpp g_hudSpace = 1).
+                    if (akvr_xr_fps_lock_ssw())
+                        ImGui::TextColored(kAmber, "   frame rate is on Virtual Desktop SSW: the HUD can only move 45 times a second. Try \"repeat the frame\".");
+                    ImGui::TextDisabled("   %s", akvr_hudsplit_layer_diag());
+                    ImGui::TextDisabled("   %s", akvr_xr_hud_layer_diag());
+                    ImGui::TextDisabled("   %s", akvr_geo11_hud_diag());
+                    ImGui::TreePop();
+                }
+            }
+            // HUDSPLIT test section removed from the panel (JJ, 2026-09-28); the probe still logs to F2 / status.
+            // HUDSTEADY slider removed (HUDDEPTH, 2026-09-28): JJ saw lag and no calmer HUD at 0.5 and 1.0.
+            // The jitter is the HUD baked into a 45 Hz picture that the headset shows twice and re-aims
+            // (and SSW warps) at 90 Hz - no shift inside the picture can remove that. Real fix: the HUD
+            // on its own compositor layer (VR_IMPROVEMENT_BACKLOG item 6). Code kept, always off.
             if (s_hudDirty && !ImGui::IsAnyItemActive()) { settings_save(); s_hudDirty = false; }
             if (!akvr_hud_scale_found())
                 ImGui::TextColored(kAmber, "   HUD size control not found in this game build");
@@ -1920,8 +1969,7 @@ namespace
         }
 
         // ---- MENUS AND SCREENS ------------------------------------------------------
-        ImGui::Separator();
-        ImGui::TextColored(kHead, "MENUS AND SCREENS");
+        if (ImGui::CollapsingHeader("MENUS AND SCREENS"))
         {
             bool scrMode = akvr_xr_screen_mode();
             if (ImGui::Checkbox("float as a screen now  (Pause key)", &scrMode))
@@ -1962,10 +2010,8 @@ namespace
         }
 
         // ---- FRAME RATE (geo-11 only) -------------------------------------------------
-        if (akvr_xr_native())
+        if (akvr_xr_native() && ImGui::CollapsingHeader("FRAME RATE"))
         {
-            ImGui::Separator();
-            ImGui::TextColored(kHead, "FRAME RATE");
             // FPSLOCK (xr.cpp): every game frame held for the same number of refreshes.
             {
                 if (akvr_xr_ofxr_active())
@@ -1979,14 +2025,20 @@ namespace
                 ImGui::SameLine(); if (ImGui::RadioButton("40", lock == 40))  { akvr_xr_fps_lock_set(40); settings_save(); }
                 ImGui::SameLine(); if (ImGui::RadioButton("30", lock == 30))  { akvr_xr_fps_lock_set(30); settings_save(); }
                 lock = akvr_xr_fps_lock();
-                if (lock)
+                // FPSSHOW 2026-09-28 — JJ: "the option for double frames or SSW seems to be gone" (it was only
+                // drawn while a lock rate was chosen, and his lock was off). Always shown now, with a note.
                 {
-                    // FPSLOCK-SSW: repeat the frame, or let Virtual Desktop's SSW fill in.
                     const bool ssw = akvr_xr_fps_lock_ssw();
-                    ImGui::TextDisabled("   the game runs at this rate either way; 'off' lets it run as fast as it can.");
                     ImGui::TextUnformatted("between game frames:");
                     ImGui::SameLine(); if (ImGui::RadioButton("repeat the frame", !ssw)) { akvr_xr_fps_lock_ssw_set(false); settings_save(); }
                     ImGui::SameLine(); if (ImGui::RadioButton("Virtual Desktop SSW", ssw)) { akvr_xr_fps_lock_ssw_set(true); settings_save(); }
+                    if (!lock)
+                        ImGui::TextColored(kAmber, "   only used when the game is held at a rate (45 / 40 / 30). With 'off' the HUD layer moves only when the game draws.");
+                }
+                if (lock)
+                {
+                    const bool ssw = akvr_xr_fps_lock_ssw();
+                    ImGui::TextDisabled("   the game runs at this rate either way; 'off' lets it run as fast as it can.");
                     if (!ssw)
                         ImGui::TextDisabled("   back from SSW? set Virtual Desktop's SSW off Always, or VD keeps the game at half rate itself.");
                     int div = 1; double hz = 0.0; long late = 0, frames = 0;
@@ -2018,7 +2070,7 @@ namespace
         // TIDY3 2026-09-27 (JJ): experiments and settled switches off the panel. Shown only
         // with advancedpanel=1 in akvr_settings.ini (not written back, so it stays opt-in).
         if (g_showAdvanced) ImGui::Separator();
-        if (g_showAdvanced && ImGui::CollapsingHeader("Advanced  (tests and experiments - leave alone unless asked)"))
+        if (g_showAdvanced && ImGui::CollapsingHeader("Advanced  (tests - leave alone)"))
         {
             uint32_t bbw = 0, bbh = 0; akvr_xr_backbuffer_size(bbw, bbh);
 
@@ -2030,7 +2082,7 @@ namespace
             // FULLVIEW / TILTFILL (xr.cpp): cover each eye's real view; fill the bottom
             // by tilting the pose instead of an off-centre projection.
             bool fullView = akvr_xr_full_view();
-            if (ImGui::Checkbox("fill the whole headset view  (no black edges) - keep ON", &fullView))
+            if (ImGui::Checkbox("fill the whole headset view  (keep ON)", &fullView))
             { akvr_xr_full_view_set(fullView); settings_save(); }
             bool tiltFill = akvr_xr_tilt_fill();
             if (ImGui::Checkbox("fill the bottom edge by tilting the view - keep ON", &tiltFill))
@@ -2038,7 +2090,7 @@ namespace
             ImGui::SameLine(); ImGui::TextDisabled("%.1f deg now", akvr_xr_tilt_used_deg());
             // FRAMEID: automatic pose matching reads one frame low (2026-09-26); keep off.
             bool poseAuto = akvr_xr_pose_auto();
-            if (ImGui::Checkbox("match each picture to its head pose automatically - keep OFF (reads one low)", &poseAuto))
+            if (ImGui::Checkbox("auto-match picture to head pose  (keep OFF)", &poseAuto))
             { akvr_xr_pose_auto_set(poseAuto); settings_save(); }
             if (poseAuto)
                 ImGui::TextDisabled("   %s  (now %d)  %s", akvr_xr_pose_matched() ? "EXACT" : "not locked yet",
@@ -2070,7 +2122,7 @@ namespace
                 // hands the headset the game camera's turn so the stale eye is re-aimed.
                 // ONE switch for the spin correction AND the camera offset (JJ, 2026-08-05).
                 bool foldOn = akvr_xr_yawfold_on();
-                if (ImGui::Checkbox("camera fix: spin correction + offset (OFF = old camera)", &foldOn))
+                if (ImGui::Checkbox("camera fix: spin correction + offset", &foldOn))
                 {
                     akvr_xr_yawfold_on_set(foldOn);
                     akvr_head_camfix_set(foldOn);
@@ -2092,7 +2144,7 @@ namespace
             // Render-size helpers: the fake-monitor ceiling (earlyres.cpp) and the
             // "dxgi route" that writes the size into the buffer + window at creation.
             bool bigOn = akvr_early_enabled();
-            if (ImGui::Checkbox("let the game render bigger than the monitor  (restart to apply)", &bigOn))
+            if (ImGui::Checkbox("render bigger than the monitor  (restart)", &bigOn))
             { akvr_early_enable(bigOn); settings_save(); }
             if (ImGui::Checkbox("force the size at creation  (restart to apply)", &g_forceRes))
                 settings_save();
@@ -2261,6 +2313,8 @@ namespace
             if (akvr_xr_native()) akvr_geo11conv_commit();
             settings_save();
         }
+        ImGui::PopTextWrapPos();  // TEXTWRAP
+        ImGui::PopItemWidth();   // SLIDERFIT
         ImGui::End();
     }
 
@@ -2314,6 +2368,15 @@ namespace
         fprintf(f, "frame(backbuffer) : %ux%u\n", g_bbW, g_bbH);
         fprintf(f, "window client     : %dx%d   (resync attempts %d)\n",
                 g_clientW, g_clientH, g_syncTries);
+        // LUIDCHECK 2026-09-28: where the window opened (JJ saw it in a new place when VR stopped starting).
+        if (g_hwnd)
+        {
+            RECT wr{}; GetWindowRect(g_hwnd, &wr);
+            MONITORINFOEXW mi{}; mi.cbSize = sizeof(mi);
+            GetMonitorInfoW(MonitorFromWindow(g_hwnd, MONITOR_DEFAULTTONEAREST), &mi);
+            fprintf(f, "window at         : (%ld,%ld)-(%ld,%ld) on %ls%s\n", wr.left, wr.top, wr.right, wr.bottom,
+                    mi.szDevice, (mi.dwFlags & MONITORINFOF_PRIMARY) ? " (primary)" : "");
+        }
         fprintf(f, "game asked at creation: %ux%u\n", g_createdW, g_createdH);
         fprintf(f, "we want next launch   : %dx%d\n",
                 akvr_early_width(), akvr_early_height());
@@ -2334,7 +2397,7 @@ namespace
             float pvRatio = 0.0f, pvFov = 0.0f; int pvHits = 0;
             akvr_projvr_diag(pvRatio, pvHits, pvFov);
             fprintf(f, "\npatches:\n");
-            fprintf(f, "   build: HUDLIVE " __DATE__ " " __TIME__ "\n");
+            fprintf(f, "   build: BAND28 " __DATE__ " " __TIME__ "\n");
             fprintf(f, "   native capture timing: %s Present (comparison test)\n", g_nativeAfterPresent ? "AFTER" : "BEFORE");
             {
                 int div = 1; double hz = 0.0; long late = 0, frames = 0;
@@ -2352,12 +2415,15 @@ namespace
             fprintf(f, "   projections built (ratio@HFOVxcount): %s\n", akvr_projection_seen());
             fprintf(f, "   full view: %s  (vertical centre shift %.3f NDC)\n", akvr_xr_full_view() ? "ON" : "off", akvr_xr_eye_v_offset());
             fprintf(f, "   %s\n", akvr_geo11conv_diag());
-            fprintf(f, "   %s\n   %s\n", akvr_geo11_hud_diag(), akvr_hud_layers_diag());   // HUDLIVE, PAUSESTUTTER
+            fprintf(f, "   %s\n   %s\n   %s\n", akvr_geo11_hud_diag(), akvr_hud_steady_diag(),
+                    akvr_hud_layers_diag());   // HUDLIVE, HUDSTEADY, PAUSESTUTTER
             fprintf(f, "   %s | this launch %d saved %d k %.4f (headset %.4f) flip %d unit %.6f narrow %d applied %d\n",
                     akvr_geo11_eyeview_diag(), akvr_xr_eye_view() ? 1 : 0, g_eyeViewSaved ? 1 : 0, akvr_xr_eye_k(),
                     akvr_xr_eye_k_head(), akvr_xr_eye_flip() ? 1 : 0, g_eyeUnit, akvr_xr_eye_narrow_ok() ? 1 : 0,
                     akvr_xr_eye_applied() ? 1 : 0);
             fprintf(f, "   %s\n", akvr_hudprobe_diag());
+            fprintf(f, "   %s\n", akvr_hudsplit_diag());   // HUDSPLIT
+            fprintf(f, "   %s\n   %s\n   %s\n", akvr_hudsplit_layer_diag(), akvr_xr_hud_layer_diag(), akvr_hudsplit_split_diag());   // HUDLAYER
             fprintf(f, "   bottom-fill tilt: %s, %.2f deg down applied to the head pose\n", akvr_xr_tilt_fill() ? "ON" : "off", akvr_xr_tilt_used_deg());
             fprintf(f, "   game camera tilt kept in gameplay: %.2f (0 = level horizon)\n", akvr_head_pitch_keep());
             fprintf(f, "   OFXR Bridge frame generation: %s\n", akvr_xr_ofxr_active() ? "LOADED (mod frame lock paused)" : "not loaded");
@@ -2775,6 +2841,7 @@ namespace
             akvr_xr_eye_applied_set(akvr_geo11_eyeview_applied());
         }
         akvr_hudprobe_tick(g_context);   // HUDPROBE: watch the HUD movie functions (radar flip)
+        akvr_hudsplit_tick();            // HUDSPLIT
 
         // Framegrab. Taken here — before the ImGui panel is drawn into the backbuffer —
         // so the picture is the game's frame and nothing of ours. One automatic grab
@@ -2806,10 +2873,8 @@ namespace
                 {
                     swprintf_s(name, L"akvr_katanga_%02d.bmp", shot);
                     grab_texture(kt, name);
-                    // Full resolution too (2026-09-26): 480 px per eye could not show the
-                    // edge blur JJ describes. ~50 MB, F2 only.
-                    swprintf_s(name, L"akvr_katanga_%02d_full.bmp", shot);
-                    grab_texture(kt, name, 16384);
+                    // The full-resolution copy (~45 MB, added 2026-09-26 for the edge blur) is
+                    // gone: JJ 2026-09-28, "that capture takes a long time".
                 }
                 radar_rec_dump(shot);
             }
@@ -3284,6 +3349,7 @@ namespace
 
     void hook_present_on(IDXGISwapChain* sc)
     {
+        if (sc) { ID3D11Device* rd = nullptr; if (SUCCEEDED(sc->GetDevice(__uuidof(ID3D11Device), (void**)&rd)) && rd) { akvr_hudsplit_watch_device(rd); rd->Release(); } }   // VSID: the real device
         // geo-11 only. The AER build's kiero path is known-good and shipping; this
         // is the alternative for the one case where kiero cannot be used at all.
         if (!akvr_early_geo11() || g_scHooked || !sc || !g_presentHook) return;
@@ -3311,6 +3377,7 @@ namespace
             g_createdWindowed = desc->Windowed != FALSE;
             if (g_forceWindowed) desc->Windowed = TRUE;
         }
+        akvr_hudsplit_watch_device(dev);   // VSID: before the game creates its shaders
         HRESULT hr = oCreateSwapChain(f, dev, desc, out);
         if (SUCCEEDED(hr) && out && *out) hook_present_on(*out);
         // Alt+Enter is DXGI's own fullscreen switch; stay windowed (see hkSetFullscreenState).
@@ -3327,6 +3394,7 @@ namespace
         if (desc) { local = *desc; apply_forced_size(local.Width, local.Height, hwnd); use = &local; }
         // A null fullscreen-desc means windowed, which is the escape hatch we want.
         if (g_forceWindowed && fs) { g_createdWindowed = fs->Windowed != FALSE; fs = nullptr; }
+        akvr_hudsplit_watch_device(dev);   // VSID
         HRESULT hr = oCreateSwapChainForHwnd(f, dev, hwnd, use, fs, ro, out);
         if (SUCCEEDED(hr) && out && *out) hook_present_on(*out);
         return hr;
@@ -3347,6 +3415,7 @@ namespace
             use = &local;
         }
         HRESULT hr = oD3D11CreateDASC(ad, dt, sw, flags, fl, nfl, sdk, use, outSc, outDev, outFl, outCtx);
+        if (SUCCEEDED(hr) && outDev && *outDev) akvr_hudsplit_watch_device(*outDev);   // VSID
         if (SUCCEEDED(hr) && outSc && *outSc) hook_present_on(*outSc);
         return hr;
     }
@@ -3820,6 +3889,8 @@ namespace
         // it depends on it having loaded the real dxgi/d3d11, and on hooking second
         // so that geo-11 ends up outermost. Read its comment before reordering.
         install_creation_hooks();
+        // VSID4: the game's own D3D11CreateDevice slot, so the reticle split can name the HUD shaders.
+        akvr_hudsplit_hook_game_device();
         // RE02: patch the game's 16:9 viewport computation to emit a square, before it
         // has had a chance to run. Opt-in via `vpsquare=1` — see g_vpSquareWanted.
         if (g_vpSquareWanted) g_vpSquareApplied = akvr_vp_square_install();

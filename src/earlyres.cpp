@@ -1860,6 +1860,94 @@ namespace {
     struct RootState { void* view; bool want; int l, t, w, h, W, H; float last[8]; bool haveLast; };
     RootState g_roots[64] = {};
 
+    // ---- HUDSTEADY 2026-09-28 — JJ: "because they are connected to the head tracking, micro
+    // movements of the head cause very minor jittering of all the HUD elements. Can we very
+    // slightly dampen it?" The HUD is painted into the picture, and the headset shows each
+    // picture at the head pose it was drawn with, so the HUD sits exactly where the head
+    // pointed for that frame: every tremor moves it. Here the HUD is drawn instead toward a
+    // slightly SMOOTHED head direction s: shifted inside the picture by (s - r), r = the head
+    // pose that frame's camera used (akvr_head_frame_quat, exact), so it appears at s.
+    // Playbook 04-ui-and-hud.md "Body-locked is the default" (lazy follow), commit b955f224.
+    // Capped at a few degrees so a real head turn never leaves the HUD behind; world-attached
+    // markers move by the same small amount. 0 = off (the HUD exactly as before).
+    float    g_steady = 0.0f;                  // panel 0..1
+    float    g_steadyTx = 0.0f, g_steadyTy = 0.0f;   // HUD shift, tangent units (x right, y up)
+    float    g_steadyQ[4] = { 0, 0, 0, 1 };    // smoothed head orientation
+    bool     g_steadyInit = false;
+    uint64_t g_steadyFin = 0;
+    LARGE_INTEGER g_steadyT{};
+    long     g_steadyPaired = 0, g_steadyMissed = 0;
+    float    g_steadyDeg = 0.0f;               // current HUD lag angle
+    long     g_steadyAge[4] = {};              // HUDSTEADY2: camera-match age 0 / 1 / 2 / other
+    float    g_steadyPxPerDeg = 0.0f;          // last conversion used (diag)
+
+    void q_mul(const float* a, const float* b, float* o)
+    {
+        o[0] = a[3] * b[0] + a[0] * b[3] + a[1] * b[2] - a[2] * b[1];
+        o[1] = a[3] * b[1] - a[0] * b[2] + a[1] * b[3] + a[2] * b[0];
+        o[2] = a[3] * b[2] + a[0] * b[1] - a[1] * b[0] + a[2] * b[3];
+        o[3] = a[3] * b[3] - a[0] * b[0] - a[1] * b[1] - a[2] * b[2];
+    }
+    // Normalised lerp from a to b by t along the short way.
+    void q_nlerp(const float* a, const float* b, float t, float* o)
+    {
+        const float d = a[0] * b[0] + a[1] * b[1] + a[2] * b[2] + a[3] * b[3];
+        const float sb = d < 0.0f ? -t : t;
+        float n = 0.0f;
+        for (int i = 0; i < 4; ++i) { o[i] = a[i] * (1.0f - t) + b[i] * sb; n += o[i] * o[i]; }
+        n = n > 0.0f ? 1.0f / sqrtf(n) : 1.0f;
+        for (int i = 0; i < 4; ++i) o[i] *= n;
+    }
+    float q_angle_deg(const float* a, const float* b)
+    {
+        float d = fabsf(a[0] * b[0] + a[1] * b[1] + a[2] * b[2] + a[3] * b[3]);
+        if (d > 1.0f) d = 1.0f;
+        return 2.0f * acosf(d) * 57.29578f;
+    }
+    // Once per game frame, on the game thread (movie slot 27, where the HUD is captured).
+    void steady_update()
+    {
+        const uint64_t fin = akvr_camera_finalize_count();
+        if (fin == g_steadyFin) return;
+        g_steadyFin = fin;
+        LARGE_INTEGER now, f; QueryPerformanceCounter(&now); QueryPerformanceFrequency(&f);
+        float dt = g_steadyT.QuadPart ? (float)((double)(now.QuadPart - g_steadyT.QuadPart) / (double)f.QuadPart) : 0.022f;
+        g_steadyT = now;
+        if (dt > 0.1f) dt = 0.1f;
+        float r[4];
+        if (g_steady <= 0.001f || !g_hudGameplay) { g_steadyTx = g_steadyTy = 0.0f; g_steadyInit = false; g_steadyDeg = 0.0f; return; }
+        // HUDSTEADY2 2026-09-28 — JJ (0.5 and 1.0): "it doesn't seem to be dampening micro
+        // movements, it's just making the entire thing lag". That is the one-frame-stale
+        // signature: slot 27 runs BEFORE this frame's camera finalize, so the camera rotator
+        // read here is the PREVIOUS frame's. The pose this frame's camera will use is the newest
+        // one handed to the stub. The matched age is kept as evidence (mostly 1 = before, as
+        // assumed now; mostly 0 = after, and then both choices are the same entry).
+        float rm[4]; int age = -1;
+        if (akvr_head_frame_quat(rm, &age)) { if (age >= 0 && age < 3) ++g_steadyAge[age]; else ++g_steadyAge[3]; }
+        if (!akvr_head_newest_quat(r)) { ++g_steadyMissed; g_steadyTx = g_steadyTy = 0.0f; g_steadyInit = false; return; }
+        ++g_steadyPaired;
+        if (!g_steadyInit) { memcpy(g_steadyQ, r, sizeof(r)); g_steadyInit = true; }
+        // Time constant 15..75 ms, cap 0.25..1.0 degree across the panel's range (was 20..120 ms,
+        // 0.5..2.5 deg: the lag JJ saw on real head turns).
+        const float tau = 0.015f + 0.06f * g_steady;
+        const float capDeg = 0.25f + 0.75f * g_steady;
+        float s[4];
+        q_nlerp(g_steadyQ, r, 1.0f - expf(-dt / tau), s);
+        const float ang = q_angle_deg(s, r);
+        if (ang > capDeg) { float t[4]; q_nlerp(r, s, capDeg / ang, t); memcpy(s, t, sizeof(s)); }
+        memcpy(g_steadyQ, s, sizeof(s));
+        g_steadyDeg = q_angle_deg(s, r);
+        // s seen from r: rel = conj(r) * s; its forward (OpenXR -Z) in r's view.
+        const float rc[4] = { -r[0], -r[1], -r[2], r[3] };
+        float rel[4]; q_mul(rc, s, rel);
+        const float x = rel[0], y = rel[1], z = rel[2], w = rel[3];
+        // rotate (0,0,-1) by rel
+        const float vx = -(2.0f * (x * z + w * y));
+        const float vy = -(2.0f * (y * z - w * x));
+        const float vz = -(1.0f - 2.0f * (x * x + y * y));
+        if (vz < -0.5f) { g_steadyTx = vx / -vz; g_steadyTy = vy / -vz; }
+    }
+
     bool root_ready()
     {
         if (g_rootTried) return g_treeSetMatrix != nullptr;
@@ -1919,6 +2007,18 @@ namespace {
                     for (int i = 0; i < 4; ++i) { m[i] *= mi->ps; m[4 + i] *= mi->ps; }
                     m[3] += cx * (1.0f - mi->ps) + mi->pdx * (float)r->W;
                     m[7] += cy * (1.0f - mi->ps) - mi->pdy * (float)r->H;   // + = up
+                }
+            }
+            // HUDSTEADY: the smoothed-head shift (tangents -> buffer pixels at the camera's FOV).
+            if (r->want && (g_steadyTx != 0.0f || g_steadyTy != 0.0f) && r->W > 0)
+            {
+                const CameraView cv = akvr_camera_read();
+                if (cv.valid && cv.fov > 10.0f && cv.fov < 170.0f)
+                {
+                    const float ppt = 0.5f * (float)r->W / tanf(cv.fov * 0.5f * 0.01745329f);
+                    g_steadyPxPerDeg = ppt * 0.01745329f;
+                    m[3] += g_steadyTx * ppt;
+                    m[7] -= g_steadyTy * ppt;            // + = up
                 }
             }
             if (!force && r->haveLast && memcmp(m, r->last, sizeof(m)) == 0) return;
@@ -3469,6 +3569,9 @@ namespace
     uintptr_t hkMovieSlot27(void* view, uintptr_t flag)
     {
         InterlockedIncrement(&g_slot27Calls);
+        steady_update();                         // HUDSTEADY: once per game frame
+        if (g_steady > 0.001f || g_steadyTx != 0.0f || g_steadyTy != 0.0f)
+            if (RootState* rs = root_state(view, false)) if (rs->want) apply_root(view, false);
         apply_layers(view);                      // before the frame is captured
         return g_orig27 ? g_orig27(view, flag) : 0;
     }
@@ -3490,6 +3593,18 @@ void akvr_hud_layers_hook_vtable(void** vt)
 }
 void  akvr_hud_layers_discover() { discover_layers(true); }
 void  akvr_hud_layers_discover_quick() { discover_layers(false); }   // PAUSESTUTTER: no name search
+void  akvr_hud_steady_set(float v) { g_steady = v < 0.0f ? 0.0f : (v > 1.0f ? 1.0f : v); }
+float akvr_hud_steady() { return g_steady; }
+const char* akvr_hud_steady_diag()
+{
+    static char d[320];
+    if (g_steady <= 0.001f) _snprintf_s(d, sizeof(d), _TRUNCATE, "HUD steadiness: off");
+    else _snprintf_s(d, sizeof(d), _TRUNCATE,
+                     "HUD steadiness: %.2f deg behind the head, frames %ld (missed %ld), camera match age 0/1/2/other %ld/%ld/%ld/%ld, %.1f px/deg%s",
+                     g_steadyDeg, g_steadyPaired, g_steadyMissed, g_steadyAge[0], g_steadyAge[1], g_steadyAge[2], g_steadyAge[3],
+                     g_steadyPxPerDeg, g_orig27 ? "" : " - per-frame HUD hook OFF");
+    return d;
+}
 const char* akvr_hud_layers_diag()
 {
     static char live[240];
@@ -3533,7 +3648,7 @@ void  akvr_hud_layers_dump(const wchar_t* path)
 {
     FILE* f = nullptr;
     if (_wfopen_s(&f, path, L"w") != 0 || !f) return;
-    discover_layers();
+    discover_layers(false);                       // F2 was slow: no name search here
     fprintf(f, "AKVR HUD layers (HUDLAYERS phase 2)\n%s\n"
                "index depth parent kids 3D  key  |  a b tx / c d ty (twips)  |  adjustment\n", g_layerDiag);
     for (int i = 0; i < g_nContFps; ++i)
