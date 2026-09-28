@@ -218,6 +218,20 @@ function Set-SystemSettings([string]$path, $pairs) {
     return $changed
 }
 
+# Where NVIDIA's settings store for the game can be: the CURRENT user's Documents as Windows reports it
+# (follows a moved or OneDrive folder - the game's own lookup), the registry entry for a moved Documents,
+# then the usual defaults. First existing file wins.
+function Get-GfxStoreCandidates {
+    $docs = @([Environment]::GetFolderPath('MyDocuments'))
+    try {
+        $reg = (Get-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders' -ErrorAction Stop).Personal
+        if ($reg) { $docs += [Environment]::ExpandEnvironmentVariables($reg) }
+    } catch { }
+    $docs += (Join-Path $env:USERPROFILE 'Documents'), (Join-Path $env:USERPROFILE 'OneDrive\Documents')
+    return $docs | Where-Object { $_ } | Select-Object -Unique |
+        ForEach-Object { Join-Path $_ 'WB Games\Batman Arkham Knight\GFXSettings.BatmanArkhamKnight.xml' }
+}
+
 function Add-IniBlock($doc, [string[]]$block) {
     while ($doc.Lines.Count -gt 0 -and $doc.Lines[$doc.Lines.Count - 1].Trim() -eq '') { $doc.Lines.RemoveAt($doc.Lines.Count - 1) }
     $doc.Lines.Add('')
@@ -308,6 +322,25 @@ foreach ($d in (Get-ChildItem $fixRoot -Directory)) {
 }
 if ($saved -eq 0) { Remove-Item $backup; Say '   nothing to back up (fresh install)' }
 else { Say "   saved in $backup" 'Green' }
+
+# The player's own graphics settings, before the mod ever touches them, so the uninstaller can put them
+# back exactly (JJ, 2026-09-29: "game defaults" are not what a player had - resolution, GameWorks,
+# texture filtering). Two places: the game's BmSystemSettings.ini, and NVIDIA's settings store in
+# Documents (Documents may be moved; see Get-GfxStoreCandidates). Only once: never over a saved copy.
+$gfxBackup = Join-Path $GameDir 'vrmod_graphics_backup'
+if (-not (Test-Path $gfxBackup) -and -not (Test-Path (Join-Path $GameDir 'akvr_settings.ini'))) {
+    New-Item -ItemType Directory -Force -Path $gfxBackup | Out-Null
+    $ini = Join-Path $GameDir '..\..\BmGame\Config\BmSystemSettings.ini'
+    $iniNote = 'absent'
+    if (Test-Path $ini) { Copy-Item $ini (Join-Path $gfxBackup 'BmSystemSettings.ini'); $iniNote = 'saved' }
+    $storeNote = 'absent'
+    foreach ($s in Get-GfxStoreCandidates) {
+        if (Test-Path -LiteralPath $s) { Copy-Item -LiteralPath $s (Join-Path $gfxBackup 'GFXSettings.BatmanArkhamKnight.xml'); $storeNote = "saved from $s"; break }
+    }
+    # What was (not) there, so the uninstaller can also remove files the player never had.
+    @("BmSystemSettings.ini: $iniNote", "GFXSettings store: $storeNote") | Set-Content -LiteralPath (Join-Path $gfxBackup 'README.txt')
+    Say '   your graphics settings saved (vrmod_graphics_backup) - the uninstaller puts them back' 'Green'
+}
 
 # ---- 5. install the 3D fix ----------------------------------------------------------------
 

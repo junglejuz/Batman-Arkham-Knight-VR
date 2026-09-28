@@ -143,46 +143,66 @@ if ($backups.Count -eq 0) {
     Say "   $restored file(s) put back from $(Split-Path $first -Leaf)" 'Green'
 }
 
-# ---- 5. the game's graphics settings back to its defaults ------------------------------------------
-Step '5. Setting the game''s graphics back to its defaults'
-# The mod edits the game's config at every start (and the installer sets the tested graphics on a first
-# install); both keep the untouched original as *.akvr-original. The template the game builds its
-# settings from goes back to that original; the generated settings file is deleted, so the game makes a
-# fresh default one on its next start, exactly as after a new install.
-$cfg = Join-Path $GameDir '..\..\BmGame\Config'
-if (Test-Path -LiteralPath $cfg) {
-    $cfg = (Resolve-Path -LiteralPath $cfg).Path
-    $tmpl = Join-Path $cfg 'DefaultSystemSettings.ini'
-    if (Test-Path -LiteralPath "$tmpl.akvr-original") {
-        Copy-Item -LiteralPath "$tmpl.akvr-original" -Destination $tmpl -Force
-        Say '   the game''s settings template put back to its original' 'Green'
-    }
-    $n = Remove-IfThere (Join-Path $cfg 'BmSystemSettings.ini')
-    foreach ($o in Get-ChildItem -LiteralPath $cfg -File -Filter '*.akvr-original') { Remove-Item -LiteralPath $o.FullName -Force }
-    if ($n) { Say '   graphics settings reset: the game rebuilds its defaults the next time it starts' 'Green' }
-    else    { Say '   already at the defaults' 'Green' }
-} else {
-    Say '   the game''s config folder was not found - skipped' 'Yellow'
-}
-# The game ALSO keeps its graphics menu in NVIDIA's settings store, a file in Documents that it reads at
-# every start (display mode, resolution, detail, blur). The mod's answers while it runs (windowed + the VR
-# size) get saved there, so after removing the mod the game opened in a square window (JJ, 2026-09-29).
-# Without the file the game starts from its defaults again (fullscreen at the monitor's resolution).
-# Documents can be moved (JJ's is D:\Documents): ask Windows for the CURRENT user's Documents - the same
-# lookup the game and the NVIDIA App use, and it follows a moved or OneDrive folder - then also try the
-# registry entry for the moved folder and the usual default places, in case one of them differs.
+# ---- 5. the game's graphics settings: the player's own back, else the game's defaults -------------------
+Step '5. Putting back your graphics settings'
+# Two places hold them: the game's BmSystemSettings.ini, and NVIDIA's settings store in Documents, which
+# the game reads at every start (display mode, resolution, detail, GameWorks, blur). While the mod runs,
+# its answers (windowed + the VR size) are saved into both; after removing the mod the game opened in a
+# square window (JJ, 2026-09-29). The installer saves the player's own copies first
+# (vrmod_graphics_backup); those go back exactly. Without them (an install older than that), both are
+# reset so the game starts from its defaults. Documents can be moved (JJ's is D:\Documents): the current
+# user's Documents as Windows reports it (the game's own lookup), the registry entry, then the defaults.
 $docs = @([Environment]::GetFolderPath('MyDocuments'))
 try {
     $reg = (Get-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders' -ErrorAction Stop).Personal
     if ($reg) { $docs += [Environment]::ExpandEnvironmentVariables($reg) }
 } catch { }
 $docs += (Join-Path $env:USERPROFILE 'Documents'), (Join-Path $env:USERPROFILE 'OneDrive\Documents')
-$storeDone = 0
-foreach ($d in ($docs | Where-Object { $_ } | Select-Object -Unique)) {
-    $store = Join-Path $d 'WB Games\Batman Arkham Knight\GFXSettings.BatmanArkhamKnight.xml'
-    if (Remove-IfThere $store) { $storeDone++; Say "   the game's saved graphics menu reset as well ($(Split-Path (Split-Path (Split-Path $store))))" 'Green' }
+$stores = @($docs | Where-Object { $_ } | Select-Object -Unique |
+            ForEach-Object { Join-Path $_ 'WB Games\Batman Arkham Knight\GFXSettings.BatmanArkhamKnight.xml' })
+$mainStore = $stores[0]   # the Documents folder Windows reports for this user
+
+$cfg = Join-Path $GameDir '..\..\BmGame\Config'
+$cfg = if (Test-Path -LiteralPath $cfg) { (Resolve-Path -LiteralPath $cfg).Path } else { $null }
+$ini = if ($cfg) { Join-Path $cfg 'BmSystemSettings.ini' } else { $null }
+$gfxBackup = Join-Path $GameDir 'vrmod_graphics_backup'
+
+# The settings template: the mod edits it on a brand-new install and keeps the original.
+if ($cfg) {
+    $tmpl = Join-Path $cfg 'DefaultSystemSettings.ini'
+    if (Test-Path -LiteralPath "$tmpl.akvr-original") { Copy-Item -LiteralPath "$tmpl.akvr-original" -Destination $tmpl -Force }
 }
-if (-not $storeDone) { Say "   no saved graphics menu found in Documents ($([Environment]::GetFolderPath('MyDocuments')))" 'Gray' }
+
+if (Test-Path -LiteralPath $gfxBackup) {
+    $savedIni   = Join-Path $gfxBackup 'BmSystemSettings.ini'
+    $savedStore = Join-Path $gfxBackup 'GFXSettings.BatmanArkhamKnight.xml'
+    if ($ini) {
+        if (Test-Path -LiteralPath $savedIni) { Copy-Item -LiteralPath $savedIni -Destination $ini -Force }
+        else { [void](Remove-IfThere $ini) }          # the player had none: the game makes its own again
+    }
+    # The store goes back where it came from (recorded by the installer), else to this user's Documents.
+    $from = $null
+    $note = Join-Path $gfxBackup 'README.txt'
+    if (Test-Path -LiteralPath $note) {
+        $m = [regex]::Match((Get-Content -LiteralPath $note -Raw), 'saved from (.+?GFXSettings\.BatmanArkhamKnight\.xml)')
+        if ($m.Success) { $from = $m.Groups[1].Value.Trim() }
+    }
+    foreach ($s in $stores) { [void](Remove-IfThere $s) }
+    if (Test-Path -LiteralPath $savedStore) {
+        $to = if ($from -and (Test-Path -LiteralPath (Split-Path $from))) { $from } else { $mainStore }
+        New-Item -ItemType Directory -Force -Path (Split-Path $to) | Out-Null
+        Copy-Item -LiteralPath $savedStore -Destination $to -Force
+    }
+    Remove-Item -LiteralPath $gfxBackup -Recurse -Force
+    Say '   your own graphics settings put back (as they were before the first install)' 'Green'
+} else {
+    if ($ini) { [void](Remove-IfThere $ini) }
+    $n = 0
+    foreach ($s in $stores) { $n += Remove-IfThere $s }
+    Say '   no saved copy of your graphics settings (installed before the uninstaller kept one):' 'Yellow'
+    Say '   reset instead - the game starts from its own defaults; set resolution and effects in its menu' 'Yellow'
+}
+if ($cfg) { foreach ($o in Get-ChildItem -LiteralPath $cfg -File -Filter '*.akvr-original') { Remove-Item -LiteralPath $o.FullName -Force } }
 
 # ---- 6. the backup folders ---------------------------------------------------------------------------
 $all = @(Get-ChildItem -LiteralPath $GameDir -Directory -Filter 'vrmod_backup_*')
