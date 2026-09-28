@@ -1345,6 +1345,11 @@ void akvr_xr_try_init() {
     if (XR_SUCCEEDED(xrGetInstanceProperties(g_inst, &ip))) {
       std::strncpy(g_runtime, ip.runtimeName, 127);
       g_runtime[127] = 0;
+      // ANYHEADSET 2026-09-29 — the per-eye HUD shift makes up for Virtual Desktop drawing quad layers
+      // with no eye difference (memory vd-quad-layers-no-parallax). A runtime that draws them correctly
+      // (SteamVR, Meta Quest Link, ...) would get the difference twice: HUD at the wrong depth. So only
+      // under Virtual Desktop.
+      g_hudEyes = std::strstr(g_runtime, "VirtualDesktop") ? 1 : 0;
     }
   }
   // OFXRBRIDGE 2026-09-27 — JJ wants OFXR Bridge (optical-flow frame generation, an

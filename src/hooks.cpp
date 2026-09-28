@@ -2397,7 +2397,7 @@ namespace
             float pvRatio = 0.0f, pvFov = 0.0f; int pvHits = 0;
             akvr_projvr_diag(pvRatio, pvHits, pvFov);
             fprintf(f, "\npatches:\n");
-            fprintf(f, "   build: BAND28 " __DATE__ " " __TIME__ "\n");
+            fprintf(f, "   build: ANYHEADSET " __DATE__ " " __TIME__ "\n");
             fprintf(f, "   native capture timing: %s Present (comparison test)\n", g_nativeAfterPresent ? "AFTER" : "BEFORE");
             {
                 int div = 1; double hz = 0.0; long late = 0, frames = 0;

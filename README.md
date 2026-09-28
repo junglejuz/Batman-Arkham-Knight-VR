@@ -1,7 +1,7 @@
 # Batman: Arkham Knight VR
 
-Play Batman: Arkham Knight in VR on a Quest 3, in true 3D, with your head moving the
-camera, while keeping the game's third-person view.
+Play Batman: Arkham Knight in PC VR, in true 3D, with your head moving the camera, while
+keeping the game's third-person view.
 
 ## True 3D, drawn by the game itself
 
@@ -20,8 +20,9 @@ turning the camera never leaves one eye behind the other.
 
 - **geo-11** (a free stereo 3D tool, with a community fix for Arkham Knight) makes the game
   draw a separate picture for each eye.
-- **This mod** shows those two pictures in the headset through Virtual Desktop, moves the
-  game's camera with your head, and adds an in-headset settings panel.
+- **This mod** shows those two pictures in your headset, moves the game's camera with your
+  head, and adds an in-headset settings panel. It uses OpenXR, the standard way PC games talk
+  to VR headsets.
 
 ## Working (checked in the headset)
 
@@ -52,7 +53,8 @@ rest: it puts in geo-11, the 3D fix and the mod, and sets them up for VR.
 ### What you need
 
 - Batman: Arkham Knight on PC
-- A Meta Quest 3 and Virtual Desktop (the paid Quest app, with its free Streamer app on the PC)
+- A **Meta Quest 3 with Virtual Desktop** (the paid Quest app, with its free Streamer app on the
+  PC). This is the only setup the mod has been tested with. See "Other headsets" below.
 - A strong graphics card: the game draws every picture twice, once for each eye. The mod is
   tested on an NVIDIA RTX 4070 Ti.
 
@@ -106,7 +108,7 @@ What the installer did:
 ### Step 4: set up Virtual Desktop (once)
 
 1. On the PC, open the **Virtual Desktop Streamer** app.
-2. Check that **OpenXR Runtime** is set to **VDXR** (this is the normal setting).
+2. Check that **OpenXR Runtime** is set to **VDXR** (the normal setting).
 
 ### Step 5: play
 
@@ -118,6 +120,15 @@ What the installer did:
 4. Once the game is running, the picture moves into the headset in 3D and your head moves the
    camera. Press **F12** to face the view forward, and **F8** for the settings panel (see
    "The VR settings panel" below).
+
+### Other headsets (untested)
+
+The mod has only been tested on a Quest 3 with Virtual Desktop. It talks to the headset through
+OpenXR, the standard that SteamVR and the Meta Quest Link app also support, so it *might* work
+with other headsets or with Quest Link, but nobody has checked, and it may not work at all. If
+you want to try: set your headset's app (SteamVR or Meta Quest Link) as the PC's OpenXR runtime
+in that app's settings, then follow Step 5 with your headset connected. Please report what
+happens, working or not.
 
 ### Updating
 
@@ -134,7 +145,7 @@ Running the installer again never hurts: it repairs whatever is missing.
 | The installer stops with a red **STOPPED** message | Read the message: it says what's missing. The most common cause is the wrong fix file (the 3D Vision one instead of geo-11). |
 | "could not copy the fix into the game folder" | Right-click `Install-AKVR.bat` and choose **Run as administrator**. |
 | "some HUD edits could not be applied" | The 3D fix has changed since this version of the mod. Nothing broke: your previous files are in the `vrmod_backup` folder. Check for a newer version of the mod. |
-| The game runs on the monitor but never goes into the headset | Close the game. Make sure Virtual Desktop is connected before you start the game, then try again. If you played another VR game or mod before this one, restart the PC first. |
+| The game runs on the monitor but never goes into the headset | Close the game. Make sure Virtual Desktop is connected before you start the game, and that Step 4 is done, then try again. If you played another VR game or mod before this one, restart the PC first. |
 | The game is flat (no 3D) after updating geo-11 or the fix by hand | Run the installer again. A geo-11 update puts back a file that stops VR from working. |
 
 ### Removing it
@@ -239,7 +250,7 @@ pictures and a recording, for troubleshooting.
 | Setting | What it does |
 |---|---|
 | Hold the game at | Keeps the game at a steady 45, 40 or 30 frames per second, which is smoother than an uneven rate. **Off** lets the game run as fast as it can. |
-| Between game frames | What the headset shows between game frames: **repeat the frame**, or **Virtual Desktop SSW**, which makes in-between frames. For SSW, set Virtual Desktop's SSW to Always. |
+| Between game frames | What the headset shows between game frames: **repeat the frame**, or **Virtual Desktop SSW**, which makes in-between frames (Virtual Desktop only; set its SSW to Always). |
 | Head-pose delay | Leave it at 3; that value was measured as correct. |
 
 **Advanced** and **Diagnostics** are for testing. Leave them alone unless asked.
