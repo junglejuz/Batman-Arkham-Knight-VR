@@ -34,68 +34,131 @@ turning the camera never leaves one eye behind the other.
 - Move, resize or hide single HUD parts (radar, compass, radio); your layout is remembered
 - Menus shown at a comfortable size
 - The game's graphics menu no longer undoes the VR picture size
+- HUD distance you can change live, and no stutter after leaving the pause menu or map
+- A steady HUD on its own layer, with the grapple reticle and objective marker at the depth
+  of what they point at
 
 ## Still being worked on
 
-- Built, not yet tested: HUD distance slider, stutter fix after leaving the pause menu or map
 - Stutter on the main menu when the game first starts
 - The compass shows double when each eye gets its own wider view
 - Frame generation (extra in-between frames) still stutters (on hold for now)
 
 ## Installing
 
+Installing takes about five minutes. You download two things, then one installer does the
+rest: it puts in geo-11, the 3D fix and the mod, and sets them up for VR.
+
 ### What you need
 
-- Batman: Arkham Knight
-- Quest 3 with Virtual Desktop. Leave Virtual Desktop's own OpenXR setting as it is.
-- The mod file, `dinput8.dll`. Put it in this repo's `install` folder, next to the installer.
-  If you build the mod yourself (see Building), the installer finds it on its own.
+- Batman: Arkham Knight on PC
+- A Meta Quest 3 and Virtual Desktop (the paid Quest app, with its free Streamer app on the PC)
+- A strong graphics card: the game draws every picture twice, once for each eye. The mod is
+  tested on an NVIDIA RTX 4070 Ti.
 
-### Step 1: download the 3D fix
+You don't need to download geo-11 separately. The installer brings the geo-11 version the mod
+is tested with (0.7.11).
 
-The 3D comes from a free fix for geo-11, made by the 3D fix community. You download it
-yourself, from the game's page on HelixMod:
+### Step 1: download the mod
 
-**[Batman: Arkham Knight on HelixMod](https://helixmod.blogspot.com/2020/12/batman-arkham-knight-dx11.html)**
+1. On this page, find **Releases** on the right-hand side and click the newest one.
+2. Under **Assets**, click the `AKVR-ArkhamKnight` zip file to download it.
+3. Open your Downloads folder, right-click the zip file, and choose **Extract All...**, then
+   **Extract**. You now have a folder called `AKVR-ArkhamKnight`.
 
-On that page, download the **geo-11** version of the fix, not the "3D Vision" one. Leave it
-in your Downloads folder as it is; there's no need to unpack it.
+### Step 2: download the 3D fix
 
-You don't need to download geo-11 itself: the installer brings the geo-11 version this mod
-was tested with.
+The 3D itself comes from a free fix made by the 3D community. Its author only allows it to be
+downloaded from its own page, so you get it from there:
 
-### Step 2: run the installer
+1. Open **[Batman: Arkham Knight on HelixMod](https://helixmod.blogspot.com/2020/12/batman-arkham-knight-dx11.html)**.
+2. Download the **geo-11 fix**, the file `Batman_Arkham_Knight_geo11_fix.7z`. Don't take the
+   "3D Vision" fix: that one is for old 3D monitors.
+3. Leave the file in your Downloads folder, exactly as it is. Don't unpack it; the installer
+   does that.
 
-1. Close the game.
-2. Double-click `install\Install-AKVR.bat`.
+### Step 3: run the installer
 
-The installer:
+1. Close the game if it's running.
+2. Open the `AKVR-ArkhamKnight` folder from Step 1.
+3. Double-click `Install-AKVR.bat`. A black window opens and shows each step as it goes.
+4. If Windows shows **"Windows protected your PC"**, click **More info**, then **Run anyway**.
+5. If the installer can't find the game, a window asks for the game's folder. Pick the folder
+   that contains `BatmanAK.exe`. For a Steam copy that's usually
+   `C:\Program Files (x86)\Steam\steamapps\common\Batman Arkham Knight\Binaries\Win64`.
+6. If it can't find the 3D fix in your Downloads folder, a window asks for it. Pick the
+   `Batman_Arkham_Knight_geo11_fix.7z` file from Step 2.
+7. Wait until the window says **Done.** (green), then press any key to close it.
 
-- finds the game (in any Steam library) and the fix in your Downloads folder, and asks if it can't find
-  either
-- backs up every file it's about to replace, into a `vrmod_backup_<date>` folder inside the
-  game folder
-- unpacks the fix into the game folder
-- puts in our tested geo-11 and its VR settings
-- switches geo-11 over so the mod can load it (VR doesn't work otherwise)
-- copies in the mod
+What the installer did:
 
-Run it again at any time to repair or update an install. If the fix is ever updated, just
-download the new one and run the installer again.
+- Backed up every file it replaced, into a `vrmod_backup_<date and time>` folder inside the
+  game folder.
+- Put the 3D fix into the game folder.
+- Put in geo-11 0.7.11 and its settings for VR.
+- Set geo-11 up so the mod loads it, which VR needs.
+- Adjusted the fix's HUD for VR: the HUD distance setting, the steady HUD, and reticles and
+  markers that sit at the depth of what they point at. These are small edits to 13 of the
+  fix's HUD files, made on your copy only. The fix author's originals are kept in the
+  `akvr_fix_backup` folder.
+- Copied in the mod (`dinput8.dll`).
 
-### Step 3: play
+### Step 4: set up Virtual Desktop (once)
 
-1. Start Virtual Desktop and connect your headset.
-2. Start Batman: Arkham Knight from Steam, from the Virtual Desktop view of your PC.
+1. On the PC, open the **Virtual Desktop Streamer** app.
+2. Check that **OpenXR Runtime** is set to **VDXR** (this is the normal setting).
 
-The first start can take a few minutes while geo-11 prepares its shaders. Later starts are
-quicker.
+### Step 5: play
+
+1. Start the Virtual Desktop Streamer on the PC, put on the headset, and connect to your PC
+   in Virtual Desktop.
+2. In the headset, start Batman: Arkham Knight from Steam on your PC.
+3. The first start takes a few minutes while geo-11 prepares its shaders. The game may look
+   frozen during that time; let it finish. Later starts are much quicker.
+4. Once the game is running, the picture moves into the headset in 3D and your head moves the
+   camera. Press **F12** to face the view forward, and **F8** for the settings panel (see
+   "The VR settings panel" below).
+
+### Updating
+
+- **A new version of the mod:** download it as in Step 1 and run its installer (Step 3).
+- **A new version of the 3D fix:** download it as in Step 2, replacing the old file, and run
+  the installer again.
+
+Running the installer again never hurts: it repairs whatever is missing.
+
+### If something goes wrong
+
+| What you see | What to do |
+|---|---|
+| The installer stops with a red **STOPPED** message | Read the message: it says what's missing. The most common cause is the wrong fix file (the 3D Vision one instead of geo-11). |
+| "could not copy the fix into the game folder" | Right-click `Install-AKVR.bat` and choose **Run as administrator**. |
+| "some HUD edits could not be applied" | The 3D fix has changed since this version of the mod. Nothing broke: your previous files are in the `vrmod_backup` folder. Check for a newer version of the mod. |
+| The game runs on the monitor but never goes into the headset | Close the game. Make sure Virtual Desktop is connected before you start the game, then try again. If you played another VR game or mod before this one, restart the PC first. |
+| The game is flat (no 3D) after updating geo-11 or the fix by hand | Run the installer again. A geo-11 update puts back a file that stops VR from working. |
 
 ### Removing it
 
-In the game folder, run the fix's own `uninstall.bat`, then delete `dinput8.dll`,
-`geo11.dll` and `dxgi.dll.wrapmode` (if it's there). Your original files are in the
-`vrmod_backup_...` folders.
+1. Open the game folder (the one with `BatmanAK.exe`).
+2. Run the fix's own `uninstall.bat` in that folder.
+3. Delete `dinput8.dll`, `geo11.dll`, and `dxgi.dll.wrapmode` (if it's there).
+
+Your original files are in the `vrmod_backup_...` folders if you ever need them.
+
+To keep the 3D fix but undo only the mod's HUD edits: open the `AKVR-ArkhamKnight` folder,
+click the address bar, type `powershell` and press Enter, then run:
+
+```
+powershell -ExecutionPolicy Bypass -File AKVR-fix-patches.ps1 -Mode undo -GameDir "C:\path\to\Batman Arkham Knight\Binaries\Win64"
+```
+
+(with your own game folder in the quotes).
+
+### Building the mod yourself
+
+If you build the mod from this repository (see Building below), run `install\Install-AKVR.bat`
+from the repository instead of the downloaded package. It finds the `dinput8.dll` you built by
+itself.
 
 ## Graphics settings
 
@@ -154,8 +217,9 @@ pictures and a recording, for troubleshooting.
 |---|---|
 | HUD size | How big the HUD is. |
 | HUD up / down | Moves the whole HUD up or down. |
-| HUD distance | How far away the HUD looks, in metres. 0 or **far away** puts it at the distance of far-off scenery. New; not yet tested. |
-| HUD steadiness | Lets the HUD follow your head a little more smoothly. 0 turns it off. New; not yet tested. |
+| HUD distance | How far away the HUD looks, in metres. 0 or **far away** puts it at the distance of far-off scenery. |
+| HUD on its own layer (steady HUD) | Draws the HUD separately, attached to your head by the headset itself, so it stays steady instead of jumping with the game's frame rate. |
+| Keep the reticle at the depth it points at | With the HUD layer on: reticles and markers that point at things (grapple reticle, objective marker) stay at the depth of what they point at, while the rest of the HUD stays on the steady layer. |
 | Menus and map use the full height | Lets menus and the map fill the view from top to bottom. |
 | Move / resize single HUD parts | Adjust the radar, compass and other parts one by one. With the HUD on screen, press **find the HUD parts**. Tick **hide** on a part to see which one it is, then open it to change its size and position. **Reset** undoes a part. Your layout is remembered. |
 

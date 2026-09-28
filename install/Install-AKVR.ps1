@@ -16,7 +16,8 @@ $Game = @{
     SteamFolder  = 'Batman Arkham Knight\Binaries\Win64'                      # under steamapps\common
     FixMatch     = 'arkham.*knight.*geo-?11.*\.(7z|zip)$'   # the fix's file name
     FixPage      = 'https://helixmod.blogspot.com/2020/12/batman-arkham-knight-dx11.html'
-    AddNonSquare = $false                        # keep 3D on the tall VR picture
+    AddNonSquare = $true                         # keep 3D on the tall VR picture (FIX_CHANGES.md section 3)
+    FixPatches   = 'AKVR-fix-patches.ps1'       # the mod's HUD edits to the fix (FIX_CHANGES.md sections 1-2)
     OldProxy     = 'version.dll'
     BuildDirs    = @('build-dinput8', 'build')
 }
@@ -303,6 +304,21 @@ if ($Game.AddNonSquare -and -not ($ini.Lines | Where-Object { $_ -match '^\s*mat
 }
 Save-Ini $ini
 Say '   d3dx.ini updated' 'Green'
+
+# The mod's edits to the fix's own HUD shaders (HUD distance, steady HUD layer, reticles at scene depth).
+# They are made on the player's copy of the fix, never shipped. Record: FIX_CHANGES.md.
+if ($Game.FixPatches) {
+    Step '6b. Adjusting the 3D fix''s HUD for VR'
+    # The project's master copy (akvr\tools) when run from the project, else the copy shipped beside this script.
+    $patch = @((Join-Path $PSScriptRoot "..\tools\$($Game.FixPatches)"), (Join-Path $PSScriptRoot $Game.FixPatches)) |
+        Where-Object { Test-Path $_ } | Select-Object -First 1
+    if (-not $patch) { Fail "$($Game.FixPatches) is missing next to this script. Download the whole install folder again." }
+    & powershell -NoProfile -ExecutionPolicy Bypass -File $patch -Mode apply -GameDir $GameDir
+    if ($LASTEXITCODE -ne 0) {
+        Fail "some HUD edits could not be applied (see above). This fix version may differ from the one the mod was tested with. Your previous files are in $backup."
+    }
+    Say '   HUD edits applied (the fix author''s originals are in akvr_fix_backup)' 'Green'
+}
 
 # ---- 7. the mod ---------------------------------------------------------------------------
 
