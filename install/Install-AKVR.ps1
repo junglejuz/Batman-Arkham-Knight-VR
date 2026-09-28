@@ -87,8 +87,12 @@ function Find-SteamGameDir {
     return $null
 }
 
+# Where people put downloads: next to this script, the one or two folders above it (unzipping
+# makes a folder inside Downloads, sometimes a folder inside that), and the Downloads folder.
 function Find-Download([string]$pattern) {
-    $dirs = @($PSScriptRoot, (Get-DownloadsDir)) | Where-Object { $_ -and (Test-Path $_) }
+    $up1 = Split-Path $PSScriptRoot -Parent
+    $up2 = if ($up1) { Split-Path $up1 -Parent } else { $null }
+    $dirs = @($PSScriptRoot, $up1, $up2, (Get-DownloadsDir)) | Where-Object { $_ -and (Test-Path $_) } | Select-Object -Unique
     return Get-ChildItem -Path $dirs -File -ErrorAction SilentlyContinue |
         Where-Object { $_.Name -match $pattern } |
         Sort-Object LastWriteTime -Descending | Select-Object -First 1
