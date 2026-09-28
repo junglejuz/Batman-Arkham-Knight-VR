@@ -5,11 +5,10 @@ game's third-person view kept intact.
 
 ## Native stereo
 
-Gotham in real depth. Every frame, the game renders both eyes, each from its own position,
-at the same moment. Nothing is reconstructed from a flat image, and the eyes never take
-turns, so swinging the camera never leaves one eye behind the other. Rain, neon and the Batmobile's
-bodywork all sit at their true distance, and the city has genuine scale when you're perched on
-a gargoyle or gliding between rooftops.
+Every frame, the game renders both eyes, each from its own position, at the same moment.
+Nothing is reconstructed from a flat image, and the eyes never take turns, so swinging the
+camera never leaves one eye behind the other. Everything in the scene, near or far, has
+correct depth.
 
 ![Arkham Knight in VR: left and right eye](images/city-streets.jpg)
 
