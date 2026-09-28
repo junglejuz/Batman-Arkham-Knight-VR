@@ -95,9 +95,10 @@ the mod or the fix.
 
 ### Removing it
 
-In the game folder, run the fix's own `uninstall.bat`, then delete `dinput8.dll`, `geo11.dll`
-and `dxgi.dll.wrapmode` (if it's there). Your original files are in the `vrmod_backup_...`
-folders.
+Close the game, then double-click `Uninstall-AKVR.bat` in the game folder (the installer put
+it there). It removes the mod and the 3D fix, including your VR settings, and puts back any
+files the first install replaced. The `vrmod_backup_...` folders are left in place; delete
+them yourself once you're sure you don't need them.
 
 ## Graphics settings
 

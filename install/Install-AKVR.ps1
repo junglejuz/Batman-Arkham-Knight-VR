@@ -341,6 +341,21 @@ if ($ModDll) {
     Say "   skipped - copy the mod's dinput8.dll into $GameDir yourself" 'Yellow'
 }
 
+# The tested VR setup (eye order, render size and shape, HUD size, pose delay, ...). The mod's
+# built-in defaults are NOT that setup (JJ's fresh-install test, 2026-09-29: eyes swapped, flat
+# 16:9 picture). Only on a first install: an existing settings file is the player's own.
+# The uninstaller lives in the game folder, so players don't need to keep the download (JJ).
+foreach ($u in 'Uninstall-AKVR.bat', 'Uninstall-AKVR.ps1') {
+    $s = Join-Path $PSScriptRoot $u
+    if (Test-Path $s) { Copy-Item $s (Join-Path $GameDir $u) -Force }
+}
+if (Test-Path (Join-Path $GameDir 'Uninstall-AKVR.bat')) { Say '   Uninstall-AKVR.bat put in the game folder' 'Green' }
+
+$settings = Join-Path $GameDir 'akvr_settings.ini'
+$tested   = Join-Path $files 'akvr_settings.ini'
+if (Test-Path $settings) { Say '   your existing VR settings kept (akvr_settings.ini)' 'Green' }
+elseif (Test-Path $tested) { Copy-Item $tested $settings; Say '   tested VR settings copied in (akvr_settings.ini)' 'Green' }
+
 Remove-Item $work -Recurse -Force -ErrorAction SilentlyContinue
 
 Write-Host ''

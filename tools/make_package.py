@@ -19,12 +19,15 @@ ZIP = PKG + '.zip'
 FILES = {  # package path -> source path (relative to akvr/)
     'Install-AKVR.bat': 'install/Install-AKVR.bat',
     'Install-AKVR.ps1': 'install/Install-AKVR.ps1',
+    'Uninstall-AKVR.bat': 'install/Uninstall-AKVR.bat',
+    'Uninstall-AKVR.ps1': 'install/Uninstall-AKVR.ps1',
     'AKVR-fix-patches.ps1': 'tools/AKVR-fix-patches.ps1',
     'dinput8.dll': 'build-dinput8/Release/dinput8.dll',
     'README.md': 'README.md',
     'files/d3d11.dll': 'install/files/d3d11.dll',
     'files/nvapi64.dll': 'install/files/nvapi64.dll',
     'files/d3dxdm.ini': 'install/files/d3dxdm.ini',
+    'files/akvr_settings.ini': 'install/files/akvr_settings.ini',   # the tested setup, first install only
     'files/README.txt': 'install/files/README.txt',
 }
 
