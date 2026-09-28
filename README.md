@@ -1,14 +1,15 @@
 # Batman: Arkham Knight VR
 
-Play Batman: Arkham Knight in PC VR, in true 3D, with your head moving the camera, while
-keeping the game's third-person view.
+Play Batman: Arkham Knight in PC VR with native stereo, your head moving the camera, and the
+game's third-person view kept intact.
 
-## True 3D, drawn by the game itself
+## Native stereo
 
-This is the heart of the mod. The game draws a complete, separate picture for each eye,
-from each eye's own position, at the same moment. Nothing is faked from a flat image, and
-the eyes never take turns. So everything on screen, near or far, has real depth, and
-turning the camera never leaves one eye behind the other.
+Gotham in real depth. Every frame, the game renders both eyes, each from its own position,
+at the same moment. Nothing is reconstructed from a flat image, and the eyes never take
+turns, so swinging the camera never leaves one eye behind the other. Rain, neon and the Batmobile's
+bodywork all sit at their true distance, and the city has genuine scale when you're perched on
+a gargoyle or gliding between rooftops.
 
 ![Arkham Knight in VR: left and right eye](images/city-streets.jpg)
 
@@ -26,7 +27,7 @@ turning the camera never leaves one eye behind the other.
 
 ## Working (checked in the headset)
 
-- True 3D through geo-11
+- Native stereo through geo-11
 - Head tracking. The camera follows the game's own up-and-down tilt, and turning your
   head never tilts the horizon.
 - Smooth camera when spinning with the stick
