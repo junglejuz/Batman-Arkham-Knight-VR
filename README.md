@@ -39,12 +39,6 @@ correct depth.
 - A steady HUD on its own layer, with the grapple reticle and objective marker at the depth
   of what they point at
 
-## Still being worked on
-
-- Stutter on the main menu when the game first starts
-- The compass shows double when each eye gets its own wider view
-- Frame generation (extra in-between frames) still stutters (on hold for now)
-
 ## Installing
 
 Installing takes about five minutes. You download two things, then one installer does the
