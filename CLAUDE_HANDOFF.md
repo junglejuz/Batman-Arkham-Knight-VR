@@ -88,7 +88,16 @@ game's own FOV (camera.cpp `g_gameFov`) is below `vigbelow` 45. JJ's settings: s
 game's 2D zoom overlay is the same part as the gameplay tips (`K1/0.0.0.0.2`): it is set to "hide while zoomed"
 (ZOOMHIDE, 7th field), and it is also "hang in the room".
 
-## WORLDKIDS + LOADALL + LOADUP (2026-09-30, deployed, untested) — supersedes the MARKCARRY diagnosis below
+## KEEPGLOW (2026-09-30, deployed, untested)
+
+JJ: happy with WORLDKIDS + loading screens. Left: two compass pieces "should be a glow but look like a darkening
+effect" = `K2/…2.0.6` and `.2.0.7` (mirrored end pieces, JJ's own "hang in the room" ticks). Cause: mark_rgb
+OVERWROTE the node's colour add row, and Flash glows/brightness are add, so only the dimming multiply was left. Now
+the mark goes only into add channels that are 0 (or already the mark); alpha only if 0 or no other channel took it.
+`has_mark()` (any channel) replaces the old blue-only check. Every auto-marked branch was losing its adds too, so
+other elements may look brighter now.
+
+## WORLDKIDS + LOADALL + LOADUP (2026-09-30, JJ: "really happy with that") — supersedes the MARKCARRY diagnosis below
 
 JJ on MARKCARRY: reticle + distance still hang in space at first; on the first grapple the reticle "split in half"
 (half on target, half in space), then fixed itself. **Real cause (code-read, fits the split):** the ROOMALL rule

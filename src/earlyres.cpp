@@ -3552,8 +3552,25 @@ namespace
     }
     // PARTTAG4/5: the mark goes into add red, green, blue AND alpha (+0x60..+0x6C). CBDUMP showed pieces coloured by
     // their own add (multiply 0), where only the alpha add (0 for such a child) still shows the mark.
+    // KEEPGLOW 2026-09-30 — JJ: two compass pieces he had ticked "hang in the room" (K2/...2.0.6, .2.0.7) "should be a
+    // glow but it looks like a darkening effect". Writing the mark REPLACED the part's own colour add, and Flash glows and
+    // brightness tints are made of add: only the dimming multiply was left. The mark now goes only into channels whose
+    // add is 0 (or already the mark), so every mark lands with the game's glow kept (the shaders test .w too,
+    // and a child's alpha add is almost always 0, so descendants inherit it). Alpha is overwritten only when no other
+    // channel could take the mark.
     void mark_rgb(uint8_t* data, float v)
-    { *(float*)(data + 0x60) = v; *(float*)(data + 0x64) = v; *(float*)(data + 0x68) = v; *(float*)(data + 0x6C) = v; }
+    {
+        float* add = (float*)(data + 0x60);
+        if (v == 0.0f) { for (int c = 0; c < 4; ++c) if (add[c] == kPartTag) add[c] = 0.0f; return; }
+        bool any = false;
+        for (int c = 0; c < 3; ++c) if (add[c] == 0.0f || add[c] == v) { add[c] = v; any = true; }
+        if (add[3] == 0.0f || add[3] == v || !any) add[3] = v;
+    }
+    bool has_mark(uintptr_t data)
+    {
+        const float* add = (const float*)(data + 0x60);
+        return add[0] == kPartTag || add[1] == kPartTag || add[2] == kPartTag || add[3] == kPartTag;
+    }
     void hkObjSetCxform(void* obj, const float* cx)
     {
         g_origObjCx(obj, cx);
@@ -3677,15 +3694,15 @@ namespace
                     uintptr_t d = 0;
                     if (node_data(L.node, d))
                     {
-                        const float b = *(const float*)(d + 0x68);
-                        if (roomNow && b == kPartTag) ++g_tagReadOk; else if (roomNow) ++g_tagReadBad;   // PARTTAG2 diag
+                        const bool b = has_mark(d);   // KEEPGLOW: any channel (the mark avoids the game's own adds)
+                        if (roomNow && b) ++g_tagReadOk; else if (roomNow) ++g_tagReadBad;   // PARTTAG2 diag
                         if (roomNow && !tag_node(L.node) && g_tagNodeN < 1024)
                         { g_tagNodes[g_tagNodeN] = L.node; InterlockedIncrement(&g_tagNodeN); }
-                        if (roomNow && b != kPartTag)
+                        if (roomNow && !b)
                         {
                             if (uint8_t* w = (uint8_t*)g_treeWritable((void*)L.node, 2)) { mark_rgb(w, kPartTag); ++g_tagSets; }
                         }
-                        else if (!roomNow && b == kPartTag)
+                        else if (!roomNow && b)
                         {
                             if (uint8_t* w = (uint8_t*)g_treeWritable((void*)L.node, 2)) mark_rgb(w, 0.0f);
                         }
@@ -3913,7 +3930,7 @@ void  akvr_hud_layers_dump(const wchar_t* path)
         const char* mark = "";
         uintptr_t d = 0;
         if (node_data(L.node, d))
-            __try { if (*(const float*)(d + 0x68) == kPartTag) mark = L.taggedByUs ? " MARK" : " MARK(not ours)"; }
+            __try { if (has_mark(d)) mark = L.taggedByUs ? " MARK" : " MARK(not ours)"; }
             __except (EXCEPTION_EXECUTE_HANDLER) {}
         fprintf(f, "%4d %*sd%d p%-3d kids %-3d %s %-40s | %.3f %.3f %.0f / %.3f %.3f %.0f | s %.2f x %.3f y %.3f %s%s%s%s\n",
                 i, L.depth * 2, "", L.depth, L.parent, L.kids, (L.flags & 0x200) ? "3D" : "  ", L.key,
