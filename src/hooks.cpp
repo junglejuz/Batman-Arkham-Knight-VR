@@ -126,6 +126,8 @@ bool        akvr_hud_layer_room(int i);              // PARTTAG: part marked "ha
 void        akvr_hud_layer_room_set(int i, bool on);
 long        akvr_hud_layer_tag_sets();
 const char* akvr_hud_layer_tag_diag();      // PARTTAG2
+bool        akvr_hud_layer_zoomhide(int i);  // ZOOMHIDE
+void        akvr_hud_layer_zoomhide_set(int i, bool on);
 const char* akvr_hud_layer_xf_list();
 void        akvr_hud_layer_xf_list_set(const char* list);
 const char* akvr_hud_containers_list();                  // CONTAINERFP
@@ -1686,7 +1688,7 @@ namespace
             {
                 int d, par, kids; const char* lab; float ls, lx, ly; bool lh, l3;
                 if (!akvr_hud_layer_get(k, d, par, kids, lab, ls, lx, ly, lh, l3)) continue;
-                const bool custom = lh || akvr_hud_layer_room(k) || fabsf(ls - 1.0f) > 0.001f || fabsf(lx) > 0.0005f || fabsf(ly) > 0.0005f;
+                const bool custom = lh || akvr_hud_layer_room(k) || akvr_hud_layer_zoomhide(k) || fabsf(ls - 1.0f) > 0.001f || fabsf(lx) > 0.0005f || fabsf(ly) > 0.0005f;
                 for (int j = custom ? k : -1, guard = 0; j >= 0 && j < n && guard < 64; ++guard)
                 {
                     if (s_partHint[j]) break;
@@ -1715,6 +1717,9 @@ namespace
             // PARTTAG (JJ 2026-09-30): the whole part hangs in the room with the rest of the HUD, never at scene depth.
             bool room = akvr_hud_layer_room(i);
             if (ImGui::Checkbox("hang in the room", &room)) { akvr_hud_layer_room_set(i, room); settings_save(); s_partHintDirty = true; }
+            ImGui::SameLine();
+            bool zh = akvr_hud_layer_zoomhide(i);   // ZOOMHIDE (JJ: the game's zoom overlay shares its part with the tips)
+            if (ImGui::Checkbox("hide while zoomed", &zh)) { akvr_hud_layer_zoomhide_set(i, zh); settings_save(); s_partHintDirty = true; }
             ImGui::SameLine();
             if (part_hint(i)) ImGui::SetNextItemOpen(true, ImGuiCond_Once);   // PARTOPEN
             const bool open = ImGui::TreeNode("part", "%s%s%s", lab, l3 ? "  (3D panel)" : "",
@@ -2485,7 +2490,7 @@ namespace
             float pvRatio = 0.0f, pvFov = 0.0f; int pvHits = 0;
             akvr_projvr_diag(pvRatio, pvHits, pvFov);
             fprintf(f, "\npatches:\n");
-            fprintf(f, "   build: SCREENTAN " __DATE__ " " __TIME__ "\n");
+            fprintf(f, "   build: ZOOMHIDE " __DATE__ " " __TIME__ "\n");
             fprintf(f, "   zoom vignette: %s\n", akvr_xr_vig_diag());
             fprintf(f, "   native capture timing: %s Present (comparison test)\n", g_nativeAfterPresent ? "AFTER" : "BEFORE");
             {

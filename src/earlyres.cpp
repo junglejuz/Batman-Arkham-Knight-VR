@@ -3092,28 +3092,29 @@ namespace
         float base[12], last[12]; bool haveLast;   // 2D uses the first 8 (2x4), 3D all 12 (3x4)
         bool hidByUs, baseVisible;                  // HIDE: our visible=false and the game's own state
         bool room, taggedByUs;                      // PARTTAG: "hang in the room" (colour mark) and ours applied
+        bool zoomHide;                              // ZOOMHIDE: hidden only while the zoom vignette is on
     };
     Layer   g_layers[2048];
     int     g_nLayers = 0;
     SRWLOCK g_layerLock = SRWLOCK_INIT;
-    char    g_layerXf[4096] = "";               // ";key:size:x:y:hide:room" per adjusted layer
+    char    g_layerXf[4096] = "";               // ";key:size:x:y:hide:room:zoomhide" per adjusted layer
     int     g_layerAdjusted = 0;                // layers with an adjustment (fast skip)
     long    g_layerSets = 0;
     char    g_layerDiag[224] = "HUD layers: not searched yet";
 
     bool layer_custom(const Layer& L)
     {
-        return L.hide || L.room || std::fabs(L.s - 1.0f) > 0.001f || std::fabs(L.dx) > 0.0005f || std::fabs(L.dy) > 0.0005f;
+        return L.hide || L.room || L.zoomHide || std::fabs(L.s - 1.0f) > 0.001f || std::fabs(L.dx) > 0.0005f || std::fabs(L.dy) > 0.0005f;
     }
     void layer_load(Layer& L)
     {
-        L.s = 1.0f; L.dx = L.dy = 0.0f; L.hide = false; L.room = false;
+        L.s = 1.0f; L.dx = L.dy = 0.0f; L.hide = false; L.room = false; L.zoomHide = false;
         char k[112]; _snprintf_s(k, sizeof(k), _TRUNCATE, ";%s:", L.key);
         const char* hit = strstr(g_layerXf, k);
         if (!hit) return;
-        float s = 1, x = 0, y = 0; int h = 0, rm = 0;
-        if (sscanf_s(hit + strlen(k), "%f:%f:%f:%d:%d", &s, &x, &y, &h, &rm) >= 3)
-        { L.s = s; L.dx = x; L.dy = y; L.hide = h != 0; L.room = rm != 0; }
+        float s = 1, x = 0, y = 0; int h = 0, rm = 0, zh = 0;
+        if (sscanf_s(hit + strlen(k), "%f:%f:%f:%d:%d:%d", &s, &x, &y, &h, &rm, &zh) >= 3)
+        { L.s = s; L.dx = x; L.dy = y; L.hide = h != 0; L.room = rm != 0; L.zoomHide = zh != 0; }
     }
     void layer_save(const Layer& L)
     {
@@ -3129,7 +3130,7 @@ namespace
         if (layer_custom(L))
         {
             char add[160];
-            _snprintf_s(add, sizeof(add), _TRUNCATE, ";%s:%.3f:%.4f:%.4f:%d:%d", L.key, L.s, L.dx, L.dy, L.hide ? 1 : 0, L.room ? 1 : 0);
+            _snprintf_s(add, sizeof(add), _TRUNCATE, ";%s:%.3f:%.4f:%.4f:%d:%d:%d", L.key, L.s, L.dx, L.dy, L.hide ? 1 : 0, L.room ? 1 : 0, L.zoomHide ? 1 : 0);
             strncat_s(out, add, _TRUNCATE);
         }
         strcpy_s(g_layerXf, out);
@@ -3562,7 +3563,10 @@ namespace
             Layer& L = g_layers[i];
             if (L.view != view || L.depth == 0) continue;
             const bool moved = layer_moved(L);
-            if (!moved && !L.hide && !L.haveLast && !L.hidByUs && !L.room && !L.taggedByUs) continue;
+            // ZOOMHIDE 2026-09-30 — JJ: the game's own 2D zoom vignette is the same part as the gameplay tips, so a
+            // plain hide took the tips too. "hide while zoomed" hides it only while our zoom vignette is on.
+            const bool hideNow = L.hide || (L.zoomHide && akvr_xr_vig_active());
+            if (!moved && !hideNow && !L.haveLast && !L.hidByUs && !L.room && !L.taggedByUs) continue;
             __try
             {
                 if (!is_child_of(L.node, L.parentNode)) continue;          // node gone or moved
@@ -3596,7 +3600,7 @@ namespace
                     }
                 }
                 // --- hide / show through the node's own visible bit
-                if (L.hide)
+                if (hideNow)
                 {
                     if (flags & 1)
                     {
@@ -3712,6 +3716,22 @@ bool  akvr_hud_layer_get(int i, int& depth, int& parent, int& kids, const char*&
     return true;
 }
 bool  akvr_hud_layer_room(int i) { return i >= 0 && i < g_nLayers && g_layers[i].room; }
+bool  akvr_hud_layer_zoomhide(int i) { return i >= 0 && i < g_nLayers && g_layers[i].zoomHide; }
+void  akvr_hud_layer_zoomhide_set(int i, bool on)
+{
+    AcquireSRWLockExclusive(&g_layerLock);
+    if (i >= 0 && i < g_nLayers)
+    {
+        Layer& L = g_layers[i];
+        const bool was = layer_custom(L);
+        L.zoomHide = on;
+        const bool now = layer_custom(L);
+        if (was && !now && (L.haveLast || L.hidByUs || L.taggedByUs)) InterlockedIncrement(&g_layerRestores);
+        g_layerAdjusted += (now ? 1 : 0) - (was ? 1 : 0);
+        layer_save(L);
+    }
+    ReleaseSRWLockExclusive(&g_layerLock);
+}
 // PARTTAG: "hang in the room" = mark the whole part so the HUD shaders never put it at scene depth.
 void  akvr_hud_layer_room_set(int i, bool on)
 {

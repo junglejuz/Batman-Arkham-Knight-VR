@@ -174,6 +174,7 @@ void        akvr_xr_vig_clear_set(float d);
 float       akvr_xr_vig_below();        // zoom = the game's own FOV narrower than this (deg)
 void        akvr_xr_vig_below_set(float d);
 void        akvr_xr_vig_preview(bool on);
+bool        akvr_xr_vig_active();       // ZOOMHIDE: the zoom vignette is on (not a preview)
 const char *akvr_xr_vig_diag();
 int         akvr_xr_hud_colour();       // HUDLAYER4: 0 raw copy, 1 converted to linear premultiplied
 void        akvr_xr_hud_colour_set(int v);
