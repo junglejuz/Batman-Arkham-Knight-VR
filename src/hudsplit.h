@@ -26,6 +26,7 @@ void        akvr_hudsplit_band_set(float pct);   // RETFLAT band: top % of the v
 float       akvr_hudsplit_band();
 void        akvr_hudsplit_bottom_set(float pct); // EDGEBAND: bottom % of the view where HUD pieces stay on the layer
 float       akvr_hudsplit_bottom();
+void        akvr_hudsplit_layer_shot(const wchar_t* path);   // LAYERSHOT: save the HUD layer image (next readback)
 struct IUnknown;
 void        akvr_hudsplit_watch_device(IUnknown* dev);   // VSID: recognise the 13 patched HUD vertex shaders
 const char* akvr_hudsplit_vs_diag();

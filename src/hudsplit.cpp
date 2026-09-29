@@ -121,6 +121,38 @@ namespace {
     int  g_stageState = 0;                      // 0 idle, 1 copy queued
     unsigned g_stageFrame = 0;
     float g_covAny = -1, g_covSolid = 0, g_covPart = 0;
+    // LAYERSHOT 2026-09-29 (JJ: doubled HUD pieces after EDGEBAND): F2 also saves the layer image (slice 0) as a
+    // BMP, colour on black, so what went to the layer can be compared with the picture capture.
+    wchar_t g_shotPath[MAX_PATH] = L"";
+    volatile LONG g_shotWant = 0;
+    void save_layer_bmp(const D3D11_MAPPED_SUBRESOURCE& m)
+    {
+        FILE* f = nullptr;
+        if (_wfopen_s(&f, g_shotPath, L"wb") != 0 || !f) return;
+        const int w = g_Hw, h = g_Hh, rowBytes = w * 3, pad = (4 - rowBytes % 4) % 4;
+        const uint32_t img = (uint32_t)((rowBytes + pad) * h);
+        uint8_t hd[54] = { 'B', 'M' };
+        *(uint32_t*)(hd + 2) = 54 + img; *(uint32_t*)(hd + 10) = 54; *(uint32_t*)(hd + 14) = 40;
+        *(int32_t*)(hd + 18) = w; *(int32_t*)(hd + 22) = h; *(uint16_t*)(hd + 26) = 1; *(uint16_t*)(hd + 28) = 24;
+        *(uint32_t*)(hd + 34) = img;
+        fwrite(hd, 1, 54, f);
+        const bool bgra = g_Hfmt >= 87 && g_Hfmt <= 93;
+        uint8_t* line = new uint8_t[rowBytes + pad]();
+        for (int y = h - 1; y >= 0; --y)
+        {
+            const uint8_t* row = (const uint8_t*)m.pData + (size_t)y * m.RowPitch;
+            for (int x = 0; x < w; ++x)
+            {
+                const uint8_t* p = row + x * 4;
+                line[x * 3 + 0] = bgra ? p[0] : p[2];
+                line[x * 3 + 1] = p[1];
+                line[x * 3 + 2] = bgra ? p[2] : p[0];
+            }
+            fwrite(line, 1, rowBytes + pad, f);
+        }
+        delete[] line;
+        fclose(f);
+    }
 
     struct Bind { void* ctx; int layer; int ctxType; int same; void* tex; int w, h, fmt, arr, bindFlags, misc, binds, draws; };
     struct Ctx  { void* ctx; int layer; int type; int same; int bind; int drawsNoBind; int binds; int draws; };
@@ -935,11 +967,13 @@ namespace {
                     if (a == 255) ++solid; else if (a) ++part;
                 }
             }
+            if (g_shotWant == 2) { save_layer_bmp(m); g_shotWant = 0; }   // LAYERSHOT
             g_ctx->Unmap(g_stage, 0);
             if (tot) { g_covAny = 100.0f * any / tot; g_covSolid = 100.0f * solid / tot; g_covPart = 100.0f * part / tot; }
             return;
         }
-        if (g_stageState == 0 && (g_frame % 90) == 0 && g_frame - g_lastSubFrame <= 1)
+        const bool shot = g_shotWant == 1;   // LAYERSHOT: copy now rather than on the 90-frame beat
+        if (g_stageState == 0 && (shot || (g_frame % 90) == 0) && g_frame - g_lastSubFrame <= 1)
         {
             const int bpp = (g_Hfmt >= 27 && g_Hfmt <= 32) || (g_Hfmt >= 87 && g_Hfmt <= 93) ? 4 : 0;
             if (!bpp) return;                              // only 8-bit RGBA / BGRA are counted
@@ -957,6 +991,7 @@ namespace {
             }
             g_ctx->CopySubresourceRegion(g_stage, 0, 0, 0, 0, g_Hsrc, 0, nullptr);   // slice 0 (HUDLAYER3)
             g_stageState = 1; g_stageFrame = g_frame;
+            if (shot) g_shotWant = 2;
         }
     }
 }
@@ -1111,6 +1146,13 @@ const char* akvr_hudsplit_diag()
                              s.b[j].binds, s.b[j].draws);
     }
     return d;
+}
+
+void akvr_hudsplit_layer_shot(const wchar_t* path)
+{
+    if (!path || g_shotWant) return;
+    wcsncpy_s(g_shotPath, path, _TRUNCATE);
+    g_shotWant = 1;
 }
 
 void akvr_hudsplit_dump(const wchar_t* path)

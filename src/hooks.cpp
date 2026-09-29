@@ -1428,6 +1428,7 @@ namespace
         akvr_hud_dump_viewports((capture + L"viewports.csv").c_str());
         akvr_hudprobe_dump((capture + L"hudprobe.csv").c_str());
         akvr_hudsplit_dump((capture + L"hudsplit.csv").c_str());   // HUDSPLIT
+        akvr_hudsplit_layer_shot((capture + L"hudlayer.bmp").c_str());   // LAYERSHOT
         akvr_hud_layers_dump((capture + L"hudlayers.txt").c_str());   // HUDLAYERS phase 1
         CopyFileW((base + L"akvr_camera_trace.csv").c_str(), (capture + L"camera.csv").c_str(), TRUE);
         CopyFileW((base + L"akvr_mode_trace.csv").c_str(), (capture + L"mode.csv").c_str(), TRUE);
@@ -2417,7 +2418,7 @@ namespace
             float pvRatio = 0.0f, pvFov = 0.0f; int pvHits = 0;
             akvr_projvr_diag(pvRatio, pvHits, pvFov);
             fprintf(f, "\npatches:\n");
-            fprintf(f, "   build: EDGEBAND " __DATE__ " " __TIME__ "\n");
+            fprintf(f, "   build: LAYERSHOT " __DATE__ " " __TIME__ "\n");
             fprintf(f, "   native capture timing: %s Present (comparison test)\n", g_nativeAfterPresent ? "AFTER" : "BEFORE");
             {
                 int div = 1; double hz = 0.0; long late = 0, frames = 0;
