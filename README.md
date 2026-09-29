@@ -67,8 +67,13 @@ geo-11 comes with the mod, so you don't need to download it.
 3. **Run the installer.** Close the game, open the `AKVR-ArkhamKnight` folder and double-click
    `Install-AKVR.bat`.
    - If Windows says "Windows protected your PC", click **More info**, then **Run anyway**.
-   - If it asks for the game folder, pick the one with `BatmanAK.exe`. For Steam that's usually
-     `C:\Program Files (x86)\Steam\steamapps\common\Batman Arkham Knight\Binaries\Win64`.
+   - If it can't find the game by itself, it asks you to pick the game's folder. The folder
+     named after the game is fine (for Steam that's usually
+     `C:\Program Files (x86)\Steam\steamapps\common\Batman Arkham Knight`); the installer
+     finds the right folder inside it.
+   - It asks how sharp the picture should be: **Low**, **Medium** or **High**. Sharper needs a
+     faster graphics card. High is what the mod was tested with (RTX 4070 Ti). Not sure? Press
+     Enter for Medium. You can change it later in the settings panel ("Picture height per eye").
    - Wait for **Done.**, then press any key to close the window.
 4. **Check your headset software (once).** It has to be the PC's active OpenXR runtime, which
    it usually already is. In Virtual Desktop, the Streamer app's **OpenXR Runtime** should be
@@ -110,6 +115,8 @@ you can change them later in the game's graphics menu):
 
 - Max FPS 90. The game's own default of 60 makes head movement look blurred in the headset.
 - Texture resolution, shadow quality and level of detail High, texture filtering 2x anisotropic
+- The four NVIDIA GameWorks effects off (Enhanced Rain, Enhanced Light Shafts, Interactive
+  Smoke / Fog, Interactive Paper Debris). They cost a lot, and the game is drawn twice.
 
 **The mod sets these every time the game starts:**
 
@@ -118,13 +125,9 @@ you can change them later in the game's graphics menu):
 - Motion blur, chromatic aberration and film grain off (all three are uncomfortable in VR)
 - V-sync off (the headset sets the pace instead)
 
-**Turn these off yourself** (in the game's graphics menu, under the NVIDIA GameWorks
-options). They cost a lot, and the game is drawn twice:
-
-- Enhanced Rain
-- Enhanced Light Shafts
-- Interactive Smoke / Fog
-- Interactive Paper Debris
+**If you turn GameWorks effects back on**, the game takes longer to draw each picture, and the
+**head-pose delay** may need changing from 3 to 2 (F8, under **Frame rate**). Try it if the
+world jitters when you turn your head.
 
 **Optional:**
 
@@ -151,7 +154,7 @@ pictures and a recording, for troubleshooting.
 | Right stick up/down: extra camera height | Only with the pitch decoupled: how far the right stick can raise the camera, in metres. |
 | Extra view at the sides | Draws a little past the edges of the lenses, so no black edges show when you turn quickly. |
 | Extra view top and bottom | The same for the top and bottom. Takes effect after a restart. **Same as sides** matches them. |
-| Picture height per eye | Sharpness against speed. Higher is sharper and slower. Takes effect after a restart. |
+| Picture height per eye | Sharpness against speed. Higher is sharper and slower. The installer's Low / Medium / High are 2016 / 2432 / 2860. Takes effect after a restart. |
 | Use each eye's full view | Shapes each eye's picture to match its lens, saving about 20% of the work. Takes effect after a restart. Still being worked on: the compass shows double with it on. |
 | Distance alignment | Only with each eye's full view: adjust until distant things look single. **Reset** goes back to the value measured from the headset. |
 | Flip eye turn | Only with each eye's full view: tick it if everything looks badly doubled. |
@@ -186,7 +189,7 @@ pictures and a recording, for troubleshooting.
 |---|---|
 | Hold the game at | Keeps the game at a steady 45, 40 or 30 frames per second, which is smoother than an uneven rate. **Off** lets the game run as fast as it can. |
 | Between game frames | What the headset shows between game frames: **repeat the frame**, or **Virtual Desktop SSW**, which makes in-between frames (Virtual Desktop only; set its SSW to Always). |
-| Head-pose delay | Leave it at 3; that value was measured as correct. |
+| Head-pose delay | Leave it at 3; that value was measured as correct with the installer's graphics settings. If you turn GameWorks effects on and the world jitters when you turn your head, try 2. |
 
 **Advanced** and **Diagnostics** are for testing. Leave them alone unless asked.
 

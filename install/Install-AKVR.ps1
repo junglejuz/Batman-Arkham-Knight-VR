@@ -5,9 +5,9 @@
   anything it replaces, and asks if it cannot find something. See the README, "Installing".
 
   Optional, to skip the searching:
-    -GameDir "<folder with BatmanAK.exe>" -FixArchive "<fix .7z>" -ModDll "<dinput8.dll>"
+    -GameDir "<the game's folder>" -FixArchive "<fix .7z>" -ModDll "<dinput8.dll>" -Picture Low|Medium|High
 #>
-param([string]$GameDir, [string]$FixArchive, [string]$ModDll)
+param([string]$GameDir, [string]$FixArchive, [string]$ModDll, [string]$Picture)
 
 $Game = @{
     Mod          = 'AKVR'
@@ -50,6 +50,15 @@ $Game = @{
         'Rain_FX'                  = 'false'
         'Volumetric_Lighting'      = 'false'
     }
+    # The picture size per eye offered on a first install (the height; the mod derives the width from
+    # the headset's shape, ~1.01 wide:tall on a Quest 3). High = the tested setup (RTX 4070 Ti, 45 fps).
+    # Written as engineres + rendersize in akvr_settings.ini; the panel's "picture height per eye" later.
+    PictureSizes = [ordered]@{
+        'Low'    = @{ Height = 2016; Note = 'for most graphics cards' }
+        'Medium' = @{ Height = 2432; Note = 'for fast graphics cards' }
+        'High'   = @{ Height = 2860; Note = 'what the mod was tested with (RTX 4070 Ti)' }
+    }
+    PictureDefault = 'Medium'
     OldProxy     = 'version.dll'
     BuildDirs    = @('build-dinput8', 'build')
 }
@@ -117,6 +126,16 @@ function Find-SteamGameDir {
         if (Test-Path (Join-Path $dir $Game.Exe)) { return $dir }
     }
     return $null
+}
+
+# The folder with the game's .exe, from any folder of the game the player picked: the game's own top
+# folder, Binaries, or the .exe's folder itself (the .exe sits two folders down, which nobody guesses).
+# Several copies below the pick (e.g. the whole Steam "common" folder) = ask again.
+function Resolve-GameDir([string]$picked) {
+    if (-not $picked -or -not (Test-Path -LiteralPath $picked -PathType Container)) { return @() }
+    if (Test-Path -LiteralPath (Join-Path $picked $Game.Exe)) { return @($picked) }
+    return @(Get-ChildItem -LiteralPath $picked -Filter $Game.Exe -Recurse -Depth 4 -File -ErrorAction SilentlyContinue |
+        ForEach-Object { $_.DirectoryName } | Select-Object -Unique)
 }
 
 # Where people put downloads: next to this script, the one or two folders above it (unzipping
@@ -287,20 +306,60 @@ Write-Host '  ------------------------------------------------------------' -For
 # ---- 1. the game folder -------------------------------------------------------------------
 
 Step '1. Finding the game'
-if (-not $GameDir) { $GameDir = Find-SteamGameDir }
+if ($GameDir) {
+    $found = @(Resolve-GameDir $GameDir)
+    if ($found.Count -eq 0) { Fail "$($Game.Exe) is not in $GameDir or the folders inside it." }
+    if ($found.Count -gt 1) { Fail "$GameDir holds more than one copy of the game: $($found -join '; '). Give the one to install into." }
+    $GameDir = $found[0]
+} else { $GameDir = Find-SteamGameDir }
 if (-not $GameDir) {
     Say "   Could not find $($Game.Name) in your Steam libraries."
-    Say "   Please pick the folder that contains $($Game.Exe)."
-    $GameDir = Select-Folder "Pick the $($Game.Name) folder that contains $($Game.Exe)"
-}
-if (-not $GameDir -or -not (Test-Path (Join-Path $GameDir $Game.Exe))) {
-    Fail "$($Game.Exe) is not in that folder. It must be the folder that contains $($Game.Exe)."
+    Say "   Please pick the game's folder (the one named after the game is fine)."
+    while (-not $GameDir) {
+        $picked = Select-Folder "Pick the $($Game.Name) folder"
+        if (-not $picked) { Fail "no game folder picked. Run the installer again and pick the game's folder." }
+        $found = @(Resolve-GameDir $picked)
+        if ($found.Count -eq 1) { $GameDir = $found[0] }
+        elseif ($found.Count -eq 0) { Say "   $($Game.Exe) is not in $picked or the folders inside it. Please pick the game's folder." 'Yellow' }
+        else {
+            Say "   That folder holds more than one copy of the game:" 'Yellow'
+            $found | ForEach-Object { Say "     $_" 'Yellow' }
+            Say '   Please pick the one to install into.' 'Yellow'
+        }
+    }
 }
 $GameDir = (Resolve-Path $GameDir).Path
 Say "   $GameDir" 'Green'
 
 $proc = Get-Process -Name ([System.IO.Path]::GetFileNameWithoutExtension($Game.Exe)) -ErrorAction SilentlyContinue
 if ($proc) { Fail "the game is running. Close it and run this again." }
+
+# The picture size, asked only when the tested VR settings will be copied in (first install).
+$pictureH = $null
+if ($Game.PictureSizes -and -not (Test-Path (Join-Path $GameDir 'akvr_settings.ini'))) {
+    $names = @($Game.PictureSizes.Keys)
+    if ($Picture) {
+        $Picture = $names | Where-Object { $_ -eq $Picture } | Select-Object -First 1
+        if (-not $Picture) { Fail "-Picture must be one of: $($names -join ', ')" }
+    } else {
+        Step 'Picture sharpness'
+        Say '   Sharper pictures need a faster graphics card (every picture is drawn twice).'
+        Say '   You can change it later: F8, "picture height per eye".'
+        for ($i = 0; $i -lt $names.Count; $i++) {
+            $s = $Game.PictureSizes[$names[$i]]
+            Say ("     {0}  {1,-7} {2} pixels tall per eye - {3}" -f ($i + 1), $names[$i], $s.Height, $s.Note)
+        }
+        $def = [array]::IndexOf($names, $Game.PictureDefault) + 1
+        while (-not $Picture) {
+            $a = (Read-Host "   Type 1-$($names.Count) and press Enter (just Enter = $def, $($Game.PictureDefault))").Trim()
+            if ($a -eq '') { $a = "$def" }
+            $n = 0
+            if ([int]::TryParse($a, [ref]$n) -and $n -ge 1 -and $n -le $names.Count) { $Picture = $names[$n - 1] }
+        }
+    }
+    $pictureH = $Game.PictureSizes[$Picture].Height
+    Say "   $Picture ($pictureH pixels tall per eye)" 'Green'
+}
 
 # ---- 2. the downloads ---------------------------------------------------------------------
 
@@ -473,6 +532,14 @@ if (Test-Path $settings) { Say '   your existing VR settings kept (akvr_settings
 elseif (Test-Path $tested) {
     Copy-Item $tested $settings
     Say '   tested VR settings copied in (akvr_settings.ini)' 'Green'
+    if ($pictureH) {
+        $doc = Read-Ini $settings
+        foreach ($k in 'engineres', 'rendersize') {
+            for ($i = 0; $i -lt $doc.Lines.Count; $i++) { if ($doc.Lines[$i] -match "^$k=") { $doc.Lines[$i] = "$k=$pictureH" } }
+        }
+        Save-Ini $doc
+        Say "   picture size set: $Picture" 'Green'
+    }
     # The game's own graphics settings the mod was tested with (JJ's fresh-install test,
     # 2026-09-29: the stock 60 fps cap and higher detail blurred head movement). First install
     # only, so later choices in the game's menu stand. FIX_CHANGES.md section 6.

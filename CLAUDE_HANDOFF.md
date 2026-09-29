@@ -84,6 +84,11 @@ and NVIDIA's store was never written. Fixed in the installer (commit 5c9c080, FI
 re-uploaded to v0.1.0 and verified by download. JJ's current install still has them on: Uninstall-AKVR.bat, then
 install again from the new zip (the uninstall makes the reinstall a first install).
 
+**Also 2026-09-29 evening:** JJ lowered the head-pose delay 3 -> 2 while GameWorks was on (README now says so).
+Installer: picks the game from ANY folder of it (searches 4 levels down; several copies = ask again; Cancel has its
+own message), and asks the picture sharpness on a first install: Low 2016 / Medium 2432 (Enter) / High 2860 =
+engineres + rendersize (`-Picture` for scripts). Tested on a fake game folder in the scratchpad, JJ's store restored.
+
 ## Open issues, in priority order
 
 1. **The fresh-install test above.**
