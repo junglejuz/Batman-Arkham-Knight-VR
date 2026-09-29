@@ -171,6 +171,13 @@ only ModularHud movies are in the tree (other HUD movies keep the fix's per-piec
 (enemy indicators, grapple points?) will float in the room until ticked. Also ZOOMHIDE (per-part 'hide while zoomed',
 set on K1/0.0.0.0.2 = tips/zoom overlay). Splash crop: need JJ's F2 on the logo screen.
 
+**ROOMALL2 (2026-09-30 ~02:30, installed, untested):** (1) reticle/distance floated for 10-20 s: their parts are created
+after the tree is read, so the branch got marked; now every saved world key protects its deepest EXISTING ancestor.
+(2) launch objective text + small arrow by Local Surveillance: other HUD movies; the tree now takes every screen movie
+except FrontendBGFader, ModularHud first (2040-part cap) and ModularHud claims container ids first (K3/K7/K8/K9 have
+1-token fingerprints); new containers reuse empty id slots. (3) fingerprints refresh only from >= 80% complete trees
+(the 0.5 s pass). JJ's own heights: K1/0 y -0.135, K9/0 y -0.135, K3/0 + K5/0 y -0.1 - PRESERVE on every settings edit.
+
 ## Open issues, in priority order
 
 1. **The fresh-install test above.**

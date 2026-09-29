@@ -3348,6 +3348,9 @@ namespace
         }
         for (int i = 0; i < nc; ++i)
         {
+            if (ids[i] < 0)   // ROOMALL2: an unused (empty) slot keeps its id, so the known ids never move
+                for (int j = 0; j < g_nContFps; ++j)
+                    if (!g_contFps[j].taken && g_contFps[j].n == 0) { ids[i] = j; g_contFps[j].taken = true; break; }
             if (ids[i] < 0 && g_nContFps < 16)
             {
                 int maxId = 0;
@@ -3357,7 +3360,9 @@ namespace
                 _snprintf_s(g_contFps[ids[i]].id, sizeof(g_contFps[ids[i]].id), _TRUNCATE, "K%d", maxId + 1);
                 g_contFps[ids[i]].taken = true;
             }
-            if (ids[i] >= 0)                                   // refresh: follows slow drift
+            // refresh: follows slow drift. ROOMALL2: never from a half-built container (fewer than 80% of the saved
+            // parts - the 0.5 s pass can run while the game is still building its HUD), so saved ids stay stable.
+            if (ids[i] >= 0 && ntok[i] * 5 >= g_contFps[ids[i]].n * 4)
             { memcpy(g_contFps[ids[i]].t, tok[i], sizeof(uint16_t) * ntok[i]); g_contFps[ids[i]].n = ntok[i]; }
         }
     }
@@ -3406,10 +3411,17 @@ namespace
         int containers = 0, named = 0;
         int cFirst[16] = {}, cLast[16] = {};
         for (int i = 0; i < g_nContFps; ++i) g_contFps[i].taken = false;
+        // ROOMALL2: the main HUD (ModularHud) first, so the other movies can never crowd its parts out of the list.
+        int mainContainers = 0;
+        for (int pass = 0; pass < 2; ++pass, mainContainers = pass == 1 ? containers : mainContainers)
         for (int i = 0; i < g_nMovies && g_nLayers < 2040; ++i)
         {
             const MovieInfo& m = g_movies[i];
-            if (!m.view || !strstr(m.name, "ModularHud")) continue;
+            if ((pass == 0) != (strstr(m.name, "ModularHud") != nullptr)) continue;
+            // ROOMALL2 2026-09-30 — JJ: the launch objective text and a small arrow by Local Surveillance stayed on the
+            // face: they are in other HUD movies (FrontMostLayer, unnamed ones, ...). Every movie seen drawing on the
+            // screen joins the tree now, except the front-end background fader.
+            if (!m.view || !m.screenSeen || strstr(m.name, "FrontendBGFader")) continue;
             uintptr_t root = 0, sprite = 0;
             __try { root = *(uintptr_t*)((uint8_t*)m.view + 0x88); sprite = *(uintptr_t*)((uint8_t*)m.view + 0x50); }
             __except (EXCEPTION_EXECUTE_HANDLER) { continue; }
@@ -3445,7 +3457,11 @@ namespace
         // a part's key is the id + its path inside the container. Names stay labels only.
         int cIds[16];
         const int nc = containers < 16 ? containers : 16;
-        cont_assign(cFirst, cLast, nc, cIds);
+        // ROOMALL2: the main HUD's containers claim their saved ids first; the other movies only get what is left
+        // (several saved fingerprints are one part long, and a new container must never take their id).
+        const int nMain = mainContainers < nc ? mainContainers : nc;
+        cont_assign(cFirst, cLast, nMain, cIds);
+        if (nc > nMain) cont_assign(cFirst + nMain, cLast + nMain, nc - nMain, cIds + nMain);
         for (int ci = 0; ci < nc; ++ci)
         {
             const int first = cFirst[ci];
@@ -3576,6 +3592,29 @@ namespace
         {   // ROOMALL: which branches hold a world part (children follow their parent in the list)
             static bool s_holds[2048];
             for (int i = 0; i < g_nLayers; ++i) s_holds[i] = g_layers[i].world;
+            // ROOMALL2 2026-09-30 — JJ: the reticle and distance sat in the room for the first 10-20 s: their parts are
+            // created later than the tree is read, so their branch was marked and they inherited it. Every saved
+            // "stays on its target" key protects its deepest EXISTING ancestor, so the branch stays unmarked until the
+            // part appears (and after).
+            for (const char* p = strchr(g_layerXf, ';'); p; p = strchr(p + 1, ';'))
+            {
+                char key[96] = ""; float s, x, y; int h = 0, rm = 0, zh = 0, wd = 0;
+                const char* colon = strchr(p + 1, ':');
+                if (!colon || colon - (p + 1) >= (int)sizeof(key)) continue;
+                memcpy(key, p + 1, colon - (p + 1)); key[colon - (p + 1)] = 0;
+                if (sscanf_s(colon + 1, "%f:%f:%f:%d:%d:%d:%d", &s, &x, &y, &h, &rm, &zh, &wd) < 7 || !wd) continue;
+                for (;;)
+                {
+                    int hit = -1;
+                    for (int i = 0; i < g_nLayers && hit < 0; ++i) if (strcmp(g_layers[i].key, key) == 0) hit = i;
+                    if (hit >= 0) { s_holds[hit] = true; break; }
+                    char* dot = strrchr(key, '.');
+                    if (dot) { *dot = 0; continue; }
+                    char* slash = strchr(key, '/');                  // top level: the container root
+                    if (slash && strcmp(slash + 1, "root") != 0) { strcpy_s(slash + 1, sizeof(key) - (slash + 1 - key), "root"); continue; }
+                    break;
+                }
+            }
             for (int i = g_nLayers - 1; i > 0; --i)
                 if (s_holds[i] && g_layers[i].parent >= 0 && g_layers[i].parent < i) s_holds[g_layers[i].parent] = true;
             for (int i = 0; i < g_nLayers; ++i)
