@@ -871,8 +871,12 @@ namespace {
         if (g_cbFlat && g_cbDepth) return;
         ID3D11Device* dev = nullptr; c->GetDevice(&dev);
         if (!dev) return;
-        const float v1[8] = { 1, 0, 0, 0, 0, 0, 0, 0 }, v2[8] = { 2, 0, 0, 0, 0, 0, 0, 0 };
-        D3D11_BUFFER_DESC bd{}; bd.ByteWidth = 32;   // EDGEBAND: two rows (CB13[2] in the shaders) bd.Usage = D3D11_USAGE_DEFAULT; bd.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
+        // SWITCHFIX 2026-09-30: EDGEBAND's edit left a comment in the middle of this line, which commented out the
+        // Usage and BindFlags - the switch buffers were created without CONSTANT_BUFFER, never reached the shaders
+        // (cb13 read 0 = keep everything), and every split HUD piece was drawn in BOTH the layer and the picture
+        // (JJ's "doubled HUD" from EDGEBAND on). Back to one row, as the shaders declare (CB13[1]).
+        const float v1[4] = { 1, 0, 0, 0 }, v2[4] = { 2, 0, 0, 0 };
+        D3D11_BUFFER_DESC bd{}; bd.ByteWidth = 16; bd.Usage = D3D11_USAGE_DEFAULT; bd.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
         g_bandSent = -1.0f;   // written with the band line on first use
         D3D11_SUBRESOURCE_DATA sd{};
         sd.pSysMem = v1; if (!g_cbFlat && FAILED(dev->CreateBuffer(&bd, &sd, &g_cbFlat))) g_cbFlat = nullptr;
@@ -892,13 +896,12 @@ namespace {
             split_buffers(g_gameCtx);
             float th = 0.0f, tv = 0.0f;
             if (g_squashWant) akvr_xr_game_tan(th, tv);
-            if (g_cbFlat && g_cbDepth && (g_bandSent != g_bandPct || g_bottomSent != g_bottomPct ||
+            if (g_cbFlat && g_cbDepth && (g_bandSent != g_bandPct ||
                                           fabsf(th - g_tanSent[0]) > 1e-4f || fabsf(tv - g_tanSent[1]) > 1e-4f))
             {   // .y = the band line in clip y (0 = no band); .zw = tan half-angles (0 = no squash fix);
                 // row 1 .x = the bottom strip's line, as a distance below the centre (0 = no strip)
                 const float y = g_bandPct > 0.5f ? 1.0f - 2.0f * g_bandPct / 100.0f : 0.0f;
-                const float yb = g_bottomPct > 0.5f ? 1.0f - 2.0f * g_bottomPct / 100.0f : 0.0f;
-                const float f1[8] = { 1, y, th, tv, yb, 0, 0, 0 }, f2[8] = { 2, y, th, tv, yb, 0, 0, 0 };
+                const float f1[4] = { 1, y, th, tv }, f2[4] = { 2, y, th, tv };
                 g_gameCtx->UpdateSubresource(g_cbFlat, 0, nullptr, f1, 0, 0);
                 g_gameCtx->UpdateSubresource(g_cbDepth, 0, nullptr, f2, 0, 0);
                 g_bandSent = g_bandPct; g_bottomSent = g_bottomPct; g_tanSent[0] = th; g_tanSent[1] = tv;

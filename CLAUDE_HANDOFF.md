@@ -133,6 +133,13 @@ layout (4b432a87, 91e2b222): 9 shaders, driver-tested, applied. JJ's compass tic
 MENUTIPPED: the live main menu used pitchkeep 0 (level) -> the top-down title shot sat far below eye level; with
 pitchunlink 2 it now uses the roll-free tipped composition like gameplay. Rollbacks in diagnostics/before-*-20260930.
 
+**ROOT CAUSE of the doubled HUD (2026-09-30, build SWITCHFIX, installed):** EDGEBAND's C++ edit put a `//` comment
+mid-line in hudsplit.cpp split_buffers(), commenting out `bd.Usage` / `bd.BindFlags = CONSTANT_BUFFER`. The cb13 switch
+buffers were never bindable -> shaders read cb13 = 0 -> both split passes kept every piece -> everything in the layer AND
+the picture from EDGEBAND on (JJ's doubles; also why PARTTAG seemed to do nothing). Restored (16 bytes, one row). Lesson:
+after a scripted edit, READ the edited lines back; F2 layer + picture captures showing the SAME piece in both = split dead.
+PARTOPEN: the parts list opens the branch of every hidden/moved/room part once per session.
+
 ## Open issues, in priority order
 
 1. **The fresh-install test above.**

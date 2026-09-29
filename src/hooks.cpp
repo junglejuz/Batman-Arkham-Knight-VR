@@ -35,6 +35,7 @@
 #include "openvr_beacon.h"
 #include "gamepad.h"
 #include <string>
+#include <vector>   // PARTOPEN
 #include "imgui.h"
 #include "imgui_impl_win32.h"
 #include "imgui_impl_dx11.h"
@@ -1673,6 +1674,38 @@ namespace
     // clean window filling the panel, no FOV counter-scale, no eye-seam, no per-eye
     // split. (When there's no headset it falls back to the monitor at window size.)
     // HUDLAYERS: one HUD part per row - hide box, then its size/position and its children.
+    // PARTOPEN 2026-09-30 — JJ: "keep that HUD element open so I don't have to keep drilling down". Parts that are
+    // hidden, moved, resized or hang in the room open their whole branch once per session (the player can close it).
+    // hint[i] = i is such a part or has one below it; rebuilt when the list or a part's setting changes.
+    std::vector<char> s_partHint;
+    int  s_partHintCount = -1;
+    bool s_partHintDirty = true;
+    bool part_hint(int i)
+    {
+        const int n = akvr_hud_layer_count();
+        if (n != s_partHintCount || s_partHintDirty)
+        {
+            s_partHint.assign(n > 0 ? n : 0, 0);
+            for (int k = 0; k < n; ++k)
+            {
+                int d, par, kids; const char* lab; float ls, lx, ly; bool lh, l3;
+                if (!akvr_hud_layer_get(k, d, par, kids, lab, ls, lx, ly, lh, l3)) continue;
+                const bool custom = lh || akvr_hud_layer_room(k) || fabsf(ls - 1.0f) > 0.001f || fabsf(lx) > 0.0005f || fabsf(ly) > 0.0005f;
+                for (int j = custom ? k : -1, guard = 0; j >= 0 && j < n && guard < 64; ++guard)
+                {
+                    if (s_partHint[j]) break;
+                    s_partHint[j] = 1;
+                    int d2, p2, k2; const char* l2; float a2, b2, c2; bool h2, e2;
+                    if (!akvr_hud_layer_get(j, d2, p2, k2, l2, a2, b2, c2, h2, e2)) break;
+                    j = p2;
+                }
+            }
+            s_partHintCount = n; s_partHintDirty = false;
+        }
+        return i >= 0 && i < (int)s_partHint.size() && s_partHint[i];
+    }
+    bool part_hint_any() { part_hint(-1); for (char c : s_partHint) if (c) return true; return false; }
+
     void draw_hud_layer_children(int parent)
     {
         for (int i = 0; i < akvr_hud_layer_count(); ++i)
@@ -1681,12 +1714,13 @@ namespace
             if (!akvr_hud_layer_get(i, d, par, kids, lab, ls, lx, ly, lh, l3) || par != parent) continue;
             ImGui::PushID(i);
             bool hide = lh;
-            if (ImGui::Checkbox("hide", &hide)) { akvr_hud_layer_set(i, ls, lx, ly, hide); settings_save(); }
+            if (ImGui::Checkbox("hide", &hide)) { akvr_hud_layer_set(i, ls, lx, ly, hide); settings_save(); s_partHintDirty = true; }
             ImGui::SameLine();
             // PARTTAG (JJ 2026-09-30): the whole part hangs in the room with the rest of the HUD, never at scene depth.
             bool room = akvr_hud_layer_room(i);
-            if (ImGui::Checkbox("hang in the room", &room)) { akvr_hud_layer_room_set(i, room); settings_save(); }
+            if (ImGui::Checkbox("hang in the room", &room)) { akvr_hud_layer_room_set(i, room); settings_save(); s_partHintDirty = true; }
             ImGui::SameLine();
+            if (part_hint(i)) ImGui::SetNextItemOpen(true, ImGuiCond_Once);   // PARTOPEN
             const bool open = ImGui::TreeNode("part", "%s%s%s", lab, l3 ? "  (3D panel)" : "",
                                               kids ? "" : "  (single)");
             if (open)
@@ -1913,6 +1947,7 @@ namespace
         }
 
         // ---- HUD ----------------------------------------------------------------
+        if (part_hint_any()) ImGui::SetNextItemOpen(true, ImGuiCond_Once);   // PARTOPEN
         if (ImGui::CollapsingHeader("HUD"))
         {
             static bool s_hudDirty = false;
@@ -1976,6 +2011,7 @@ namespace
             if (ImGui::Checkbox("menus and map use the full height", &menuFill))
             { akvr_hud_menu_fill_set(menuFill); settings_save(); }
             // HUDLAYERS (earlyres.cpp): move / resize / hide single parts inside the HUD.
+            if (part_hint_any()) ImGui::SetNextItemOpen(true, ImGuiCond_Once);   // PARTOPEN
             if (ImGui::TreeNode("move / resize single HUD parts  (radar, compass ...)"))
             {
                 if (ImGui::Button("find the HUD parts  (with the HUD on screen)")) akvr_hud_layers_discover();
@@ -1991,6 +2027,7 @@ namespace
                         int cn = 0; for (int j = 0; j < i; ++j) { int d2, p2, k2; const char* l2; float a2, b2, c2; bool h2, e2;
                                                                    if (akvr_hud_layer_get(j, d2, p2, k2, l2, a2, b2, c2, h2, e2) && d2 == 0) ++cn; }
                         char t[128]; _snprintf_s(t, sizeof(t), _TRUNCATE, "HUD container %d  (%s)##lc%d", cn, lab, i);
+                        if (part_hint(i)) ImGui::SetNextItemOpen(true, ImGuiCond_Once);   // PARTOPEN
                         if (ImGui::TreeNode(t)) { draw_hud_layer_children(i); ImGui::TreePop(); }
                     }
                 }
@@ -2449,7 +2486,7 @@ namespace
             float pvRatio = 0.0f, pvFov = 0.0f; int pvHits = 0;
             akvr_projvr_diag(pvRatio, pvHits, pvFov);
             fprintf(f, "\npatches:\n");
-            fprintf(f, "   build: MENUTIPPED " __DATE__ " " __TIME__ "\n");
+            fprintf(f, "   build: SWITCHFIX " __DATE__ " " __TIME__ "\n");
             fprintf(f, "   zoom vignette: %s\n", akvr_xr_vig_diag());
             fprintf(f, "   native capture timing: %s Present (comparison test)\n", g_nativeAfterPresent ? "AFTER" : "BEFORE");
             {
