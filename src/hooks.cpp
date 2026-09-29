@@ -1573,15 +1573,9 @@ namespace
         if (bslDown && !bslHeld) akvr_xr_native_toggle();
         bslHeld = bslDown;
 
-        // Insert / Delete = live-tune the screen-mode (menu/loading) virtual-screen size.
-        static bool insHeld = false;
-        bool insDown = (GetAsyncKeyState(VK_INSERT) & 0x8000) != 0;
-        if (insDown && !insHeld) akvr_xr_menu_zoom_mul(1.1f);
-        insHeld = insDown;
-        static bool delHeld = false;
-        bool delDown = (GetAsyncKeyState(VK_DELETE) & 0x8000) != 0;
-        if (delDown && !delHeld) akvr_xr_menu_zoom_mul(1.0f / 1.1f);
-        delHeld = delDown;
+        // Insert / Delete (menu size x1.1) REMOVED 2026-09-30 - JJ: "main menu size keeps reverting to 100%". The keys
+        // are read system-wide, so Insert/Delete typed in any other window resized the menu (saved values drifted by
+        // exactly x1.1). The panel's "main menu size" slider is the control.
     }
 
     // SLIDERSTEP 2026-09-26 — JJ: "it would be good for the sliders to choose every
@@ -2486,7 +2480,7 @@ namespace
             float pvRatio = 0.0f, pvFov = 0.0f; int pvHits = 0;
             akvr_projvr_diag(pvRatio, pvHits, pvFov);
             fprintf(f, "\npatches:\n");
-            fprintf(f, "   build: SWITCHFIX " __DATE__ " " __TIME__ "\n");
+            fprintf(f, "   build: PSMARK " __DATE__ " " __TIME__ "\n");
             fprintf(f, "   zoom vignette: %s\n", akvr_xr_vig_diag());
             fprintf(f, "   native capture timing: %s Present (comparison test)\n", g_nativeAfterPresent ? "AFTER" : "BEFORE");
             {

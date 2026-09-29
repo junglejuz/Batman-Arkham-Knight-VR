@@ -102,6 +102,7 @@ namespace {
     bool g_splitWant = true;
     ID3D11Buffer* g_cbFlat = nullptr;
     ID3D11Buffer* g_cbDepth = nullptr;
+    ID3D11Buffer* g_cbAll = nullptr;                   // PSMARK: cb13 = 0, keep everything (marked no-colour draws)
     ID3D11Buffer* g_cb13Orig = nullptr;         // the game's own slot 13 at the start of the call
     ID3D11RenderTargetView* g_subRtv[D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT] = {};
     long g_splitDraws = 0, g_splitDrawsRep = 0;
@@ -412,6 +413,9 @@ namespace {
     void split_pre(ID3D11DeviceContext* c);
     void split_mid(ID3D11DeviceContext* c);
     void split_post(ID3D11DeviceContext* c);
+    bool layer_only_now();
+    void layer_only_pre(ID3D11DeviceContext* c);
+    void layer_only_post(ID3D11DeviceContext* c);
 
     // --- detours: one set of originals per layer, same shapes ---
     typedef void (__stdcall* DrawIndexedFn)(ID3D11DeviceContext*, UINT, UINT, INT);
@@ -438,10 +442,13 @@ namespace {
     typedef void (__stdcall* UnmapFn)(ID3D11DeviceContext*, ID3D11Resource*, UINT);
     typedef void (__stdcall* UpdSubFn)(ID3D11DeviceContext*, ID3D11Resource*, UINT, const D3D11_BOX*, const void*, UINT, UINT);
     VSSetCBFn oVSSetCB = nullptr; MapFn oMapG = nullptr; UnmapFn oUnmapG = nullptr; UpdSubFn oUpdSubG = nullptr;
+    VSSetCBFn oPSSetCB = nullptr;                          // PSMARK: same shape as VSSetConstantBuffers
     struct Shadow { void* key; UINT size; void* mapped; uint8_t data[4096]; };
     Shadow g_sh[16] = {}; int g_shN = 0;
     void* g_vsCb0 = nullptr;                               // cb0 bound for the VS on the game context
-    struct MarkRow { int vs; int split; int nHits; int where[4]; float val[4]; UINT cbSize; };
+    void* g_psCb0 = nullptr;                               // PSMARK: cb0 bound for the PS
+    struct MarkRow { int vs; int split; int nHits; int where[4]; float val[4]; UINT cbSize;
+                     int psHits; int psWhere[2]; float psVal[2]; UINT psSize; int layerOnly; };
     MarkRow g_mrCur[96], g_mrRep[96]; int g_mrCurN = 0, g_mrRepN = 0; unsigned g_mrRepFrame = 0;
     Shadow* sh_find(void* key, bool add)
     {
@@ -457,6 +464,25 @@ namespace {
     {
         if (snoop_ctx(c) && start == 0 && n >= 1 && b) { g_vsCb0 = b[0]; if (b[0]) sh_find(b[0], true); }
         oVSSetCB(c, start, n, b);
+    }
+    void __stdcall hkPSSetCB(ID3D11DeviceContext* c, UINT start, UINT n, ID3D11Buffer* const* b)
+    {
+        if (snoop_ctx(c) && start == 0 && n >= 1 && b) { g_psCb0 = b[0]; if (b[0]) sh_find(b[0], true); }
+        oPSSetCB(c, start, n, b);
+    }
+    // PSMARK 2026-09-30 — JJ: four compass pieces carry the mark but stay only in the head-locked picture: they are
+    // drawn by HUD shaders whose VERTEX shader never sees a colour transform (3b819a7e, 599bd060, e12863b9,
+    // 7d8fcdc2), so the colour - and the mark - must reach the PIXEL shader's constants. For those, the mark is looked
+    // for in the first two rows of the bound PS cb0 (where a colour pair would sit), and a marked draw goes whole to
+    // the layer on the CPU side (drawn once, cb13 = 0 so the shader keeps it). F2 hudmarks.csv shows ps hits either way.
+    bool vs_no_colour(int vs) { return vs == 1 || vs == 3 || vs == 8 || vs == 9; }
+    bool ps_marked()
+    {
+        Shadow* s = g_psCb0 ? sh_find(g_psCb0, false) : nullptr;
+        if (!s || s->size < 32) return false;
+        const float* f = (const float*)s->data;
+        for (int i = 0; i < 8; ++i) if (fabsf(f[i] - (-1.0f / 512.0f)) < 1e-6f) return true;
+        return false;
     }
     HRESULT __stdcall hkMapG(ID3D11DeviceContext* c, ID3D11Resource* r, UINT sub, D3D11_MAP t, UINT f, D3D11_MAPPED_SUBRESOURCE* m)
     {
@@ -485,8 +511,20 @@ namespace {
         MarkRow& m = g_mrCur[g_mrCurN++];
         m.vs = vs_hud_index(g_curVs); m.split = split ? 1 : 0; m.nHits = 0; m.cbSize = 0;
         Shadow* s = g_vsCb0 ? sh_find(g_vsCb0, false) : nullptr;
-        if (!s || !s->size) { m.nHits = -1; return; }
+        if (!s || !s->size) { m.nHits = -1; m.psHits = 0; m.psSize = 0; m.layerOnly = 0; return; }
         m.cbSize = s->size;
+        m.psHits = 0; m.psSize = 0; m.layerOnly = 0;
+        if (Shadow* p = g_psCb0 ? sh_find(g_psCb0, false) : nullptr)
+        {
+            m.psSize = p->size;
+            const float* pf = (const float*)p->data;
+            for (UINT i = 0; i < p->size / 4; ++i)
+            {
+                const float a = pf[i] < 0.0f ? -pf[i] : pf[i];
+                if (a > 0.001f && a < 0.003f) { if (m.psHits < 2) { m.psWhere[m.psHits] = (int)i; m.psVal[m.psHits] = pf[i]; } ++m.psHits; }
+            }
+        }
+        m.layerOnly = split && vs_no_colour(m.vs) && ps_marked() ? 1 : 0;
         const float* f = (const float*)s->data;
         for (UINT i = 0; i < s->size / 4; ++i)
         {
@@ -516,6 +554,7 @@ namespace {
         {
             note_draw(c, L);
             if (L == 0 && snoop_ctx(c)) mark_record(c, split_now(c));   // MARKREC
+            if (L == 0 && split_now(c) && layer_only_now()) { layer_only_pre(c); oDrawIndexed(c, n, s, b); layer_only_post(c); return; }   // PSMARK
             if (L == 0 && split_now(c)) { split_pre(c); oDrawIndexed(c, n, s, b); split_mid(c); oDrawIndexed(c, n, s, b); split_post(c); return; }
             if (L == 0 && c == g_gameCtx && akvr_hudsplit_active())
             {   // VSID2: geo-11 may bind its real shader only when the draw arrives - learn the pairing here
@@ -530,6 +569,7 @@ namespace {
         {
             note_draw(c, L);
             if (L == 0 && snoop_ctx(c)) mark_record(c, split_now(c));   // MARKREC
+            if (L == 0 && split_now(c) && layer_only_now()) { layer_only_pre(c); oDraw(c, n, s); layer_only_post(c); return; }   // PSMARK
             if (L == 0 && split_now(c)) { split_pre(c); oDraw(c, n, s); split_mid(c); oDraw(c, n, s); split_post(c); return; }
             if (L == 0 && c == g_gameCtx && akvr_hudsplit_active())
             {   // VSID2: geo-11 may bind its real shader only when the draw arrives - learn the pairing here
@@ -544,6 +584,7 @@ namespace {
         {
             note_draw(c, L);
             if (L == 0 && snoop_ctx(c)) mark_record(c, split_now(c));   // MARKREC
+            if (L == 0 && split_now(c) && layer_only_now()) { layer_only_pre(c); oDrawIdxInst(c, a, i, s, b, si); layer_only_post(c); return; }   // PSMARK
             if (L == 0 && split_now(c)) { split_pre(c); oDrawIdxInst(c, a, i, s, b, si); split_mid(c); oDrawIdxInst(c, a, i, s, b, si); split_post(c); return; }
             if (L == 0 && c == g_gameCtx && akvr_hudsplit_active())
             {   // VSID2: geo-11 may bind its real shader only when the draw arrives - learn the pairing here
@@ -558,6 +599,7 @@ namespace {
         {
             note_draw(c, L);
             if (L == 0 && snoop_ctx(c)) mark_record(c, split_now(c));   // MARKREC
+            if (L == 0 && split_now(c) && layer_only_now()) { layer_only_pre(c); oDrawInst(c, a, i, s, si); layer_only_post(c); return; }   // PSMARK
             if (L == 0 && split_now(c)) { split_pre(c); oDrawInst(c, a, i, s, si); split_mid(c); oDrawInst(c, a, i, s, si); split_post(c); return; }
             if (L == 0 && c == g_gameCtx && akvr_hudsplit_active())
             {   // VSID2: geo-11 may bind its real shader only when the draw arrives - learn the pairing here
@@ -830,6 +872,11 @@ namespace {
                g_cbFlat && g_cbDepth && akvr_hudsplit_active() && split_vs_ok(c);
     }
     void split_pre(ID3D11DeviceContext* c) { c->VSSetConstantBuffers(13, 1, &g_cbFlat); }
+    // PSMARK: one draw into H (already bound) with cb13 = 0, so the shader's split tail keeps the piece.
+    long g_layerOnlyDraws = 0, g_layerOnlyRep = 0;
+    bool layer_only_now() { return g_cbAll && vs_no_colour(vs_hud_index(g_curVs)) && ps_marked(); }
+    void layer_only_pre(ID3D11DeviceContext* c) { c->VSSetConstantBuffers(13, 1, &g_cbAll); }
+    void layer_only_post(ID3D11DeviceContext* c) { c->VSSetConstantBuffers(13, 1, &g_cbFlat); ++g_layerOnlyDraws; }
     void split_mid(ID3D11DeviceContext* c)
     {   // the game's own target and blend: scene-depth pieces land in the 3D picture as before
         G::oOMSetRT(c, g_reqN, g_reqRtv, g_reqDsv);
@@ -875,12 +922,13 @@ namespace {
         // Usage and BindFlags - the switch buffers were created without CONSTANT_BUFFER, never reached the shaders
         // (cb13 read 0 = keep everything), and every split HUD piece was drawn in BOTH the layer and the picture
         // (JJ's "doubled HUD" from EDGEBAND on). Back to one row, as the shaders declare (CB13[1]).
-        const float v1[4] = { 1, 0, 0, 0 }, v2[4] = { 2, 0, 0, 0 };
+        const float v1[4] = { 1, 0, 0, 0 }, v2[4] = { 2, 0, 0, 0 }, v0[4] = { 0, 0, 0, 0 };
         D3D11_BUFFER_DESC bd{}; bd.ByteWidth = 16; bd.Usage = D3D11_USAGE_DEFAULT; bd.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
         g_bandSent = -1.0f;   // written with the band line on first use
         D3D11_SUBRESOURCE_DATA sd{};
         sd.pSysMem = v1; if (!g_cbFlat && FAILED(dev->CreateBuffer(&bd, &sd, &g_cbFlat))) g_cbFlat = nullptr;
         sd.pSysMem = v2; if (!g_cbDepth && FAILED(dev->CreateBuffer(&bd, &sd, &g_cbDepth))) g_cbDepth = nullptr;
+        sd.pSysMem = v0; if (!g_cbAll && FAILED(dev->CreateBuffer(&bd, &sd, &g_cbAll))) g_cbAll = nullptr;
         dev->Release();
     }
 
@@ -932,6 +980,7 @@ namespace {
             if (g_cb13Orig) { g_cb13Orig->Release(); g_cb13Orig = nullptr; }
         }
         g_splitDrawsRep = g_splitDraws;
+        g_layerOnlyRep = g_layerOnlyDraws; g_layerOnlyDraws = 0;   // PSMARK
         if (g_mrCurN > 0) { memcpy(g_mrRep, g_mrCur, sizeof(MarkRow) * g_mrCurN); g_mrRepN = g_mrCurN; g_mrRepFrame = g_frame; }   // MARKREC
         if (g_scopeSubs > 0) { g_lastSubFrame = g_frame; ++g_layerFrames; }
         g_subsRep = g_scopeSubs;
@@ -1036,6 +1085,7 @@ namespace {
         const int n = hook_table<0>(gvt, nullptr, true, true, true, true);
         // MARKREC: constant-buffer traffic on the game context (slots 7 VSSetConstantBuffers, 14 Map, 15 Unmap, 48 UpdateSubresource)
         hook_slot(gvt, nullptr, 7, (void*)&hkVSSetCB, (void**)&oVSSetCB);
+        hook_slot(gvt, nullptr, 16, (void*)&hkPSSetCB, (void**)&oPSSetCB);   // PSMARK
         hook_slot(gvt, nullptr, 14, (void*)&hkMapG, (void**)&oMapG);
         hook_slot(gvt, nullptr, 15, (void*)&hkUnmapG, (void**)&oUnmapG);
         hook_slot(gvt, nullptr, 48, (void*)&hkUpdSubG, (void**)&oUpdSubG);
@@ -1257,14 +1307,18 @@ void akvr_hudsplit_marks_dump(const wchar_t* path)
     fprintf(f, "# MARKREC: HUD draws of the last HUD frame (%u). vs = index into the 13 (-1 = not one of them); hits = floats in cb0\n", g_mrRepFrame);
     fprintf(f, "# with |v| in 0.001..0.003 (the part mark is -0.001953), as float index (row = idx/4, component = idx%%4) and value.\n");
     fprintf(f, "# hooks: VSSetCB %d Map %d Unmap %d UpdSub %d, shadows %d\n", oVSSetCB ? 1 : 0, oMapG ? 1 : 0, oUnmapG ? 1 : 0, oUpdSubG ? 1 : 0, g_shN);
-    fprintf(f, "draw,vs,vs_hash,split,cb_bytes,hits,idx1,val1,idx2,val2,idx3,val3,idx4,val4\n");
+    fprintf(f, "# PSMARK: marked draws of the 4 no-colour shaders sent whole to the layer, last frame: %ld\n", g_layerOnlyRep);
+    fprintf(f, "draw,vs,vs_hash,split,cb_bytes,hits,idx1,val1,idx2,val2,idx3,val3,idx4,val4,ps_bytes,ps_hits,ps_idx1,ps_val1,ps_idx2,ps_val2,layer_only\n");
     for (int i = 0; i < g_mrRepN; ++i)
     {
         const MarkRow& m = g_mrRep[i];
         fprintf(f, "%d,%d,%016llx,%d,%u,%d", i, m.vs, m.vs >= 0 ? (unsigned long long)kHudVsHash[m.vs] : 0ull, m.split, m.cbSize, m.nHits);
         for (int k = 0; k < 4; ++k)
             if (k < m.nHits) fprintf(f, ",%d,%.6f", m.where[k], m.val[k]); else fprintf(f, ",,");
-        fprintf(f, "\n");
+        fprintf(f, ",%u,%d", m.psSize, m.psHits);
+        for (int k = 0; k < 2; ++k)
+            if (k < m.psHits) fprintf(f, ",%d,%.6f", m.psWhere[k], m.psVal[k]); else fprintf(f, ",,");
+        fprintf(f, ",%d\n", m.layerOnly);
     }
     fclose(f);
 }
