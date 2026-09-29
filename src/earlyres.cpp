@@ -3496,8 +3496,10 @@ namespace
         for (LONG i = 0; i < n; ++i) if (g_tagNodes[i] == node) return true;
         return false;
     }
-    // PARTTAG4: the mark goes into add red, green and blue (+0x60/+0x64/+0x68), so a tinted child keeps some of it.
-    void mark_rgb(uint8_t* data, float v) { *(float*)(data + 0x60) = v; *(float*)(data + 0x64) = v; *(float*)(data + 0x68) = v; }
+    // PARTTAG4/5: the mark goes into add red, green, blue AND alpha (+0x60..+0x6C). CBDUMP showed pieces coloured by
+    // their own add (multiply 0), where only the alpha add (0 for such a child) still shows the mark.
+    void mark_rgb(uint8_t* data, float v)
+    { *(float*)(data + 0x60) = v; *(float*)(data + 0x64) = v; *(float*)(data + 0x68) = v; *(float*)(data + 0x6C) = v; }
     void hkObjSetCxform(void* obj, const float* cx)
     {
         g_origObjCx(obj, cx);

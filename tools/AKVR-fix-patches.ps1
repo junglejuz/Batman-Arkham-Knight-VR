@@ -367,6 +367,10 @@ function Patch-DepthAll([string]$hash) {
 # parent's, so a tinted child scales the parent's add by its own multiply - a green icon (blue x 0) loses a blue-only
 # mark. AKVR now marks red, green and blue (-1/512 each) and a piece counts as marked when ANY of add .x/.y/.z lies in
 # -0.003..-0.0002 (the mark scaled by a tint down to ~0.1). Two new temps.
+# PARTTAG5 2026-09-30 (CBDUMP, JJ's compass pieces shown / hidden): the four stuck pieces were (a) marked TWICE - the
+# compass and the child were both ticked, and marks add up (add = -0.003906) - and (b) pieces coloured by their OWN
+# add (multiply 0, add ~0.75..0.86), where a small mark disappears inside the colour. The mark now goes into alpha
+# too (a child's own alpha add is 0), and any of add .x/.y/.z/.w in -0.02..-0.0002 counts (up to ~10 stacked marks).
 $tagMarker = '// AKVR PARTTAG'
 function Patch-PartTag([string]$hash) {
     $txt = Join-Path $dm "$hash-vs.txt"
@@ -407,15 +411,15 @@ function Patch-PartTag([string]$hash) {
     if (-not $temps.Success) { Say "  $hash : no dcl_temps - part mark NOT patched" 'Red'; return }
     $n = [int]$temps.Groups[1].Value; $t = "r$n"; $u = "r$($n + 1)"; $i = $m.Groups['i'].Value
     $test = @(
-        "lt $t.xyz, $add.xyzx, l(-0.000200, -0.000200, -0.000200, 0.000000)",
-        "lt $u.xyz, l(-0.003000, -0.003000, -0.003000, 0.000000), $add.xyzx",
-        "and $t.xyz, $t.xyzx, $u.xyzx",
+        "lt $t.xyzw, $add.xyzw, l(-0.000200, -0.000200, -0.000200, -0.000200)",
+        "lt $u.xyzw, l(-0.020000, -0.020000, -0.020000, -0.020000), $add.xyzw",
+        "and $t.xyzw, $t.xyzw, $u.xyzw",
+        "or $t.xy, $t.xyxx, $t.zwzz",
         "or $t.x, $t.y, $t.x",
-        "or $t.x, $t.z, $t.x",
         "not $t.x, $t.x"
     )
     $apply = @(
-        "$tagMarker 2026-09-30: a piece of a HUD part AKVR marked 'hang in the room' (colour add .x/.y/.z in -0.003..-0.0002)",
+        "$tagMarker 2026-09-30: a piece of a HUD part AKVR marked 'hang in the room' (colour add .x/.y/.z/.w in -0.02..-0.0002)",
         "// never follows scene depth: flat, and AKVR's split sends it whole to the layer."
     )
     if ($early) { $apply += @("and $dec, $dec, $t.x") } else { $apply += $test + @("and $dec, $dec, $t.x") }

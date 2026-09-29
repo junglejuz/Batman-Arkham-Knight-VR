@@ -293,7 +293,14 @@ run 0). **Driver test:** 13/13 assembled (cmd_Decompiler 0.6.90 `-a`) and loaded
 
 ## 1g. ShaderFixesDM: HUD parts marked "hang in the room" never follow scene depth (AKVR, PARTTAG, 2026-09-30)
 
-**PARTTAG4 2026-09-30 (current, applied to JJ's game):** the mark is written to add red, green and blue, and a piece
+**PARTTAG5 2026-09-30 (current, applied to JJ's game):** CBDUMP (two F2s, JJ's four stuck compass pieces shown / hidden)
+showed (a) stacked marks: compass AND child ticked, add = -0.003906, outside -0.003; (b) pieces coloured by their own add
+(multiply 0, add ~0.75..0.86) that swallow a small rgb mark. The mark now also goes into add ALPHA (a child's own alpha add
+is 0) and any of .x/.y/.z/.w in -0.02..-0.0002 counts. Test lines: `lt rT.xyzw, ADD.xyzw, l(-0.0002 x4)`,
+`lt rU.xyzw, l(-0.02 x4), ADD.xyzw`, `and`, `or rT.xy, rT.xyxx, rT.zwzz`, `or`, `not`. 9/9 driver-tested, temps checked.
+Previous state: `diagnostics/before-PARTTAG5-20260930/`.
+
+**PARTTAG4 (superseded):** the mark is written to add red, green and blue, and a piece
 counts as marked when ANY of add .x/.y/.z is in -0.003..-0.0002 (a tinted child scales the parent's add by its own
 multiply, so a green icon lost a blue-only mark; JJ: pieces over the compass stayed head-locked). Two new temps
 (`dcl_temps` +2): `lt rT.xyz, ADD.xyzx, l(-0.0002 x3, 0)`, `lt rU.xyz, l(-0.003 x3, 0), ADD.xyzx`, `and`, two `or`, `not`.
@@ -516,3 +523,4 @@ baseline versions). Needs JJ: where the 2026-09-26 update came from, or an in-ga
 | 2026-09-30 | PARTTAG | 7 HUD vertex shaders: marked parts never at scene depth | 1g |
 | 2026-09-30 | PARTTAG3 | 1g corrected: first colour row (add), + mad layout; 9 shaders | 1g |
 | 2026-09-30 | PARTTAG4 | 1g: mark in r/g/b, any channel -0.003..-0.0002 (tinted children) | 1g |
+| 2026-09-30 | PARTTAG5 | 1g: mark also in alpha, any channel -0.02..-0.0002 (stacked / own-add pieces) | 1g |

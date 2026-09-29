@@ -484,7 +484,7 @@ namespace {
         Shadow* s = g_psCb0 ? sh_find(g_psCb0, false) : nullptr;
         if (!s || s->size < 32) return false;
         const float* f = (const float*)s->data;
-        for (int i = 0; i < 8; ++i) if (fabsf(f[i] - (-1.0f / 512.0f)) < 1e-6f) return true;
+        for (int i = 0; i < 8; ++i) if (f[i] < -0.0002f && f[i] > -0.02f) return true;   // PARTTAG5: stacked marks too
         return false;
     }
     HRESULT __stdcall hkMapG(ID3D11DeviceContext* c, ID3D11Resource* r, UINT sub, D3D11_MAP t, UINT f, D3D11_MAPPED_SUBRESOURCE* m)
