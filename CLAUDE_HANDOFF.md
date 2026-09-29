@@ -118,6 +118,15 @@ then tips etc. Also: MENUDELAY (menu pose delay 2, JJ confirmed the value), vign
 Still open: first-menu Batman flicker for a while; loading screens look vertically stretched (need F2 captures);
 the game's zoom overlay = part C0.0.0.0.0.2 per JJ (tick hide).
 
+**2026-09-30 00:xx, builds PARTTAG2 -> MARKREC (installed):** JJ ticked "hang in the room" on the compass (K2/0.0.0.0.1.0.0.2):
+mark stays on the node (found in place 8801 / missing 3, guard never needed) but the compass is STILL doubled -> the mark
+does not reach the 7 colour shaders as expected (scaled / clamped add, or drawn by one of the 6 non-colour shaders).
+MARKREC: F2 writes `<capture>hudmarks.csv` = per HUD draw: which of the 13 shaders, split or not, and floats in cb0 with
+|v| 0.001..0.003 (hooks on the game-facing context: VSSetConstantBuffers 7, Map 14, Unmap 15, UpdateSubresource 48).
+NEXT: JJ's F2 with the compass on screen -> read hudmarks.csv. Loading screen (JJ's F2 23:44): the loading picture
+is drawn 1.22:1 in the 2888x2860 frame (cols 63-928 x rows 117-825 at 1/3), not 16:9 - stretched or cropped by the
+menu full-height fill; not investigated further yet. Main menu size = `screen` (JJ has 1.00).
+
 ## Open issues, in priority order
 
 1. **The fresh-install test above.**
