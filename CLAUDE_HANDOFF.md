@@ -178,6 +178,12 @@ except FrontendBGFader, ModularHud first (2040-part cap) and ModularHud claims c
 1-token fingerprints); new containers reuse empty id slots. (3) fingerprints refresh only from >= 80% complete trees
 (the 0.5 s pass). JJ's own heights: K1/0 y -0.135, K9/0 y -0.135, K3/0 + K5/0 y -0.1 - PRESERVE on every settings edit.
 
+**WHOLEFRAME + LOADSIZE (2026-09-30 ~02:45, installed, untested):** JJ's logo F2: the game draws full-screen pictures
+filling most of the frame height, and the 16:9 slice (PAUSE169) cut the logo's legal text. Splash (phase 0) and the
+loading screen into the game (phase 1, not live) now show the WHOLE frame; pause/map keep 16:9. Loading-in screen has
+its own size `loadscreen` (0.6). Screen kind is LATCHED when the screen appears (phase flips 5 s into the load).
+In-game loading screens (fast travel/death) still look like pause (16:9 slice, pause size).
+
 ## Open issues, in priority order
 
 1. **The fresh-install test above.**

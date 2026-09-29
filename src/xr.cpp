@@ -270,6 +270,9 @@ float g_pauseFovScale = 0.5f;
 // SPLASHSIZE 2026-09-30 — JJ: "the splash screens at the start ... including the big Batman logo ... are a bit too
 // big". Screens before the main menu is found (menu phase 0) had the pause/map size; now their own, smaller.
 float g_splashFovScale = 0.55f;
+// LOADSIZE 2026-09-30 — JJ: "reduce the size of the loading screens a bit too", without touching gameplay. The loading
+// screen into the game (after the main menu, before gameplay) gets its own size; gameplay is always full size.
+float g_loadFovScale = 0.6f;
 // The main menu runs a live 3D camera exactly like gameplay, so the detector calls it
 // GAMEPLAY. But its place in the sequence is fixed: boot/splash (screen) -> main
 // menu (camera live) -> loading screen -> game. So the FIRST camera-live stretch after
@@ -2324,13 +2327,22 @@ void akvr_xr_frame_submit(IDXGISwapChain *swapChain, float gameFovDeg,
   // decided once, when the screen appears, and held until gameplay returns.
   static bool s_wasEff = true;
   static bool s_latchedMenuSize = false;
-  if (!effGameplay && s_wasEff) s_latchedMenuSize = akvr_xr_screen_mode();
+  // LOADSIZE / WHOLEFRAME: the kind of screen is latched too - the menu phase closes 5 s into the loading screen,
+  // which must not switch its size or framing half way (the SIZELATCH jump).
+  static bool s_latchedSplash = false, s_latchedLoad = false;
+  if (!effGameplay && s_wasEff) {
+    s_latchedMenuSize = akvr_xr_screen_mode();
+    s_latchedSplash = !g_forceScreen && g_autoMainMenu && g_menuPhase == 0;
+    s_latchedLoad = !g_forceScreen && g_autoMainMenu && g_menuPhase == 1 && !akvr_xr_screen_mode();
+  }
   if (akvr_xr_screen_mode()) s_latchedMenuSize = true;   // F6 / menu mid-screen: menu size
   s_wasEff = effGameplay;
-  const bool splash = !g_forceScreen && g_autoMainMenu && g_menuPhase == 0;   // SPLASHSIZE
+  const bool splash = s_latchedSplash && !g_forceScreen;   // SPLASHSIZE
+  const bool loadIn = s_latchedLoad && !g_forceScreen;     // LOADSIZE
   float fovScale = effGameplay ? 1.0f
                    : (g_forceScreen ? g_floatScreenScale
-                      : (splash ? g_splashFovScale : (s_latchedMenuSize ? g_screenFovScale : g_pauseFovScale)));
+                      : (splash ? g_splashFovScale
+                         : (loadIn ? g_loadFovScale : (s_latchedMenuSize ? g_screenFovScale : g_pauseFovScale))));
   // SCREENTAN 2026-09-30 — JJ: the loading screens "feel a bit too stretched vertically". The sizes scaled the
   // half-ANGLES, which is not a uniform scale of the picture: at this FOV (~52 deg half) and 70% the width shrinks
   // more than the height and a 16:9 screen showed ~13% too tall (SKVR's SCREENTAN lesson, same code here). Keep each
@@ -2365,7 +2377,7 @@ void akvr_xr_frame_submit(IDXGISwapChain *swapChain, float gameFovDeg,
   // pictures filling most of the frame's height; the 16:9 slice kept only the middle). Screens before gameplay has
   // started (logos, the loading screen after the main menu) show the whole frame at its real shape: nothing cut,
   // nothing stretched. Pause and map keep the 16:9 slice (their mask is 16:9, PAUSE169).
-  const bool preGame = !g_forceScreen && g_autoMainMenu && g_menuPhase <= 1;
+  const bool preGame = splash || loadIn;
   const float scrAspect = g_forceScreen ? g_screenAspect : (!effGameplay && !preGame ? g_pauseAspect : 0.0f);
   if (scrAspect > 0.5f) {
     const float tH = tanf(halfH), tV = tanf(halfV);
@@ -2689,6 +2701,8 @@ bool akvr_xr_auto_main_menu() { return g_autoMainMenu; }
 void akvr_xr_auto_main_menu_set(bool on) { g_autoMainMenu = on; }
 float akvr_xr_pause_zoom() { return g_pauseFovScale; }
 float akvr_xr_splash_zoom() { return g_splashFovScale; }
+float akvr_xr_load_zoom() { return g_loadFovScale; }
+void  akvr_xr_load_zoom_set(float v) { g_loadFovScale = v < 0.1f ? 0.1f : (v > 1.0f ? 1.0f : v); }
 void  akvr_xr_splash_zoom_set(float v) { g_splashFovScale = v < 0.1f ? 0.1f : (v > 1.0f ? 1.0f : v); }
 void akvr_xr_pause_zoom_set(float v) {
   g_pauseFovScale = v < 0.1f ? 0.1f : (v > 1.0f ? 1.0f : v);
