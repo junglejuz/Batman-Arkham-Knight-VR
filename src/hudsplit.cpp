@@ -106,6 +106,12 @@ namespace {
     // into two pieces when the head moved; 28 fixed it -> fixed at 28, slider removed from the panel.
     float g_bandPct = 28.0f;
     float g_bandSent = -1.0f;
+    // EDGEBAND (fix step 1f, 2026-09-29): JJ with the HUD hung in the room (HUDWORLD) - the compass and the
+    // gameplay tips near the bottom still moved with the head. All 13 HUD shaders now also keep pieces whose
+    // origin is in the bottom g_bottomPct %% on the layer (cb13[1].x = that line's distance below the centre,
+    // clip y), and the top band reaches all 13 (it was only in the two filter-42 shaders). 0 = no strip.
+    float g_bottomPct = 28.0f;
+    float g_bottomSent = -1.0f;
     // RETSQUASH: the game frame's tan half-angles for the shader's edge-squash correction (cb13[0].zw).
     bool  g_squashWant = false;   // PANELTIDY 2026-09-28: JJ - never worked in the headset; removed from the panel, always off
     float g_tanSent[2] = { -1.0f, -1.0f };
@@ -741,8 +747,8 @@ namespace {
         if (g_cbFlat && g_cbDepth) return;
         ID3D11Device* dev = nullptr; c->GetDevice(&dev);
         if (!dev) return;
-        const float v1[4] = { 1, 0, 0, 0 }, v2[4] = { 2, 0, 0, 0 };
-        D3D11_BUFFER_DESC bd{}; bd.ByteWidth = 16; bd.Usage = D3D11_USAGE_DEFAULT; bd.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
+        const float v1[8] = { 1, 0, 0, 0, 0, 0, 0, 0 }, v2[8] = { 2, 0, 0, 0, 0, 0, 0, 0 };
+        D3D11_BUFFER_DESC bd{}; bd.ByteWidth = 32;   // EDGEBAND: two rows (CB13[2] in the shaders) bd.Usage = D3D11_USAGE_DEFAULT; bd.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
         g_bandSent = -1.0f;   // written with the band line on first use
         D3D11_SUBRESOURCE_DATA sd{};
         sd.pSysMem = v1; if (!g_cbFlat && FAILED(dev->CreateBuffer(&bd, &sd, &g_cbFlat))) g_cbFlat = nullptr;
@@ -761,13 +767,16 @@ namespace {
             split_buffers(g_gameCtx);
             float th = 0.0f, tv = 0.0f;
             if (g_squashWant) akvr_xr_game_tan(th, tv);
-            if (g_cbFlat && g_cbDepth && (g_bandSent != g_bandPct || fabsf(th - g_tanSent[0]) > 1e-4f || fabsf(tv - g_tanSent[1]) > 1e-4f))
-            {   // .y = the band line in clip y (0 = no band); .zw = tan half-angles (0 = no squash fix)
+            if (g_cbFlat && g_cbDepth && (g_bandSent != g_bandPct || g_bottomSent != g_bottomPct ||
+                                          fabsf(th - g_tanSent[0]) > 1e-4f || fabsf(tv - g_tanSent[1]) > 1e-4f))
+            {   // .y = the band line in clip y (0 = no band); .zw = tan half-angles (0 = no squash fix);
+                // row 1 .x = the bottom strip's line, as a distance below the centre (0 = no strip)
                 const float y = g_bandPct > 0.5f ? 1.0f - 2.0f * g_bandPct / 100.0f : 0.0f;
-                const float f1[4] = { 1, y, th, tv }, f2[4] = { 2, y, th, tv };
+                const float yb = g_bottomPct > 0.5f ? 1.0f - 2.0f * g_bottomPct / 100.0f : 0.0f;
+                const float f1[8] = { 1, y, th, tv, yb, 0, 0, 0 }, f2[8] = { 2, y, th, tv, yb, 0, 0, 0 };
                 g_gameCtx->UpdateSubresource(g_cbFlat, 0, nullptr, f1, 0, 0);
                 g_gameCtx->UpdateSubresource(g_cbDepth, 0, nullptr, f2, 0, 0);
-                g_bandSent = g_bandPct; g_tanSent[0] = th; g_tanSent[1] = tv;
+                g_bandSent = g_bandPct; g_bottomSent = g_bottomPct; g_tanSent[0] = th; g_tanSent[1] = tv;
             }
             g_cb13Orig = nullptr;
             g_gameCtx->VSGetConstantBuffers(13, 1, &g_cb13Orig);   // released at the end, after restoring it
@@ -1153,6 +1162,8 @@ const char* akvr_hudsplit_split_diag()
 }
 void  akvr_hudsplit_band_set(float pct) { g_bandPct = pct < 0.0f ? 0.0f : (pct > 80.0f ? 80.0f : pct); }
 float akvr_hudsplit_band() { return g_bandPct; }
+void  akvr_hudsplit_bottom_set(float pct) { g_bottomPct = pct < 0.0f ? 0.0f : (pct > 45.0f ? 45.0f : pct); }
+float akvr_hudsplit_bottom() { return g_bottomPct; }
 
 // VSID: called from hooks.cpp's device / swapchain creation hooks, as early as possible (AK creates its shaders at
 // load). Hooks CreateVertexShader of each distinct device function table (game-facing wrapper and real device).

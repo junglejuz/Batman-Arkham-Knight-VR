@@ -252,6 +252,39 @@ with the split on, the band needs adding here too.
 
 ---
 
+## 1f. ShaderFixesDM: top and bottom strips stay on the HUD layer, all 13 shaders (AKVR, EDGEBAND, 2026-09-29)
+
+**Files:** all 13 HUD `-vs.txt` (after 1, 1b, 1c, 1d, 1e); `-vs.bin` deleted.
+
+**Why:** JJ, build HUDWORLD (the HUD layer hangs in the room): the compass (top) and the gameplay tips (bottom) still
+moved with the head. The fix's scene-depth decision (1b / 1e) keeps them in the 3D picture, and the RETFLAT compass band
+(1c) exists only in the two filter-42 shaders. The compass, the tips and the target-distance icon are one HUD container
+(JJ hid "C1.0" and all three went).
+
+**Edit (per file; `rM` = new temp, `dcl_temps` +1; `rD` = the split register holding the decision):**
+1. `dcl_constantbuffer CB13[1], immediateIndexed` becomes `CB13[2]`.
+2. After the LAST `dp4 rA.y, vK.xyzw, cb0[ROW].xyzw` into a temp register before the first IniParams (`t120`) load
+   (the position transform), insert:
+   ```
+   // AKVR EDGEBAND: the piece origin's y (matrix translation; the vertex when its w is not 1)
+   eq rM.x, vK.w, l(1.000000)
+   movc rM.y, rM.x, cb0[ROW].w, rA.y
+   ```
+3. Directly before the split tail's `eq rD.yz, cb13[0].xxxx, ...`, insert the strip test (top: origin above clip y =
+   cb13[0].y; bottom: origin below clip y = -cb13[1].x; each only when its value is not 0), ending
+   `and rD.x, rD.x, rM.z` (the decision is turned off inside the strips).
+Rows found: cb0[7].w (9938094a, 3b819a7e, fd60f2d7, e12863b9, 9689d605, 91e2b222), cb0[9].w (c9b47e60), cb0[r1.w + 0].w
+(05154232), cb0[r0.y + 0].w (599bd060), cb0[r0.w + 0].w (4b432a87, 54cd897e, 7d8fcdc2, ef1c1604).
+cb13 unbound (no AKVR layer) = all zero = no change. AKVR sends the top band (28%) and the bottom strip (panel slider
+"bottom strip that hangs in the room", default 28%, setting `hudbottom`) in a 32-byte buffer.
+
+**Detect:** `// AKVR EDGEBAND`. **Reference:** `Patch-EdgeBand` in `tools/AKVR-fix-patches.ps1` (copy: 13 patched, second
+run 0). **Driver test:** 13/13 assembled (cmd_Decompiler 0.6.90 `-a`) and loaded OK by `tools/shader_driver_test`.
+**Applied** 2026-09-29 to JJ's game with the script (all texts byte-identical to the tested copy). Rollback:
+`akvr/diagnostics/before-EDGEBAND-20260929/` (13 texts + bins, the DLL and settings).
+
+---
+
 ## 2. d3dxdm.ini
 
 | Key / section | Baseline | AKVR value | Status and reason |
@@ -425,3 +458,4 @@ baseline versions). Needs JJ: where the 2026-09-26 update came from, or an in-ga
 | 2026-09-29 | PANELTIDY / BAND28 (DLL only) | none - RETSQUASH (1d) now inert; compass band fixed at 28% by the mod | 1c, 1d |
 | 2026-09-29 | installer | Install-AKVR.ps1 runs the patch script; NonSquareRT block on for Arkham; verified on practice folders | all |
 | 2026-09-29 | installer (GAMEWORKS) | BmSystemSettings.ini GameWorks keys = 0; NVIDIA store: detail / 2x filtering / GameWorks off (first install) | 6 |
+| 2026-09-29 | EDGEBAND | 13 HUD vertex shaders: top + bottom strips stay on the layer (CB13[2]) | 1f |

@@ -1905,7 +1905,10 @@ void akvr_xr_frame_submit(IDXGISwapChain *swapChain, float gameFovDeg,
     const ULONGLONG t = GetTickCount64();
     if (!gp) s_gpSince = 0; else if (!s_gpSince) s_gpSince = t;
     g_eyeWantGameplay = gp && t - s_gpSince > 1500;
-    akvr_hudsplit_layer_gate(g_eyeWantGameplay);   // HUDLAYER: redirect the HUD only in steady gameplay
+    // HUDLAYER: redirect the HUD only in steady gameplay - and, since HUDWORLD (JJ 2026-09-29: "the main
+    // menu is attached to the head as well"), on the live 3D main menu too, so its text hangs in the room.
+    const bool menuLive = g_menu3d && effGameplay && akvr_xr_main_menu_detected();
+    akvr_hudsplit_layer_gate(g_eyeWantGameplay || menuLive);
   }
   if (effGameplay) {
     g_wasGameplay = true;
