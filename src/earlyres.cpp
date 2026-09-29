@@ -3554,18 +3554,16 @@ namespace
     // their own add (multiply 0), where only the alpha add (0 for such a child) still shows the mark.
     // KEEPGLOW 2026-09-30 — JJ: two compass pieces he had ticked "hang in the room" (K2/...2.0.6, .2.0.7) "should be a
     // glow but it looks like a darkening effect". Writing the mark REPLACED the part's own colour add, and Flash glows and
-    // brightness tints are made of add: only the dimming multiply was left. Red, green and blue now take the mark only
-    // where their add is 0 (or already the mark), so the game's glow is kept (the shaders test .w too, and a child's
-    // alpha add is almost always 0, so descendants inherit the alpha mark).
+    // brightness tints are made of add: only the dimming multiply was left. Those two sit under the compass, which is
+    // ticked too, so their own mark was redundant (a parent's mark reaches every descendant).
     void mark_rgb(uint8_t* data, float v)
     {
         float* add = (float*)(data + 0x60);
         if (v == 0.0f) { for (int c = 0; c < 4; ++c) if (add[c] == kPartTag) add[c] = 0.0f; return; }
-        for (int c = 0; c < 3; ++c) if (add[c] == 0.0f || add[c] == v) add[c] = v;
-        // KEEPGLOW2 — JJ on KEEPGLOW: the launch objective went back to the head. Its text is coloured by its own add
-        // and it fades through the alpha add, so with alpha kept the mark reached none of its channels. Alpha always
-        // takes the mark (as before KEEPGLOW); glows live in the colour adds, which stay.
-        add[3] = v;
+        // KEEPGLOW3 — JJ: with KEEPGLOW/KEEPGLOW2 the launch objective stayed on the head; it hung in the room when the
+        // mark overwrote all four adds (WORLDKIDS). Back to that; the glow is kept instead by never marking a part
+        // under an already marked one (apply_layers), which is where the two compass pieces lost it.
+        for (int c = 0; c < 4; ++c) add[c] = v;
     }
     bool has_mark(uintptr_t data)
     {
@@ -3667,19 +3665,29 @@ namespace
             {
                 const int p = g_layers[i].parent;
                 s_inWorld[i] = g_layers[i].world || (p >= 0 && p < i && s_inWorld[p]);
-                g_layers[i].autoRoom = !s_holds[i] && !s_inWorld[i] && (p < 0 || (p < i && s_holds[p]));
+                // ROOTKIDS 2026-09-30 — JJ: the launch objective stays on the head. A movie with no world part marked
+                // only its ROOT, and roots are never written (apply_layers skips depth 0), so nothing in it was marked.
+                // A root is never marked; its children are the top branches.
+                const bool topBranch = p >= 0 && p < i && (s_holds[p] || g_layers[p].depth == 0);
+                g_layers[i].autoRoom = p >= 0 && !s_holds[i] && !s_inWorld[i] && topBranch;
             }
             g_autoDirty = false;
         }
+        static bool s_markAbove[2048];              // KEEPGLOW3: this part or one above it is marked
         for (int i = 0; i < g_nLayers; ++i)
         {
             Layer& L = g_layers[i];
+            // KEEPGLOW3: a part under a marked part already carries the mark; marking it too only wipes its own colour
+            // add (JJ's compass glow pieces). Parents come before their children in the list.
+            const bool roomWanted = !L.world && (L.room || (g_roomAll && L.autoRoom));   // ROOMALL
+            const bool above = L.parent >= 0 && L.parent < i && s_markAbove[L.parent];
+            s_markAbove[i] = roomWanted || above;
             if (L.view != view || L.depth == 0) continue;
             const bool moved = layer_moved(L);
             // ZOOMHIDE 2026-09-30 — JJ: the game's own 2D zoom vignette is the same part as the gameplay tips, so a
             // plain hide took the tips too. "hide while zoomed" hides it only while our zoom vignette is on.
             const bool hideNow = L.hide || (L.zoomHide && akvr_xr_vig_active());
-            const bool roomNow = !L.world && (L.room || (g_roomAll && L.autoRoom));   // ROOMALL
+            const bool roomNow = roomWanted && !above;
             if (!moved && !hideNow && !L.haveLast && !L.hidByUs && !roomNow && !L.taggedByUs) continue;
             __try
             {

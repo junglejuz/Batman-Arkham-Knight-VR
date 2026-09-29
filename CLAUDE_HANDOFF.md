@@ -88,6 +88,16 @@ game's own FOV (camera.cpp `g_gameFov`) is below `vigbelow` 45. JJ's settings: s
 game's 2D zoom overlay is the same part as the gameplay tips (`K1/0.0.0.0.2`): it is set to "hide while zoomed"
 (ZOOMHIDE, 7th field), and it is also "hang in the room".
 
+## ROOTKIDS + KEEPGLOW3 (2026-09-30, deployed, untested) — supersede KEEPGLOW/KEEPGLOW2
+
+JJ on KEEPGLOW2: the launch objective is STILL on the head. Code-read finding: in a movie with no world part the
+ROOMALL rule marked only the ROOT (autoRoom for p < 0), and apply_layers skips depth 0, so NOTHING in such a movie
+was ever marked. Most of its text is flat anyway (layer); only pieces the fix gives scene depth, like the objective,
+stayed in the head-locked picture. ROOTKIDS: roots are never auto-marked; their children are the top branches.
+KEEPGLOW3: the mark overwrites all four adds again (the WORLDKIDS behaviour), and the glow is kept by never marking a
+part under an already marked part (`s_markAbove` in apply_layers); the two compass glow pieces sit under the ticked
+compass. If the objective still sticks: F2 while it is on screen and look for its lines in hudlayers.txt (MARK?).
+
 ## KEEPGLOW2 (2026-09-30, deployed, untested)
 
 JJ on KEEPGLOW: the launch objective went back to the head. Likely cause (code-read, no F2): its text is coloured by
