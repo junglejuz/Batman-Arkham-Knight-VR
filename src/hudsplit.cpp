@@ -448,7 +448,10 @@ namespace {
     void* g_vsCb0 = nullptr;                               // cb0 bound for the VS on the game context
     void* g_psCb0 = nullptr;                               // PSMARK: cb0 bound for the PS
     struct MarkRow { int vs; int split; int nHits; int where[4]; float val[4]; UINT cbSize;
-                     int psHits; int psWhere[2]; float psVal[2]; UINT psSize; int layerOnly; };
+                     int psHits; int psWhere[2]; float psVal[2]; UINT psSize; int layerOnly;
+                     // CBDUMP 2026-09-30: where it landed (1 = our HUD image bound, 0 = not), the draw's counts, and
+                     // the full constants, so two F2s (four compass pieces shown / hidden) show which draws they are.
+                     int toH; UINT cnt, inst; uint8_t vsData[1024]; uint8_t psData[256]; };
     MarkRow g_mrCur[96], g_mrRep[96]; int g_mrCurN = 0, g_mrRepN = 0; unsigned g_mrRepFrame = 0;
     Shadow* sh_find(void* key, bool add)
     {
@@ -505,11 +508,15 @@ namespace {
         oUpdSubG(c, r, sub, box, src, rp, dp);
     }
     int vs_hud_index(void* vs);
-    void mark_record(ID3D11DeviceContext* c, bool split)
+    void mark_record(ID3D11DeviceContext* c, bool split, UINT cnt, UINT inst)
     {
         if (g_mrCurN >= 96) return;
         MarkRow& m = g_mrCur[g_mrCurN++];
         m.vs = vs_hud_index(g_curVs); m.split = split ? 1 : 0; m.nHits = 0; m.cbSize = 0;
+        m.toH = g_hBound ? 1 : 0; m.cnt = cnt; m.inst = inst;   // CBDUMP
+        memset(m.vsData, 0, sizeof(m.vsData)); memset(m.psData, 0, sizeof(m.psData));
+        if (Shadow* sv = g_vsCb0 ? sh_find(g_vsCb0, false) : nullptr) memcpy(m.vsData, sv->data, sv->size < 1024 ? sv->size : 1024);
+        if (Shadow* sp = g_psCb0 ? sh_find(g_psCb0, false) : nullptr) memcpy(m.psData, sp->data, sp->size < 256 ? sp->size : 256);
         Shadow* s = g_vsCb0 ? sh_find(g_vsCb0, false) : nullptr;
         if (!s || !s->size) { m.nHits = -1; m.psHits = 0; m.psSize = 0; m.layerOnly = 0; return; }
         m.cbSize = s->size;
@@ -553,7 +560,7 @@ namespace {
         static void __stdcall DrawIndexed(ID3D11DeviceContext* c, UINT n, UINT s, INT b)
         {
             note_draw(c, L);
-            if (L == 0 && snoop_ctx(c)) mark_record(c, split_now(c));   // MARKREC
+            if (L == 0 && snoop_ctx(c)) mark_record(c, split_now(c), n, 1);   // MARKREC
             if (L == 0 && split_now(c) && layer_only_now()) { layer_only_pre(c); oDrawIndexed(c, n, s, b); layer_only_post(c); return; }   // PSMARK
             if (L == 0 && split_now(c)) { split_pre(c); oDrawIndexed(c, n, s, b); split_mid(c); oDrawIndexed(c, n, s, b); split_post(c); return; }
             if (L == 0 && c == g_gameCtx && akvr_hudsplit_active())
@@ -568,7 +575,7 @@ namespace {
         static void __stdcall Draw(ID3D11DeviceContext* c, UINT n, UINT s)
         {
             note_draw(c, L);
-            if (L == 0 && snoop_ctx(c)) mark_record(c, split_now(c));   // MARKREC
+            if (L == 0 && snoop_ctx(c)) mark_record(c, split_now(c), n, 1);   // MARKREC
             if (L == 0 && split_now(c) && layer_only_now()) { layer_only_pre(c); oDraw(c, n, s); layer_only_post(c); return; }   // PSMARK
             if (L == 0 && split_now(c)) { split_pre(c); oDraw(c, n, s); split_mid(c); oDraw(c, n, s); split_post(c); return; }
             if (L == 0 && c == g_gameCtx && akvr_hudsplit_active())
@@ -583,7 +590,7 @@ namespace {
         static void __stdcall DrawIdxInst(ID3D11DeviceContext* c, UINT a, UINT i, UINT s, INT b, UINT si)
         {
             note_draw(c, L);
-            if (L == 0 && snoop_ctx(c)) mark_record(c, split_now(c));   // MARKREC
+            if (L == 0 && snoop_ctx(c)) mark_record(c, split_now(c), a, i);   // MARKREC
             if (L == 0 && split_now(c) && layer_only_now()) { layer_only_pre(c); oDrawIdxInst(c, a, i, s, b, si); layer_only_post(c); return; }   // PSMARK
             if (L == 0 && split_now(c)) { split_pre(c); oDrawIdxInst(c, a, i, s, b, si); split_mid(c); oDrawIdxInst(c, a, i, s, b, si); split_post(c); return; }
             if (L == 0 && c == g_gameCtx && akvr_hudsplit_active())
@@ -598,7 +605,7 @@ namespace {
         static void __stdcall DrawInst(ID3D11DeviceContext* c, UINT a, UINT i, UINT s, UINT si)
         {
             note_draw(c, L);
-            if (L == 0 && snoop_ctx(c)) mark_record(c, split_now(c));   // MARKREC
+            if (L == 0 && snoop_ctx(c)) mark_record(c, split_now(c), a, i);   // MARKREC
             if (L == 0 && split_now(c) && layer_only_now()) { layer_only_pre(c); oDrawInst(c, a, i, s, si); layer_only_post(c); return; }   // PSMARK
             if (L == 0 && split_now(c)) { split_pre(c); oDrawInst(c, a, i, s, si); split_mid(c); oDrawInst(c, a, i, s, si); split_post(c); return; }
             if (L == 0 && c == g_gameCtx && akvr_hudsplit_active())
@@ -1321,6 +1328,31 @@ void akvr_hudsplit_marks_dump(const wchar_t* path)
         fprintf(f, ",%d\n", m.layerOnly);
     }
     fclose(f);
+    // CBDUMP: the same draws with their full constants (non-zero rows), next to hudmarks.csv as hudcb.txt.
+    std::wstring p2(path);
+    const size_t dot = p2.rfind(L"hudmarks.csv");
+    if (dot == std::wstring::npos) return;
+    p2.replace(dot, 12, L"hudcb.txt");
+    FILE* g = nullptr;
+    if (_wfopen_s(&g, p2.c_str(), L"w") != 0 || !g) return;
+    fprintf(g, "CBDUMP frame %u: per HUD draw, VS cb0 and PS cb0 rows that are not all zero (row: x y z w)\n", g_mrRepFrame);
+    for (int i = 0; i < g_mrRepN; ++i)
+    {
+        const MarkRow& m = g_mrRep[i];
+        fprintf(g, "\n== draw %d  vs %d (%016llx)  split %d  toH %d  count %u  instances %u  vs_bytes %u  ps_bytes %u\n", i, m.vs,
+                m.vs >= 0 ? (unsigned long long)kHudVsHash[m.vs] : 0ull, m.split, m.toH, m.cnt, m.inst, m.cbSize, m.psSize);
+        const float* v = (const float*)m.vsData;
+        const UINT vr = (m.cbSize < 1024 ? m.cbSize : 1024) / 16;
+        for (UINT r = 0; r < vr; ++r)
+            if (v[r * 4] || v[r * 4 + 1] || v[r * 4 + 2] || v[r * 4 + 3])
+                fprintf(g, "  vs r%-3u %10.6f %10.6f %10.6f %10.6f\n", r, v[r * 4], v[r * 4 + 1], v[r * 4 + 2], v[r * 4 + 3]);
+        const float* q = (const float*)m.psData;
+        const UINT pr = (m.psSize < 256 ? m.psSize : 256) / 16;
+        for (UINT r = 0; r < pr; ++r)
+            if (q[r * 4] || q[r * 4 + 1] || q[r * 4 + 2] || q[r * 4 + 3])
+                fprintf(g, "  ps r%-3u %10.6f %10.6f %10.6f %10.6f\n", r, q[r * 4], q[r * 4 + 1], q[r * 4 + 2], q[r * 4 + 3]);
+    }
+    fclose(g);
 }
 
 void akvr_hudsplit_layer_shot(const wchar_t* path)
