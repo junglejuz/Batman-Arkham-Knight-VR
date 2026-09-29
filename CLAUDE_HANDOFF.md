@@ -88,6 +88,20 @@ game's own FOV (camera.cpp `g_gameFov`) is below `vigbelow` 45. JJ's settings: s
 game's 2D zoom overlay is the same part as the gameplay tips (`K1/0.0.0.0.2`): it is set to "hide while zoomed"
 (ZOOMHIDE, 7th field), and it is also "hang in the room".
 
+## MARKCARRY (2026-09-30, deployed, untested)
+
+JJ on LOADSIZE: the reticle and target distance sit at HUD depth "until you actually hit R1 (grapple)", then sit on
+their targets. Found: a re-read of the HUD tree dropped `taggedByUs`, so a mark set by an earlier read (likely the
+0.5 s pass on a half-built HUD) stayed on its node for good, and the colour guard kept re-applying it. Now the mark
+state is carried by node, the guard list is pruned to the new tree, and every discovery logs, per "stays on its
+target" part, any marked part above it (`hud-layers: world part ...: <key>(ours|NOT ours)`). If JJ still sees it:
+read those lines in the startup log first. A "(NOT ours)" mark means the game itself holds a value in the mark range.
+
+JJ also said the loading screens "aren't any smaller and the sliders don't work". Code path looks right for the
+start-up logos (`splashscreen`) and the loading screen after Continue (`loadscreen`); in-game loads (fast travel,
+death) still use `pausescreen`. Asked JJ which screens. Lead: the mode log shows loading screens run "flat" and
+pause/map run "3D", so `g_anamorphic` may separate in-game loads from pause (open issue 4).
+
 ## NEXT: what JJ should check (ask for F2 on anything wrong)
 
 1. Reticle and target distance sit on their targets from the first second of gameplay (ROOMALL2).

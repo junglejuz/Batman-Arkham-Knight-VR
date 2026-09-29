@@ -3378,6 +3378,7 @@ namespace
     NameByKey g_nameCache[2048];
     int       g_nNameCache = 0;
     double    g_discoverMs = 0.0;
+    void tag_after_discover();                  // MARKCARRY: below, beside the colour guard's list
     void discover_layers(bool withNames = true)
     {
         LARGE_INTEGER qf, q0; QueryPerformanceFrequency(&qf); QueryPerformanceCounter(&q0);
@@ -3395,13 +3396,18 @@ namespace
         }
         // Keep what was applied to nodes that are still there: without the game's own
         // matrix (base) and ours (last), a moved part would be moved again on top.
-        struct Carry { uintptr_t node; float base[12], last[12]; bool hid, vis; };
+        // MARKCARRY 2026-09-30 — JJ: the reticle and target distance sat at HUD depth "until you actually hit R1".
+        // A re-read forgot which nodes carried OUR colour mark (taggedByUs), so a mark set by an earlier read (the
+        // 0.5 s pass, while the HUD is half-built) was never taken off when the next read found a world part under it,
+        // and the colour guard kept putting it back. The mark state now travels with the node.
+        struct Carry { uintptr_t node; float base[12], last[12]; bool have, hid, vis, tagged; };
         static Carry carry[2048];
         int nCarry = 0;
         for (int i = 0; i < g_nLayers; ++i)
-            if ((g_layers[i].haveLast || g_layers[i].hidByUs) && g_layers[i].node)
+            if ((g_layers[i].haveLast || g_layers[i].hidByUs || g_layers[i].taggedByUs) && g_layers[i].node)
             {
                 carry[nCarry].node = g_layers[i].node;
+                carry[nCarry].tagged = g_layers[i].taggedByUs; carry[nCarry].have = g_layers[i].haveLast;
                 carry[nCarry].hid = g_layers[i].hidByUs; carry[nCarry].vis = g_layers[i].baseVisible;
                 memcpy(carry[nCarry].base, g_layers[i].base, sizeof(carry[0].base));
                 memcpy(carry[nCarry].last, g_layers[i].last, sizeof(carry[0].last));
@@ -3481,8 +3487,9 @@ namespace
                     {
                         memcpy(L.base, carry[c].base, sizeof(L.base));
                         memcpy(L.last, carry[c].last, sizeof(L.last));
-                        L.haveLast = true;
+                        L.haveLast = carry[c].have;
                         L.hidByUs = carry[c].hid; L.baseVisible = carry[c].vis;
+                        L.taggedByUs = carry[c].tagged;   // MARKCARRY
                         break;
                     }
                 layer_load(L);
@@ -3490,6 +3497,7 @@ namespace
             }
         }
         cont_fp_serialize();
+        tag_after_discover();                    // MARKCARRY
         LARGE_INTEGER q1; QueryPerformanceCounter(&q1);
         g_discoverMs = 1000.0 * (double)(q1.QuadPart - q0.QuadPart) / (double)qf.QuadPart;
         _snprintf_s(g_layerDiag, sizeof(g_layerDiag), _TRUNCATE,
@@ -3526,6 +3534,43 @@ namespace
         const LONG n = g_tagNodeN;
         for (LONG i = 0; i < n; ++i) if (g_tagNodes[i] == node) return true;
         return false;
+    }
+    // MARKCARRY 2026-09-30 (called by discover_layers, layer lock held): the guard list keeps only nodes the new
+    // tree still holds with our mark, so a node that left the tree is never written again. Then, for every saved
+    // "stays on its target" part, log whether the part exists and which part above it (or itself) carries a mark:
+    // the evidence for "the reticle sits at HUD depth" - a mark anywhere on that chain flattens it.
+    void tag_after_discover()
+    {
+        LONG kept = 0;
+        const LONG n = g_tagNodeN;
+        for (LONG k = 0; k < n; ++k)
+        {
+            bool keep = false;
+            for (int i = 0; i < g_nLayers && !keep; ++i) keep = g_layers[i].node == g_tagNodes[k] && g_layers[i].taggedByUs;
+            if (keep) g_tagNodes[kept++] = g_tagNodes[k];
+        }
+        InterlockedExchange(&g_tagNodeN, kept);
+        for (int i = 0; i < g_nLayers; ++i)
+        {
+            if (!g_layers[i].world) continue;
+            char chain[320] = "";
+            for (int j = i; j >= 0; j = g_layers[j].parent)
+            {
+                uintptr_t d = 0; float b = 0.0f;
+                if (!node_data(g_layers[j].node, d)) continue;
+                __try { b = *(const float*)(d + 0x68); } __except (EXCEPTION_EXECUTE_HANDLER) { continue; }
+                if (b < -0.0002f && b > -0.02f)
+                {
+                    char one[128];
+                    _snprintf_s(one, sizeof(one), _TRUNCATE, " %s%s%s", g_layers[j].key, g_layers[j].taggedByUs ? "(ours)" : "(NOT ours)",
+                                j == i ? "[itself]" : "");
+                    strncat_s(chain, one, _TRUNCATE);
+                }
+                if (g_layers[j].parent >= j) break;
+            }
+            log_add("hud-layers: world part %s: %s", g_layers[i].key, chain[0] ? chain : "no mark above it");
+        }
+        log_add("hud-layers: colour guard keeps %ld of %ld nodes after the search", (long)kept, (long)n);
     }
     // PARTTAG4/5: the mark goes into add red, green, blue AND alpha (+0x60..+0x6C). CBDUMP showed pieces coloured by
     // their own add (multiply 0), where only the alpha add (0 for such a child) still shows the mark.
