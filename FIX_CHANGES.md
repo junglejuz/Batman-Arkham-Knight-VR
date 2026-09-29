@@ -254,6 +254,12 @@ with the split on, the band needs adding here too.
 
 ## 1f. ShaderFixesDM: top and bottom strips stay on the HUD layer, all 13 shaders (AKVR, EDGEBAND, 2026-09-29)
 
+**RETIRED the same night, UNDONE on JJ's game** (the 13 texts + bins restored from
+`akvr/diagnostics/before-EDGEBAND-20260929/`, byte-identical; `Patch-EdgeBand` removed from the script). JJ: almost every
+HUD element showed twice in the headset (the desktop, geo-11's picture, once). One element is built from pieces the fix
+tags differently, and many straddled the strip lines, so part went to the room-fixed layer and part stayed in the
+picture; with the layer hung in the room the parts drift apart. Kept below for the record.
+
 **Files:** all 13 HUD `-vs.txt` (after 1, 1b, 1c, 1d, 1e); `-vs.bin` deleted.
 
 **Why:** JJ, build HUDWORLD (the HUD layer hangs in the room): the compass (top) and the gameplay tips (bottom) still
@@ -459,3 +465,4 @@ baseline versions). Needs JJ: where the 2026-09-26 update came from, or an in-ga
 | 2026-09-29 | installer | Install-AKVR.ps1 runs the patch script; NonSquareRT block on for Arkham; verified on practice folders | all |
 | 2026-09-29 | installer (GAMEWORKS) | BmSystemSettings.ini GameWorks keys = 0; NVIDIA store: detail / 2x filtering / GameWorks off (first install) | 6 |
 | 2026-09-29 | EDGEBAND | 13 HUD vertex shaders: top + bottom strips stay on the layer (CB13[2]) | 1f |
+| 2026-09-29 | EDGEBAND undone | 13 HUD vertex shaders restored to the 1e state (doubled elements) | 1f |

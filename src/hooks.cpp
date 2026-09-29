@@ -784,7 +784,6 @@ namespace
         // PANELTIDY: hudlayerspace / hudlayercolour / hudlayereyes / hudlayersquash are fixed now, not saved.
         fprintf(f, "hudattach=%d\n", akvr_xr_hud_space() == 1 ? 1 : 0);   // HUDWORLD: 0 = fixed in the room
         fprintf(f, "hudlayersplit=%d\n", akvr_hudsplit_split() ? 1 : 0);   // HUDSPLIT
-        fprintf(f, "hudbottom=%.0f\n", akvr_hudsplit_bottom());   // EDGEBAND
         fprintf(f, "hudsteady=%.2f\n", akvr_hud_steady());
         fprintf(f, "convergence=%.4f\n", akvr_head_convergence());
         fprintf(f, "spinfoldon=%d\n", akvr_xr_yawfold_on() ? 1 : 0);
@@ -887,7 +886,6 @@ namespace
             else if (sscanf(line, "hudlayer=%d", &iv) == 1) akvr_hudsplit_layer_set(iv != 0);   // HUDLAYER
             else if (sscanf(line, "hudattach=%d", &iv) == 1) akvr_xr_hud_space_set(iv ? 1 : 2);   // HUDWORLD
             else if (sscanf(line, "hudlayersplit=%d", &iv) == 1) akvr_hudsplit_split_set(iv != 0);   // HUDSPLIT
-            else if (sscanf(line, "hudbottom=%f", &v) == 1) akvr_hudsplit_bottom_set(v);   // EDGEBAND
             else if (sscanf(line, "hudsteady=%f", &v) == 1) akvr_hud_steady_set(0.0f);   // HUDDEPTH: parked, always off
             else if (sscanf(line, "depth=%f",      &v) == 1) akvr_head_stereo_set(v);
             else if (sscanf(line, "convergence=%f", &v) == 1) akvr_head_convergence_set(v);
@@ -1929,14 +1927,6 @@ namespace
                 ImGui::TextDisabled(lay ? (attach ? "   the HUD moves with your head"
                                                   : "   the HUD stays put in the room; F12 hangs it in front of you again")
                                         : "   needs the HUD on its own layer");
-                // EDGEBAND 2026-09-29 (JJ: the tips near the bottom still moved with the head): pieces in this
-                // bottom strip leave the 3D picture for the layer. Too high catches markers passing through.
-                if (lay && !attach)
-                {
-                    float bot = akvr_hudsplit_bottom();
-                    if (SliderStep("bottom strip that hangs in the room  (%)", &bot, 0.0f, 45.0f, "%.0f %%"))
-                    { akvr_hudsplit_bottom_set(bot); s_hudDirty = true; }
-                }
                 if (lay && ImGui::TreeNode("HUD layer settings"))
                 {
                     // PANELTIDY 2026-09-28 (JJ: confusing for new users): placement (view space since HUDVIEW),
@@ -2418,7 +2408,7 @@ namespace
             float pvRatio = 0.0f, pvFov = 0.0f; int pvHits = 0;
             akvr_projvr_diag(pvRatio, pvHits, pvFov);
             fprintf(f, "\npatches:\n");
-            fprintf(f, "   build: LAYERSHOT " __DATE__ " " __TIME__ "\n");
+            fprintf(f, "   build: MENUONE " __DATE__ " " __TIME__ "\n");
             fprintf(f, "   native capture timing: %s Present (comparison test)\n", g_nativeAfterPresent ? "AFTER" : "BEFORE");
             {
                 int div = 1; double hz = 0.0; long late = 0, frames = 0;

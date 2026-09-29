@@ -346,71 +346,10 @@ function Patch-DepthAll([string]$hash) {
     Say "  $hash : scene-depth split patched (decision $c)" 'Green'
 }
 
-# ---- 1f. EDGEBAND: top and bottom strips stay on AKVR's HUD layer, in all 13 shaders ----------------
-# JJ 2026-09-29 (build HUDWORLD, the HUD layer hangs in the room): the compass (top) and the gameplay tips
-# (bottom) still moved with the head - the fix's scene-depth decision keeps them in the 3D picture, and the
-# RETFLAT compass band (1c) is only in the two filter-42 shaders. Now every HUD shader remembers its piece's
-# origin (the Scaleform matrix translation, as 1c; the vertex itself when its w is not 1) right after the
-# position transform, and just before the split tail turns the scene-depth decision off for pieces whose
-# origin is above clip y = cb13[0].y (top strip) or below clip y = -cb13[1].x (bottom strip). 0 = no strip;
-# cb13 unbound = unchanged. CB13 grows to two rows.
-$edgeMarker = '// AKVR EDGEBAND'
-function Patch-EdgeBand([string]$hash) {
-    $txt = Join-Path $dm "$hash-vs.txt"
-    $bin = Join-Path $dm "$hash-vs.bin"
-    if (-not (Test-Path $txt)) { return }
-    $s = [System.IO.File]::ReadAllText($txt)
-    if ($s.Contains($edgeMarker)) { Say "  $hash : edge strips already patched"; return }
-    $nl = if ($s.Contains("`r`n")) { "`r`n" } else { "`n" }
-    $code = $s.IndexOf('// HLSL Code')
-    if ($code -lt 0) { $code = $s.Length }
-    $temps = [regex]::Match($s, '(?m)^dcl_temps (\d+)\s*$')
-    $cbd = [regex]::Matches($s, '(?m)^dcl_constantbuffer CB13\[1\], immediateIndexed[ \t]*$')
-    $tail = [regex]::Matches($s.Substring(0, $code), '(?m)^(?<i>[ \t]*)eq (?<t>r\d+)\.yz, cb13\[0\]\.xxxx')
-    if (-not $temps.Success -or $cbd.Count -ne 1 -or $tail.Count -ne 1) { Say "  $hash : split (1b) not found - edge strips NOT patched" 'Red'; return }
-    $n = [int]$temps.Groups[1].Value; $m = "r$n"; $d = $tail[0].Groups['t'].Value
-    # The position transform: the last "dp4 rA.y, vK.xyzw, cb0[ROW].xyzw" into a temp register before the
-    # first IniParams (t120) load. Its row's .w is the piece origin's y when vK.w is 1.
-    $ld = [regex]::Match($s, '(?m)^ld_indexable\(texture1d\)[^\r\n]*t120\.')
-    if (-not $ld.Success) { Say "  $hash : no IniParams load - edge strips NOT patched" 'Red'; return }
-    $dps = [regex]::Matches($s.Substring(0, $ld.Index), '(?m)^dp4 (?<r>r\d+)\.y, (?<v>v\d+)\.xyzw, (?<row>cb0\[[^\]]+\])\.xyzw[ \t]*$')
-    if ($dps.Count -lt 1) { Say "  $hash : position transform not found - edge strips NOT patched" 'Red'; return }
-    $dp = $dps[$dps.Count - 1]
-    $r = $dp.Groups['r'].Value; $v = $dp.Groups['v'].Value; $row = $dp.Groups['row'].Value
-    # Edit from the end backwards so earlier offsets stay valid.
-    $i = $tail[0].Groups['i'].Value
-    $band = @(
-        "$edgeMarker 2026-09-29: with AKVR's HUD layer, a piece whose origin is in the top strip (above clip y",
-        "// = cb13[0].y) or the bottom strip (below clip y = -cb13[1].x) stays on the layer. 0 = no strip.",
-        "ne $m.z, cb13[0].y, l(0.000000)",
-        "lt $m.w, cb13[0].y, $m.y",
-        "and $m.z, $m.z, $m.w",
-        "add $m.w, $m.y, cb13[1].x",
-        "lt $m.w, $m.w, l(0.000000)",
-        "ne $m.x, cb13[1].x, l(0.000000)",
-        "and $m.w, $m.w, $m.x",
-        "or $m.z, $m.z, $m.w",
-        "not $m.z, $m.z",
-        "and $d.x, $d.x, $m.z"
-    ) | ForEach-Object { $i + $_ }
-    $at = $tail[0].Index
-    $s = $s.Substring(0, $at) + ($band -join $nl) + $nl + $s.Substring($at)
-    $at = $dp.Index + $dp.Length
-    $orig = @(
-        "${edgeMarker}: the piece origin's y (matrix translation; the vertex when its w is not 1)",
-        "eq $m.x, $v.w, l(1.000000)",
-        "movc $m.y, $m.x, $row.w, $r.y"
-    )
-    $s = $s.Substring(0, $at) + $nl + ($orig -join $nl) + $s.Substring($at)
-    $s = [regex]::Replace($s, '(?m)^dcl_constantbuffer CB13\[1\], immediateIndexed', 'dcl_constantbuffer CB13[2], immediateIndexed')
-    $temps = [regex]::Match($s, '(?m)^dcl_temps (\d+)\s*$')
-    $s = $s.Substring(0, $temps.Index) + "dcl_temps $($n + 1)" + $s.Substring($temps.Index + $temps.Length)
-    Backup-Once $txt $bakDm
-    Backup-Once $bin $bakDm
-    [System.IO.File]::WriteAllText($txt, $s, $utf8)
-    if (Test-Path $bin) { Remove-Item $bin }
-    Say "  $hash : edge strips patched (origin from $row.w)" 'Green'
-}
+# ---- 1f. EDGEBAND: RETIRED 2026-09-29 (same night) ------------------------------------------------------
+# Top/bottom strips moved pieces to AKVR's room-fixed HUD layer by position. HUD elements straddle the strip
+# lines and are built from pieces the fix tags differently, so with the layer hung in the room one element
+# came apart into two copies (JJ). Not applied any more; FIX_CHANGES.md 1f has the text and the rollback.
 
 # ---- 2. d3dxdm.ini --------------------------------------------------------------------------------
 $stereoKeys = [ordered]@{
@@ -510,7 +449,6 @@ switch ($Mode) {
         foreach ($h in $hudVs) { Patch-RetFlat $h }
         foreach ($h in $hudVs) { Patch-RetSquash $h }
         foreach ($h in $hudVs) { Patch-DepthAll $h }
-        foreach ($h in $hudVs) { Patch-EdgeBand $h }
         Patch-DmIni
         if ($script:failed -gt 0) { Say "$($script:failed) edit(s) could not be applied - see the red lines above." 'Yellow'; exit 2 }
         Say 'Done. Originals are in akvr_fix_backup\.' 'Cyan'

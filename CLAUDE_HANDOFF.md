@@ -95,6 +95,13 @@ default 0). xr.cpp g_hudSpace 2 = the HUD quad placed once in LOCAL space in fro
 recenter (akvr_head_recenter -> akvr_xr_hud_reanchor) and left there. Backup: diagnostics/before-HUDWORLD-20260929/.
 Check in the headset: HUD stays put when turning the head, F12 re-hangs it, depth still right (per-eye quads).
 
+**Late 2026-09-29 (builds EDGEBAND -> LAYERSHOT -> MENUONE, installed):** with the HUD layer ROOM-FIXED, the split
+(fix scene-depth pieces stay in the picture) tears elements apart: one element = pieces tagged differently, so part hangs
+in the room and part follows the head = "double" (JJ; the desktop shows one copy). EDGEBAND (position strips, fix 1f)
+made it worse and is undone. MENUONE: on the live main menu the whole UI goes to the layer, no split. F2 now also saves
+`<capture>hudlayer.bmp` (the layer image). OPEN: gameplay compass/tips still head-locked; a correct split needs to tell
+world markers from screen-fixed HUD per ELEMENT (e.g. per Scaleform movie/container), not per piece tag or position.
+
 ## Open issues, in priority order
 
 1. **The fresh-install test above.**

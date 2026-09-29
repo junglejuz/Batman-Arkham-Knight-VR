@@ -14,7 +14,7 @@ const char* akvr_hudsplit_diag();
 struct ID3D11Texture2D;
 void        akvr_hudsplit_layer_set(bool on);                 // panel / settings "hudlayer"
 bool        akvr_hudsplit_layer();
-void        akvr_hudsplit_layer_gate(bool gameplay);          // xr.cpp: steady gameplay this frame
+void        akvr_hudsplit_layer_gate(bool gameplay, bool menu = false);   // xr.cpp: steady gameplay / live main menu (MENUONE: no split)
 bool        akvr_hudsplit_layer_live();                       // HUD went to the layer in the last frames
 ID3D11Texture2D* akvr_hudsplit_layer_image(unsigned& w, unsigned& h, int& fmt);   // fresh this Present, or null
 const char* akvr_hudsplit_layer_diag();

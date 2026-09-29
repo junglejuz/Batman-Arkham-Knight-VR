@@ -66,6 +66,11 @@ namespace {
     // ---- HUDLAYER state (all on the render thread) ----
     bool g_layerWant = true;                    // panel / settings "hudlayer"
     volatile bool g_layerGate = false;          // steady gameplay, from xr.cpp
+    // MENUONE 2026-09-29 — JJ: with the HUD hung in the room, the title and save screens showed every text
+    // twice (the desktop, geo-11's picture, once). The fix tags menu text pieces differently, so the split
+    // put some in the picture and some on the layer, and with the layer room-fixed the two drift apart.
+    // Nothing on a menu points at the world: on the main menu the whole UI goes to the layer, no split.
+    volatile bool g_layerMenu = false;
     bool g_scopeLayer = false;                  // redirect armed for the running call
     bool g_hBound = false, g_hCleared = false;
     int  g_scopeSubs = 0;
@@ -110,7 +115,7 @@ namespace {
     // gameplay tips near the bottom still moved with the head. All 13 HUD shaders now also keep pieces whose
     // origin is in the bottom g_bottomPct %% on the layer (cb13[1].x = that line's distance below the centre,
     // clip y), and the top band reaches all 13 (it was only in the two filter-42 shaders). 0 = no strip.
-    float g_bottomPct = 28.0f;
+    float g_bottomPct = 0.0f;   // EDGEBAND retired the same night (split elements doubled); 0 = no strip
     float g_bottomSent = -1.0f;
     // RETSQUASH: the game frame's tan half-angles for the shader's edge-squash correction (cb13[0].zw).
     bool  g_squashWant = false;   // PANELTIDY 2026-09-28: JJ - never worked in the headset; removed from the panel, always off
@@ -734,7 +739,7 @@ namespace {
     }
     bool split_now(ID3D11DeviceContext* c)
     {
-        return g_splitReady == 1 && g_splitWant && g_scopeLayer && g_hBound && c == g_gameCtx &&
+        return g_splitReady == 1 && g_splitWant && !g_layerMenu && g_scopeLayer && g_hBound && c == g_gameCtx &&
                g_cbFlat && g_cbDepth && akvr_hudsplit_active() && split_vs_ok(c);
     }
     void split_pre(ID3D11DeviceContext* c) { c->VSSetConstantBuffers(13, 1, &g_cbFlat); }
@@ -1080,7 +1085,7 @@ bool akvr_hudsplit_hide() { return g_hide; }
 
 void akvr_hudsplit_layer_set(bool on) { g_layerWant = on; }
 bool akvr_hudsplit_layer() { return g_layerWant; }
-void akvr_hudsplit_layer_gate(bool gameplay) { g_layerGate = gameplay; }
+void akvr_hudsplit_layer_gate(bool gameplay, bool menu) { g_layerGate = gameplay || menu; g_layerMenu = menu && !gameplay; }
 bool akvr_hudsplit_layer_live() { return g_layerWant && g_H && g_Hreal == 1 && g_frame - g_lastSubFrame <= 2; }
 ID3D11Texture2D* akvr_hudsplit_layer_image(unsigned& w, unsigned& h, int& fmt)
 {
