@@ -3554,17 +3554,18 @@ namespace
     // their own add (multiply 0), where only the alpha add (0 for such a child) still shows the mark.
     // KEEPGLOW 2026-09-30 — JJ: two compass pieces he had ticked "hang in the room" (K2/...2.0.6, .2.0.7) "should be a
     // glow but it looks like a darkening effect". Writing the mark REPLACED the part's own colour add, and Flash glows and
-    // brightness tints are made of add: only the dimming multiply was left. The mark now goes only into channels whose
-    // add is 0 (or already the mark), so every mark lands with the game's glow kept (the shaders test .w too,
-    // and a child's alpha add is almost always 0, so descendants inherit it). Alpha is overwritten only when no other
-    // channel could take the mark.
+    // brightness tints are made of add: only the dimming multiply was left. Red, green and blue now take the mark only
+    // where their add is 0 (or already the mark), so the game's glow is kept (the shaders test .w too, and a child's
+    // alpha add is almost always 0, so descendants inherit the alpha mark).
     void mark_rgb(uint8_t* data, float v)
     {
         float* add = (float*)(data + 0x60);
         if (v == 0.0f) { for (int c = 0; c < 4; ++c) if (add[c] == kPartTag) add[c] = 0.0f; return; }
-        bool any = false;
-        for (int c = 0; c < 3; ++c) if (add[c] == 0.0f || add[c] == v) { add[c] = v; any = true; }
-        if (add[3] == 0.0f || add[3] == v || !any) add[3] = v;
+        for (int c = 0; c < 3; ++c) if (add[c] == 0.0f || add[c] == v) add[c] = v;
+        // KEEPGLOW2 — JJ on KEEPGLOW: the launch objective went back to the head. Its text is coloured by its own add
+        // and it fades through the alpha add, so with alpha kept the mark reached none of its channels. Alpha always
+        // takes the mark (as before KEEPGLOW); glows live in the colour adds, which stay.
+        add[3] = v;
     }
     bool has_mark(uintptr_t data)
     {

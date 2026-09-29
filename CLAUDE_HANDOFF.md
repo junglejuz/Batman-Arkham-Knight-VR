@@ -88,6 +88,13 @@ game's own FOV (camera.cpp `g_gameFov`) is below `vigbelow` 45. JJ's settings: s
 game's 2D zoom overlay is the same part as the gameplay tips (`K1/0.0.0.0.2`): it is set to "hide while zoomed"
 (ZOOMHIDE, 7th field), and it is also "hang in the room".
 
+## KEEPGLOW2 (2026-09-30, deployed, untested)
+
+JJ on KEEPGLOW: the launch objective went back to the head. Likely cause (code-read, no F2): its text is coloured by
+its own add and it fades through the alpha add, so keeping a non-zero alpha add left the mark in no channel it
+inherits. Alpha now ALWAYS takes the mark (as before KEEPGLOW); only R, G, B keep the game's non-zero add. If the
+compass glow darkens again, the glow pieces use alpha add too: then F2 there and read their add row in hudcb.txt.
+
 ## KEEPGLOW (2026-09-30, deployed, untested)
 
 JJ: happy with WORLDKIDS + loading screens. Left: two compass pieces "should be a glow but look like a darkening
