@@ -204,6 +204,9 @@ XrPosef g_layerPose{}; // pose that drew the backbuffer we're submitting NOW
 XrPosef g_poseHist[64]{};
 uint32_t g_poseHead = 0;
 int g_poseDelay = 1;
+// MENUDELAY 2026-09-29 — JJ: on the live 3D main menu Batman "jiggles" when the head moves (gameplay is fine);
+// head-pose delay 2 fixes it there, 3 stays right for gameplay. Used while the live main menu is up.
+int g_menuPoseDelay = 2;
 // FRAMEID 2026-09-26: exact pose/picture pairing (see frameid.cpp). g_seqForFin maps
 // a camera-finalize index to the pose sequence it consumed; g_poseAuto uses it when
 // the engine's frame counters have been found, else the fixed g_poseDelay.
@@ -1780,7 +1783,7 @@ void akvr_xr_frame_begin() {
     g_poseHist[++g_poseHead & 63u] = newPose;
     // Which pose drew the picture being presented now? Exactly, when the engine's
     // own frame counters are found (frameid.cpp); otherwise the fixed delay JJ set.
-    uint32_t delay = (uint32_t)g_poseDelay;
+    uint32_t delay = (uint32_t)(akvr_xr_menu3d_active() ? g_menuPoseDelay : g_poseDelay);   // MENUDELAY
     g_poseMatched = false;
     uint64_t pf = 0;
     if (g_poseAuto && akvr_frameid_presented_finalize(pf) && pf <= g_finRecorded &&
@@ -2756,6 +2759,8 @@ const char *akvr_xr_pose_delay_hist() {
 void akvr_xr_pose_delay_set(int frames) {
   g_poseDelay = frames < 0 ? 0 : (frames > 3 ? 3 : frames);
 }
+int akvr_xr_menu_pose_delay() { return g_menuPoseDelay; }
+void akvr_xr_menu_pose_delay_set(int frames) { g_menuPoseDelay = frames < 0 ? 0 : (frames > 4 ? 4 : frames); }
 void akvr_xr_native_toggle() {
   // Mode switch changes the per-eye swapchain width — rebuild from scratch.
   g_native = !g_native;

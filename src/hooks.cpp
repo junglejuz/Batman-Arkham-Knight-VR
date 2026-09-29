@@ -858,6 +858,7 @@ namespace
         fprintf(f, "swapeyes=%d\n",     akvr_xr_native_swap_eyes() ? 1 : 0);
         fprintf(f, "nativeafterpresent=%d\n", g_nativeAfterPresent ? 1 : 0);
         fprintf(f, "posedelay=%d\n",    akvr_xr_pose_delay());
+        fprintf(f, "menuposedelay=%d\n", akvr_xr_menu_pose_delay());   // MENUDELAY
         fprintf(f, "fpslock=%d\n",      akvr_xr_fps_lock());
         fprintf(f, "fpslockssw=%d\n",   akvr_xr_fps_lock_ssw() ? 1 : 0);
         fprintf(f, "poseauto=%d\n",     akvr_xr_pose_auto() ? 1 : 0);
@@ -981,6 +982,7 @@ namespace
             else if (sscanf(line, "swapeyes=%d", &iv) == 1) akvr_xr_native_swap_eyes_set(iv != 0);
             else if (sscanf(line, "nativeafterpresent=%d", &iv) == 1) g_nativeAfterPresent = iv != 0;
             else if (sscanf(line, "posedelay=%d", &iv) == 1) akvr_xr_pose_delay_set(iv);
+            else if (sscanf(line, "menuposedelay=%d", &iv) == 1) akvr_xr_menu_pose_delay_set(iv);   // MENUDELAY
             else if (sscanf(line, "fpslock=%d", &iv) == 1) akvr_xr_fps_lock_set(iv);
             else if (sscanf(line, "fpslockssw=%d", &iv) == 1) akvr_xr_fps_lock_ssw_set(iv != 0);
             else if (sscanf(line, "poseauto=%d", &iv) == 1) akvr_xr_pose_auto_set(iv != 0);
@@ -2100,6 +2102,9 @@ namespace
             int poseDelay = akvr_xr_pose_delay();
             if (ImGui::SliderInt("head-pose delay  (3 = measured correct)", &poseDelay, 0, 3))
             { akvr_xr_pose_delay_set(poseDelay); settings_save(); }
+            int menuDelay = akvr_xr_menu_pose_delay();   // MENUDELAY (JJ: 2 stops the main-menu jiggle)
+            if (ImGui::SliderInt("head-pose delay on the main menu  (2 = right)", &menuDelay, 0, 4))
+            { akvr_xr_menu_pose_delay_set(menuDelay); settings_save(); }
         }
 
         // ---- ADVANCED (hidden) ---------------------------------------------------
@@ -2433,7 +2438,7 @@ namespace
             float pvRatio = 0.0f, pvFov = 0.0f; int pvHits = 0;
             akvr_projvr_diag(pvRatio, pvHits, pvFov);
             fprintf(f, "\npatches:\n");
-            fprintf(f, "   build: ZOOMVIG " __DATE__ " " __TIME__ "\n");
+            fprintf(f, "   build: MENUDELAY " __DATE__ " " __TIME__ "\n");
             fprintf(f, "   zoom vignette: %s\n", akvr_xr_vig_diag());
             fprintf(f, "   native capture timing: %s Present (comparison test)\n", g_nativeAfterPresent ? "AFTER" : "BEFORE");
             {
