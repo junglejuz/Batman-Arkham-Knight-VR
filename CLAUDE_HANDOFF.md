@@ -155,6 +155,13 @@ untick hide on K1/0.0.0.0.2 (his 'zoom overlay' part sits in the tips branch - t
 Compass subparts JJ HID as duplicated: K2/...2.0.4, .0.5, .0.8 - unexplained (a piece in both = unsplit draw);
 re-test after PARTTAG4 with them unhidden.
 
+**PARTTAG5 + SCREENTAN + SPLASHSIZE (2026-09-30 ~01:30, installed, untested):** CBDUMP diff of JJ's two F2s: the four
+stuck compass pieces were double-marked (compass + child ticked: add -0.0039) or coloured by their own add (multiply 0,
+add ~0.75..0.86). Mark now also in alpha; any channel in -0.02..-0.0002 counts (fix step 1g, 9 shaders, driver-tested).
+SCREENTAN: flat screens scaled half-ANGLES (16:9 showed 1.58:1 at 70%); now width kept, tangents scaled uniformly.
+SPLASHSIZE: screens before the main menu (phase 0) get `splashscreen` (default 0.55, panel slider). Loading content is
+still drawn 1.22:1 inside the frame by the menu fill - re-check with JJ after SCREENTAN.
+
 ## Open issues, in priority order
 
 1. **The fresh-install test above.**

@@ -267,6 +267,9 @@ float g_screenFovScale = 0.5f;
 // SIZELATCH: 1.0 was "too big, you have to look around" (JJ); the main-menu size
 // was "the correct size", so the default now matches it.
 float g_pauseFovScale = 0.5f;
+// SPLASHSIZE 2026-09-30 — JJ: "the splash screens at the start ... including the big Batman logo ... are a bit too
+// big". Screens before the main menu is found (menu phase 0) had the pause/map size; now their own, smaller.
+float g_splashFovScale = 0.55f;
 // The main menu runs a live 3D camera exactly like gameplay, so the detector calls it
 // GAMEPLAY. But its place in the sequence is fixed: boot/splash (screen) -> main
 // menu (camera live) -> loading screen -> game. So the FIRST camera-live stretch after
@@ -2324,26 +2327,33 @@ void akvr_xr_frame_submit(IDXGISwapChain *swapChain, float gameFovDeg,
   if (!effGameplay && s_wasEff) s_latchedMenuSize = akvr_xr_screen_mode();
   if (akvr_xr_screen_mode()) s_latchedMenuSize = true;   // F6 / menu mid-screen: menu size
   s_wasEff = effGameplay;
+  const bool splash = !g_forceScreen && g_autoMainMenu && g_menuPhase == 0;   // SPLASHSIZE
   float fovScale = effGameplay ? 1.0f
                    : (g_forceScreen ? g_floatScreenScale
-                      : (s_latchedMenuSize ? g_screenFovScale : g_pauseFovScale));
+                      : (splash ? g_splashFovScale : (s_latchedMenuSize ? g_screenFovScale : g_pauseFovScale)));
+  // SCREENTAN 2026-09-30 — JJ: the loading screens "feel a bit too stretched vertically". The sizes scaled the
+  // half-ANGLES, which is not a uniform scale of the picture: at this FOV (~52 deg half) and 70% the width shrinks
+  // more than the height and a 16:9 screen showed ~13% too tall (SKVR's SCREENTAN lesson, same code here). Keep each
+  // screen's width exactly (horizontal half-angle x size, as tuned) and scale the TANGENTS uniformly by the same
+  // factor, so the picture keeps its true shape.
+  const float kTan = fovScale < 0.999f && halfH > 0.01f ? tanf(halfH * fovScale) / tanf(halfH) : 1.0f;
   // Publish what we ACTUALLY submit, so the startup log can put it beside what
   // projVR left in the render matrix. Those two must agree or the picture is
   // stretched by exactly the ratio of their tangents.
   g_subHalfH = halfH * fovScale;
-  g_subHalfV = halfV * fovScale;
+  g_subHalfV = atanf(tanf(halfV) * kTan);
   XrFovf fov;
   fov.angleRight = halfH * fovScale;
   fov.angleLeft = -halfH * fovScale;
-  fov.angleUp = halfV * fovScale;
-  fov.angleDown = -halfV * fovScale;
+  fov.angleUp = g_subHalfV;
+  fov.angleDown = -g_subHalfV;
   // FULLVIEW: the projection was shifted by g_vOffNdc (camera.cpp adds it to m[9]),
   // so its top edge is at tan = (1 - o) * tan(halfV) and its bottom at (1 + o) *
   // tan(halfV). Submit exactly those edges or the world swims when you look up/down.
   if (g_vOffNdc != 0.0f && g_projvrOn && (effGameplay || g_anamorphic)) {
     const float t = tanf(halfV);
-    fov.angleUp = atanf((1.0f - g_vOffNdc) * t) * fovScale;
-    fov.angleDown = -atanf((1.0f + g_vOffNdc) * t) * fovScale;
+    fov.angleUp = atanf((1.0f - g_vOffNdc) * t * kTan);
+    fov.angleDown = -atanf((1.0f + g_vOffNdc) * t * kTan);
   }
   // SCREENWIDE: crop the floating screen to a wider shape (see g_screenAspect).
   float vFrac = 1.0f;
@@ -2358,7 +2368,7 @@ void akvr_xr_frame_submit(IDXGISwapChain *swapChain, float gameFovDeg,
       vFrac = (tH / scrAspect) / tV;
   }
   if (vFrac < 0.999f) {
-    fov.angleUp = atanf(tanf(halfV) * vFrac) * fovScale;
+    fov.angleUp = atanf(tanf(halfV) * vFrac * kTan);
     fov.angleDown = -fov.angleUp;
   }
   int fallback =
@@ -2673,6 +2683,8 @@ const char *akvr_xr_mode_log() { return g_modeLog; }
 bool akvr_xr_auto_main_menu() { return g_autoMainMenu; }
 void akvr_xr_auto_main_menu_set(bool on) { g_autoMainMenu = on; }
 float akvr_xr_pause_zoom() { return g_pauseFovScale; }
+float akvr_xr_splash_zoom() { return g_splashFovScale; }
+void  akvr_xr_splash_zoom_set(float v) { g_splashFovScale = v < 0.1f ? 0.1f : (v > 1.0f ? 1.0f : v); }
 void akvr_xr_pause_zoom_set(float v) {
   g_pauseFovScale = v < 0.1f ? 0.1f : (v > 1.0f ? 1.0f : v);
 }

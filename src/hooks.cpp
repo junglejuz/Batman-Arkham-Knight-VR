@@ -808,6 +808,7 @@ namespace
         fprintf(f, "fov=%.3f\n",    akvr_head_fov_delta());
         fprintf(f, "screen=%.3f\n", akvr_xr_menu_zoom());
         fprintf(f, "pausescreen=%.3f\n", akvr_xr_pause_zoom());
+        fprintf(f, "splashscreen=%.3f\n", akvr_xr_splash_zoom());   // SPLASHSIZE
         fprintf(f, "pauseaspect=%.3f\n", akvr_xr_pause_aspect());
         fprintf(f, "automainmenu=%d\n", akvr_xr_auto_main_menu() ? 1 : 0);
         fprintf(f, "fullview=%d\n", akvr_xr_full_view() ? 1 : 0);
@@ -916,6 +917,7 @@ namespace
             else if (sscanf(line, "fov=%f",    &v) == 1) akvr_head_fov_set(v);
             else if (sscanf(line, "screen=%f", &v) == 1) akvr_xr_menu_zoom_set(v);
             else if (sscanf(line, "pausescreen=%f", &v) == 1) akvr_xr_pause_zoom_set(v);
+            else if (sscanf(line, "splashscreen=%f", &v) == 1) akvr_xr_splash_zoom_set(v);   // SPLASHSIZE
             else if (sscanf(line, "pauseaspect=%f", &v) == 1) akvr_xr_pause_aspect_set(v);
             else if (sscanf(line, "automainmenu=%d", &iv) == 1) akvr_xr_auto_main_menu_set(iv != 0);
             else if (sscanf(line, "fullview=%d", &iv) == 1) akvr_xr_full_view_set(iv != 0);
@@ -2075,6 +2077,9 @@ namespace
             if (SliderStep("pause / map / loading size %", &pscr, 10.0f, 100.0f, "%.0f"))
                 akvr_xr_pause_zoom_set(pscr / 100.0f);
             if (ImGui::IsItemDeactivatedAfterEdit()) settings_save();
+            float sscr = akvr_xr_splash_zoom() * 100.0f;   // SPLASHSIZE (JJ: the start-up logos were a bit too big)
+            if (SliderStep("start-up screens size %", &sscr, 10.0f, 100.0f, "%.0f"))
+            { akvr_xr_splash_zoom_set(sscr / 100.0f); settings_save(); }
             float pa = akvr_xr_pause_aspect();
             if (pa < 0.5f) pa = 1.0f;
             if (SliderStep("pause / map / loading shape  (1.78 = 16:9)", &pa, 1.0f, 2.4f, "%.2f"))
@@ -2480,7 +2485,7 @@ namespace
             float pvRatio = 0.0f, pvFov = 0.0f; int pvHits = 0;
             akvr_projvr_diag(pvRatio, pvHits, pvFov);
             fprintf(f, "\npatches:\n");
-            fprintf(f, "   build: PARTTAG5 " __DATE__ " " __TIME__ "\n");
+            fprintf(f, "   build: SCREENTAN " __DATE__ " " __TIME__ "\n");
             fprintf(f, "   zoom vignette: %s\n", akvr_xr_vig_diag());
             fprintf(f, "   native capture timing: %s Present (comparison test)\n", g_nativeAfterPresent ? "AFTER" : "BEFORE");
             {

@@ -163,6 +163,8 @@ int         akvr_xr_hud_space();        // HUDLAYER4: 0 room space re-placed per
 void        akvr_xr_hud_space_set(int v);  //   to the head), 2 fixed in the room (HUDWORLD, default)
 void        akvr_xr_hud_reanchor();     // HUDWORLD: hang the room-fixed HUD in front of the head again
 int         akvr_xr_menu_pose_delay();  // MENUDELAY: head-pose delay on the live 3D main menu (JJ: 2)
+float       akvr_xr_splash_zoom();      // SPLASHSIZE: size of the screens before the main menu (0.1..1)
+void        akvr_xr_splash_zoom_set(float v);
 void        akvr_xr_menu_pose_delay_set(int frames);
 // ZOOMVIG: our own peripheral vignette while the game's zoom narrows its FOV (or while previewing)
 float       akvr_xr_vig_strength();     // 0 = off
