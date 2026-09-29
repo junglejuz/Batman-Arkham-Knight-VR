@@ -2361,7 +2361,12 @@ void akvr_xr_frame_submit(IDXGISwapChain *swapChain, float gameFovDeg,
   // restricted to 16 by 9 because the mask that's over them is restricted to that". The render is
   // taller than 16:9 (3560x3120, or 2864x3120 with the eye view), so every non-gameplay screen is
   // cropped to 16:9, centred; a floating F6 screen keeps its own shape setting.
-  const float scrAspect = g_forceScreen ? g_screenAspect : (!effGameplay ? g_pauseAspect : 0.0f);
+  // WHOLEFRAME 2026-09-30 — JJ: the start-up logo's bottom lines were cut off (F2: the game draws these full-screen
+  // pictures filling most of the frame's height; the 16:9 slice kept only the middle). Screens before gameplay has
+  // started (logos, the loading screen after the main menu) show the whole frame at its real shape: nothing cut,
+  // nothing stretched. Pause and map keep the 16:9 slice (their mask is 16:9, PAUSE169).
+  const bool preGame = !g_forceScreen && g_autoMainMenu && g_menuPhase <= 1;
+  const float scrAspect = g_forceScreen ? g_screenAspect : (!effGameplay && !preGame ? g_pauseAspect : 0.0f);
   if (scrAspect > 0.5f) {
     const float tH = tanf(halfH), tV = tanf(halfV);
     if (tH > 0.0f && tV > 0.0f && tH / scrAspect < tV)
