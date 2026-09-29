@@ -783,6 +783,9 @@ namespace
         fprintf(f, "hudlayer=%d\n", akvr_hudsplit_layer() ? 1 : 0);   // HUDLAYER
         // PANELTIDY: hudlayerspace / hudlayercolour / hudlayereyes / hudlayersquash are fixed now, not saved.
         fprintf(f, "hudattach=%d\n", akvr_xr_hud_space() == 1 ? 1 : 0);   // HUDWORLD: 0 = fixed in the room
+        fprintf(f, "vigstrength=%.2f\n", akvr_xr_vig_strength());   // ZOOMVIG
+        fprintf(f, "vigclear=%.0f\n", akvr_xr_vig_clear());
+        fprintf(f, "vigbelow=%.0f\n", akvr_xr_vig_below());
         fprintf(f, "hudlayersplit=%d\n", akvr_hudsplit_split() ? 1 : 0);   // HUDSPLIT
         fprintf(f, "hudsteady=%.2f\n", akvr_hud_steady());
         fprintf(f, "convergence=%.4f\n", akvr_head_convergence());
@@ -885,6 +888,9 @@ namespace
             else if (sscanf(line, "huddist=%f", &v) == 1) akvr_geo11_hud_dist_set(v);
             else if (sscanf(line, "hudlayer=%d", &iv) == 1) akvr_hudsplit_layer_set(iv != 0);   // HUDLAYER
             else if (sscanf(line, "hudattach=%d", &iv) == 1) akvr_xr_hud_space_set(iv ? 1 : 2);   // HUDWORLD
+            else if (sscanf(line, "vigstrength=%f", &v) == 1) akvr_xr_vig_strength_set(v);   // ZOOMVIG
+            else if (sscanf(line, "vigclear=%f", &v) == 1) akvr_xr_vig_clear_set(v);
+            else if (sscanf(line, "vigbelow=%f", &v) == 1) akvr_xr_vig_below_set(v);
             else if (sscanf(line, "hudlayersplit=%d", &iv) == 1) akvr_hudsplit_split_set(iv != 0);   // HUDSPLIT
             else if (sscanf(line, "hudsteady=%f", &v) == 1) akvr_hud_steady_set(0.0f);   // HUDDEPTH: parked, always off
             else if (sscanf(line, "depth=%f",      &v) == 1) akvr_head_stereo_set(v);
@@ -1979,6 +1985,25 @@ namespace
             }
         }
 
+        // ---- ZOOM VIGNETTE (ZOOMVIG 2026-09-29, JJ) --------------------------------------
+        // The right-stick-click zoom: our lock keeps the view 1:1, so only the game's 2D overlay was left.
+        // Our own dark edge instead, while the game's own view is narrower than the threshold.
+        if (ImGui::CollapsingHeader("ZOOM VIGNETTE"))
+        {
+            static bool s_vigDirty = false;
+            float vs = akvr_xr_vig_strength();
+            if (SliderStep("strength  (0 = off)", &vs, 0.0f, 1.0f, "%.1f")) { akvr_xr_vig_strength_set(vs); s_vigDirty = true; }
+            float vc = akvr_xr_vig_clear();
+            if (SliderStep("clear centre  (deg)", &vc, 5.0f, 60.0f, "%.0f")) { akvr_xr_vig_clear_set(vc); s_vigDirty = true; }
+            float vb = akvr_xr_vig_below();
+            if (SliderStep("zoom when the game's view is narrower than  (deg)", &vb, 0.0f, 120.0f, "%.0f")) { akvr_xr_vig_below_set(vb); s_vigDirty = true; }
+            static bool s_prev = false;
+            if (ImGui::Checkbox("preview the vignette now", &s_prev)) akvr_xr_vig_preview(s_prev);
+            ImGui::TextDisabled("   %s", akvr_xr_vig_diag());
+            if (s_vigDirty && !ImGui::IsAnyItemActive()) { settings_save(); s_vigDirty = false; }
+        }
+        else akvr_xr_vig_preview(false);   // never leave a preview on behind a closed section
+
         // ---- MENUS AND SCREENS ------------------------------------------------------
         if (ImGui::CollapsingHeader("MENUS AND SCREENS"))
         {
@@ -2408,7 +2433,8 @@ namespace
             float pvRatio = 0.0f, pvFov = 0.0f; int pvHits = 0;
             akvr_projvr_diag(pvRatio, pvHits, pvFov);
             fprintf(f, "\npatches:\n");
-            fprintf(f, "   build: MENUONE " __DATE__ " " __TIME__ "\n");
+            fprintf(f, "   build: ZOOMVIG " __DATE__ " " __TIME__ "\n");
+            fprintf(f, "   zoom vignette: %s\n", akvr_xr_vig_diag());
             fprintf(f, "   native capture timing: %s Present (comparison test)\n", g_nativeAfterPresent ? "AFTER" : "BEFORE");
             {
                 int div = 1; double hz = 0.0; long late = 0, frames = 0;

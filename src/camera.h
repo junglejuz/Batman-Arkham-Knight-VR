@@ -18,6 +18,7 @@ bool         akvr_camera_installed();
 uintptr_t    akvr_camera_target();   // resolved injection address (0 if not found)
 uint64_t     akvr_camera_finalize_count(); // # times the camera-finalize fn ran (M4a-0 cadence)
 CameraView   akvr_camera_read();     // snapshot of the live camera fields
+float        akvr_camera_game_fov(); // ZOOMVIG: the game's own FOV this frame (deg, before the headset lock)
 void         akvr_camera_shutdown(); // restore all hand-assembled patches (DLL detach / exit)
 
 // ---- Milestone 3: take control of the camera ----

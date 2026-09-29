@@ -376,6 +376,9 @@ namespace
     // (see akvr_head_update) so it no longer "zooms the game" — this is just an
     // optional nudge (Home/End), default 0. Render + display share the FOV → 1:1.
     float g_fovDelta = 0.0f;
+    // ZOOMVIG 2026-09-29: the game's OWN FOV this frame (before our lock), read by xr.cpp's zoom
+    // vignette - the right-stick-click zoom narrows it, but our lock cancels the magnification.
+    volatile float g_gameFov = 0.0f;
 
     // AER stereo: which eye we're rendering this frame (0=left, 1=right, set by xr),
     // and the half eye-separation in world units (depth strength). Tunable ([ / ]).
@@ -1524,11 +1527,14 @@ void akvr_head_update()
     {
         float cur  = akvr_camera_read().fov;   // = game_base + our previous delta
         float base = cur - *g_dFov;            // recover the game's own FOV
+        g_gameFov = base;                      // ZOOMVIG
         *g_dFov = (target + g_fovDelta) - base;
     }
     else
         *g_dFov = 0.0f;
 }
+
+float akvr_camera_game_fov() { return g_gameFov; }   // ZOOMVIG: 0 until the FOV lock has run
 
 bool akvr_camera_base_yaw_deg(float& deg)
 {

@@ -162,6 +162,15 @@ void        akvr_xr_game_tan(float& th, float& tv);   // RETSQUASH: tan half-ang
 int         akvr_xr_hud_space();        // HUDLAYER4: 0 room space re-placed per frame, 1 view space (attached
 void        akvr_xr_hud_space_set(int v);  //   to the head), 2 fixed in the room (HUDWORLD, default)
 void        akvr_xr_hud_reanchor();     // HUDWORLD: hang the room-fixed HUD in front of the head again
+// ZOOMVIG: our own peripheral vignette while the game's zoom narrows its FOV (or while previewing)
+float       akvr_xr_vig_strength();     // 0 = off
+void        akvr_xr_vig_strength_set(float v);
+float       akvr_xr_vig_clear();        // clear centre, half-angle in degrees
+void        akvr_xr_vig_clear_set(float d);
+float       akvr_xr_vig_below();        // zoom = the game's own FOV narrower than this (deg)
+void        akvr_xr_vig_below_set(float d);
+void        akvr_xr_vig_preview(bool on);
+const char *akvr_xr_vig_diag();
 int         akvr_xr_hud_colour();       // HUDLAYER4: 0 raw copy, 1 converted to linear premultiplied
 void        akvr_xr_hud_colour_set(int v);
 int         akvr_xr_hud_eyes();         // HUDLAYER5: 1 = one quad per eye with the eye shift

@@ -1283,6 +1283,118 @@ bool hud_layer_build(XrCompositionLayerQuad &q, const XrFovf &fov) {
   ++g_hudSubmits;
   return true;
 }
+
+// ZOOMVIG 2026-09-29 — JJ: the right-stick-click zoom shows a 2D vignette overlay that "doesn't work very well"
+// in VR (our FOV lock cancels the magnification, so only the overlay is left); wanted instead: "a strong
+// vignette effect that covers all your field of vision, at the peripherals". A VIEW-space quad 1 m ahead,
+// 5 m square (+-68 deg, past the headset's view), black with an alpha ramp: clear inside g_vigClearDeg, full
+// strength g_vigRampDeg further out. On while the game's own FOV is below g_vigBelowDeg in gameplay (the zoom),
+// or while previewing. The image is rewritten only when its look changes (a fade steps through 8 levels).
+float g_vigStrength = 0.9f;    // 0 = off
+float g_vigClearDeg = 22.0f;   // clear centre, half-angle
+float g_vigRampDeg = 18.0f;    // from clear to full strength
+float g_vigBelowDeg = 45.0f;   // zoom = the game's own FOV narrower than this (to be measured)
+bool g_vigPreview = false;
+float g_vigAmt = 0.0f;         // 0..1 fade
+float g_gameFovMin = 0.0f, g_gameFovMax = 0.0f;
+XrSwapchain g_vigSwap = XR_NULL_HANDLE;
+std::vector<ID3D11Texture2D *> g_vigImages;
+float g_vigDrawn[3] = {-1.0f, -1.0f, -1.0f};   // strength, clear, ramp as last written
+int g_vigErr = 0;
+constexpr int kVigPx = 512;
+constexpr float kVigDist = 1.0f, kVigSize = 5.0f;
+bool vig_swapchain() {
+  if (g_vigSwap != XR_NULL_HANDLE) return true;
+  if (g_vigErr) return false;
+  uint32_t n = 0;
+  xrEnumerateSwapchainFormats(g_session, 0, &n, nullptr);
+  std::vector<int64_t> formats(n);
+  xrEnumerateSwapchainFormats(g_session, n, &n, formats.data());
+  int64_t chosen = 0;   // black: only the alpha byte (byte 3 in both orders) matters
+  for (int64_t f : formats)
+    if (f == DXGI_FORMAT_R8G8B8A8_UNORM || f == DXGI_FORMAT_B8G8R8A8_UNORM ||
+        f == DXGI_FORMAT_R8G8B8A8_UNORM_SRGB || f == DXGI_FORMAT_B8G8R8A8_UNORM_SRGB) { chosen = f; break; }
+  if (!chosen) { g_vigErr = 1; return false; }
+  XrSwapchainCreateInfo sci{XR_TYPE_SWAPCHAIN_CREATE_INFO};
+  sci.usageFlags = XR_SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT | XR_SWAPCHAIN_USAGE_TRANSFER_DST_BIT;
+  sci.format = chosen;
+  sci.sampleCount = 1;
+  sci.width = kVigPx;
+  sci.height = kVigPx;
+  sci.faceCount = 1;
+  sci.arraySize = 1;
+  sci.mipCount = 1;
+  if (XR_FAILED(xrCreateSwapchain(g_session, &sci, &g_vigSwap))) { g_vigSwap = XR_NULL_HANDLE; g_vigErr = 2; return false; }
+  uint32_t imgCount = 0;
+  xrEnumerateSwapchainImages(g_vigSwap, 0, &imgCount, nullptr);
+  std::vector<XrSwapchainImageD3D11KHR> imgs(imgCount, {XR_TYPE_SWAPCHAIN_IMAGE_D3D11_KHR});
+  xrEnumerateSwapchainImages(g_vigSwap, imgCount, &imgCount, (XrSwapchainImageBaseHeader *)imgs.data());
+  for (auto &i : imgs) g_vigImages.push_back(i.texture);
+  return true;
+}
+// Write the ramp into the next swapchain image (only when the look changed); the runtime keeps showing
+// the last released image, so frames in between submit the layer without touching the swapchain.
+bool vig_fill(float strength) {
+  if (!g_ctx || !vig_swapchain()) return false;
+  if (g_vigDrawn[0] == strength && g_vigDrawn[1] == g_vigClearDeg && g_vigDrawn[2] == g_vigRampDeg) return true;
+  uint32_t idx = 0;
+  XrSwapchainImageAcquireInfo ai{XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO};
+  if (XR_FAILED(xrAcquireSwapchainImage(g_vigSwap, &ai, &idx))) return false;
+  XrSwapchainImageWaitInfo wi{XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO};
+  wi.timeout = XR_INFINITE_DURATION;
+  const bool ok = XR_SUCCEEDED(xrWaitSwapchainImage(g_vigSwap, &wi)) && idx < g_vigImages.size();
+  if (ok) {
+    static std::vector<uint32_t> px;
+    px.resize((size_t)kVigPx * kVigPx);
+    const float d2r = 3.14159265f / 180.0f;
+    const float a0 = g_vigClearDeg * d2r, a1 = (g_vigClearDeg + (g_vigRampDeg < 1.0f ? 1.0f : g_vigRampDeg)) * d2r;
+    for (int y = 0; y < kVigPx; ++y)
+      for (int x = 0; x < kVigPx; ++x) {
+        // tangent-space radius at 1 m: the quad spans +-kVigSize/2 metres
+        const float u = ((x + 0.5f) / kVigPx - 0.5f) * kVigSize / kVigDist;
+        const float v = ((y + 0.5f) / kVigPx - 0.5f) * kVigSize / kVigDist;
+        const float ang = atanf(sqrtf(u * u + v * v));
+        float t = (ang - a0) / (a1 - a0);
+        t = t < 0.0f ? 0.0f : (t > 1.0f ? 1.0f : t);
+        t = t * t * (3.0f - 2.0f * t);
+        const uint32_t a = (uint32_t)(strength * t * 255.0f + 0.5f);
+        px[(size_t)y * kVigPx + x] = a << 24;   // black, premultiplied
+      }
+    g_ctx->UpdateSubresource(g_vigImages[idx], 0, nullptr, px.data(), kVigPx * 4, 0);
+  }
+  XrSwapchainImageReleaseInfo ri{XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};
+  xrReleaseSwapchainImage(g_vigSwap, &ri);
+  if (!ok) return false;
+  g_vigDrawn[0] = strength; g_vigDrawn[1] = g_vigClearDeg; g_vigDrawn[2] = g_vigRampDeg;
+  return true;
+}
+// Per ended frame: fade toward on/off, and build the layer when any of it shows.
+bool vig_layer(XrCompositionLayerQuad &q, bool gameplay) {
+  const float fov = akvr_camera_game_fov();
+  if (fov > 1.0f) {
+    if (g_gameFovMin <= 0.0f || fov < g_gameFovMin) g_gameFovMin = fov;
+    if (fov > g_gameFovMax) g_gameFovMax = fov;
+  }
+  const bool want = g_vigStrength > 0.0f && (g_vigPreview || (gameplay && fov > 1.0f && fov < g_vigBelowDeg));
+  const float step = 1.0f / 8.0f;   // ~0.1 s at 90 Hz for the whole fade
+  g_vigAmt = want ? (g_vigAmt + step > 1.0f ? 1.0f : g_vigAmt + step) : (g_vigAmt - step < 0.0f ? 0.0f : g_vigAmt - step);
+  if (g_vigAmt <= 0.0f || g_viewSpace == XR_NULL_HANDLE) return false;
+  if (!vig_fill(g_vigStrength * g_vigAmt)) return false;
+  q = XrCompositionLayerQuad{XR_TYPE_COMPOSITION_LAYER_QUAD};
+  q.layerFlags = XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT;
+  q.space = g_viewSpace;
+  q.eyeVisibility = XR_EYE_VISIBILITY_BOTH;
+  q.subImage.swapchain = g_vigSwap;
+  q.subImage.imageArrayIndex = 0;
+  q.subImage.imageRect.offset = {0, 0};
+  q.subImage.imageRect.extent = {kVigPx, kVigPx};
+  q.pose.orientation = {0.0f, 0.0f, 0.0f, 1.0f};
+  q.pose.position = {0.0f, 0.0f, -kVigDist};
+  q.size = {kVigSize, kVigSize};
+  return true;
+}
+XrCompositionLayerQuad g_vigQuad{XR_TYPE_COMPOSITION_LAYER_QUAD};
+bool g_vigHas = false;
 } // namespace
 
 void  akvr_xr_set_projvr(bool on) { g_projvrOn = on; }
@@ -1571,7 +1683,7 @@ void akvr_xr_frame_begin() {
       XrFrameBeginInfo rb{XR_TYPE_FRAME_BEGIN_INFO};
       if (XR_FAILED(xrBeginFrame(g_session, &rb)))
         break;
-      const XrCompositionLayerBaseHeader *rl[4];
+      const XrCompositionLayerBaseHeader *rl[6];
       uint32_t rn = 0;
       if (g_rpHasProj) rl[rn++] = (const XrCompositionLayerBaseHeader *)&g_rpLayer;
       // HUDLAYER4: the HUD is re-placed for THIS frame's display time (head-locked at 90 Hz).
@@ -1583,6 +1695,7 @@ void akvr_xr_frame_begin() {
         } else
           rl[rn++] = (const XrCompositionLayerBaseHeader *)&g_rpHud;
       }
+      if (g_rpHasProj && g_vigHas) rl[rn++] = (const XrCompositionLayerBaseHeader *)&g_vigQuad;   // ZOOMVIG
       if (g_rpHasQuad) rl[rn++] = (const XrCompositionLayerBaseHeader *)&g_rpQuad;
       XrFrameEndInfo re{XR_TYPE_FRAME_END_INFO};
       re.displayTime = fs.predictedDisplayTime;
@@ -1907,8 +2020,10 @@ void akvr_xr_frame_submit(IDXGISwapChain *swapChain, float gameFovDeg,
     g_eyeWantGameplay = gp && t - s_gpSince > 1500;
     // HUDLAYER: redirect the HUD only in steady gameplay - and, since HUDWORLD (JJ 2026-09-29: "the main
     // menu is attached to the head as well"), on the live 3D main menu too, so its text hangs in the room.
-    const bool menuLive = g_menu3d && effGameplay && akvr_xr_main_menu_detected();
-    akvr_hudsplit_layer_gate(g_eyeWantGameplay, menuLive);
+    // MENUONE2 (JJ: the start screen's text "came in doubled, then the duplicate disappeared"): phase 0 -
+    // before the main menu is confirmed - is splash / start screen too, so it counts as menu from the start.
+    const bool menuLive = g_menu3d && g_autoMainMenu && g_menuPhase <= 1 && effGameplay;
+    akvr_hudsplit_layer_gate(g_eyeWantGameplay && !menuLive, menuLive);
   }
   if (effGameplay) {
     g_wasGameplay = true;
@@ -2381,7 +2496,7 @@ void akvr_xr_frame_submit(IDXGISwapChain *swapChain, float gameFovDeg,
   // HUDLAYER: the HUD image (hudsplit.cpp), head-locked by the compositor at every refresh.
   XrCompositionLayerQuad hudq{XR_TYPE_COMPOSITION_LAYER_QUAD};
   const bool hasHud = submitted && hud_layer_build(hudq, fov);
-  const XrCompositionLayerBaseHeader *layers[4];
+  const XrCompositionLayerBaseHeader *layers[6];
   uint32_t nLayers = 0;
   if (submitted)
     layers[nLayers++] = (const XrCompositionLayerBaseHeader *)&layer;
@@ -2392,6 +2507,9 @@ void akvr_xr_frame_submit(IDXGISwapChain *swapChain, float gameFovDeg,
     layers[nLayers++] = (const XrCompositionLayerBaseHeader *)&hudR;
   } else if (hasHud)
     layers[nLayers++] = (const XrCompositionLayerBaseHeader *)&hudq;
+  g_vigHas = submitted && vig_layer(g_vigQuad, g_eyeWantGameplay);   // ZOOMVIG: over the game and HUD, under the panel
+  if (g_vigHas)
+    layers[nLayers++] = (const XrCompositionLayerBaseHeader *)&g_vigQuad;
   if (g_ovDrewThisFrame)
     layers[nLayers++] = (const XrCompositionLayerBaseHeader *)&quad;
   else
@@ -2796,4 +2914,20 @@ float akvr_xr_hud_half_ipd() { return g_hudHalfIpd; }
 void akvr_xr_game_tan(float &th, float &tv) {
   th = g_subHalfH > 0.01f ? tanf(g_subHalfH) : 0.0f;
   tv = g_subHalfV > 0.01f ? tanf(g_subHalfV) : 0.0f;
+}
+
+// ZOOMVIG: panel + settings
+float akvr_xr_vig_strength() { return g_vigStrength; }
+void  akvr_xr_vig_strength_set(float v) { g_vigStrength = v < 0.0f ? 0.0f : (v > 1.0f ? 1.0f : v); }
+float akvr_xr_vig_clear() { return g_vigClearDeg; }
+void  akvr_xr_vig_clear_set(float d) { g_vigClearDeg = d < 5.0f ? 5.0f : (d > 60.0f ? 60.0f : d); }
+float akvr_xr_vig_below() { return g_vigBelowDeg; }
+void  akvr_xr_vig_below_set(float d) { g_vigBelowDeg = d < 0.0f ? 0.0f : (d > 120.0f ? 120.0f : d); }
+void  akvr_xr_vig_preview(bool on) { g_vigPreview = on; }
+const char *akvr_xr_vig_diag() {
+  static char d[200];
+  snprintf(d, sizeof(d), "game's own view now %.1f deg (lowest %.1f, widest %.1f this session) | vignette %s%s",
+           akvr_camera_game_fov(), g_gameFovMin, g_gameFovMax, g_vigAmt > 0.0f ? "ON" : "off",
+           g_vigErr ? (g_vigErr == 1 ? " - no image format" : " - could not make its image") : "");
+  return d;
 }
