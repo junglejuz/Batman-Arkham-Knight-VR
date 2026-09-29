@@ -191,6 +191,7 @@ namespace {
     // VSID4 run: 64 of 64 filled (the game creates the 13 many times) - later copies would have lost their depth.
     constexpr int kHudVsCap = 1024;
     void* g_hudVs[kHudVsCap] = {}; int g_hudVsN = 0;   // shader objects of the 13 (several creations possible)
+    int8_t g_hudVsIdx[kHudVsCap] = {};                 // MARKREC: which of the 13 (kHudVsHash index)
     bool  g_hudVsFound[13] = {};
     volatile LONG g_vsSeen = 0;
     int   g_vsHooks = 0;
@@ -291,7 +292,7 @@ namespace {
             {
                 AcquireSRWLockExclusive(&g_vsLock);
                 g_hudVsFound[i] = true;
-                if (g_hudVsN < kHudVsCap) g_hudVs[g_hudVsN++] = vs;
+                if (g_hudVsN < kHudVsCap) { g_hudVsIdx[g_hudVsN] = (int8_t)i; g_hudVs[g_hudVsN++] = vs; }
                 ReleaseSRWLockExclusive(&g_vsLock);
                 return;
             }
@@ -426,6 +427,78 @@ namespace {
     typedef void (__stdcall* ExecFn)(ID3D11DeviceContext*, ID3D11CommandList*, BOOL);
     typedef HRESULT (__stdcall* FinishFn)(ID3D11DeviceContext*, BOOL, ID3D11CommandList**);
 
+
+    // MARKREC 2026-09-30 — JJ: "hang in the room" on the compass keeps the colour mark on the part (found in place
+    // 8801 / missing 3) but the compass stays doubled, so the mark does not reach the 7 colour HUD shaders as
+    // expected. Record what the game really uploads: shadow copies of the game's VS constant buffers (Map/Unmap and
+    // UpdateSubresource on the game-facing context, only inside the HUD call), and per split HUD draw the shader
+    // (one of the 13) and every float in cb0 with |v| in 0.001..0.003 (the mark is -1/512). F2 writes the last frame.
+    typedef void (__stdcall* VSSetCBFn)(ID3D11DeviceContext*, UINT, UINT, ID3D11Buffer* const*);
+    typedef HRESULT (__stdcall* MapFn)(ID3D11DeviceContext*, ID3D11Resource*, UINT, D3D11_MAP, UINT, D3D11_MAPPED_SUBRESOURCE*);
+    typedef void (__stdcall* UnmapFn)(ID3D11DeviceContext*, ID3D11Resource*, UINT);
+    typedef void (__stdcall* UpdSubFn)(ID3D11DeviceContext*, ID3D11Resource*, UINT, const D3D11_BOX*, const void*, UINT, UINT);
+    VSSetCBFn oVSSetCB = nullptr; MapFn oMapG = nullptr; UnmapFn oUnmapG = nullptr; UpdSubFn oUpdSubG = nullptr;
+    struct Shadow { void* key; UINT size; void* mapped; uint8_t data[4096]; };
+    Shadow g_sh[16] = {}; int g_shN = 0;
+    void* g_vsCb0 = nullptr;                               // cb0 bound for the VS on the game context
+    struct MarkRow { int vs; int split; int nHits; int where[4]; float val[4]; UINT cbSize; };
+    MarkRow g_mrCur[96], g_mrRep[96]; int g_mrCurN = 0, g_mrRepN = 0; unsigned g_mrRepFrame = 0;
+    Shadow* sh_find(void* key, bool add)
+    {
+        for (int i = 0; i < g_shN; ++i) if (g_sh[i].key == key) return &g_sh[i];
+        if (!add || g_shN >= 16) return nullptr;
+        Shadow& s = g_sh[g_shN++]; s.key = key; s.size = 0; s.mapped = nullptr;
+        __try { D3D11_BUFFER_DESC d{}; ((ID3D11Buffer*)key)->GetDesc(&d); s.size = d.ByteWidth > 4096 ? 4096 : d.ByteWidth; }
+        __except (EXCEPTION_EXECUTE_HANDLER) { s.size = 0; }
+        return &s;
+    }
+    bool snoop_ctx(ID3D11DeviceContext* c);
+    void __stdcall hkVSSetCB(ID3D11DeviceContext* c, UINT start, UINT n, ID3D11Buffer* const* b)
+    {
+        if (snoop_ctx(c) && start == 0 && n >= 1 && b) { g_vsCb0 = b[0]; if (b[0]) sh_find(b[0], true); }
+        oVSSetCB(c, start, n, b);
+    }
+    HRESULT __stdcall hkMapG(ID3D11DeviceContext* c, ID3D11Resource* r, UINT sub, D3D11_MAP t, UINT f, D3D11_MAPPED_SUBRESOURCE* m)
+    {
+        const HRESULT hr = oMapG(c, r, sub, t, f, m);
+        if (SUCCEEDED(hr) && m && snoop_ctx(c)) if (Shadow* s = sh_find(r, false)) s->mapped = m->pData;
+        return hr;
+    }
+    void __stdcall hkUnmapG(ID3D11DeviceContext* c, ID3D11Resource* r, UINT sub)
+    {
+        if (snoop_ctx(c))
+            if (Shadow* s = sh_find(r, false))
+                if (s->mapped && s->size) { __try { memcpy(s->data, s->mapped, s->size); } __except (EXCEPTION_EXECUTE_HANDLER) {} s->mapped = nullptr; }
+        oUnmapG(c, r, sub);
+    }
+    void __stdcall hkUpdSubG(ID3D11DeviceContext* c, ID3D11Resource* r, UINT sub, const D3D11_BOX* box, const void* src, UINT rp, UINT dp)
+    {
+        if (snoop_ctx(c) && !box && src)
+            if (Shadow* s = sh_find(r, false))
+                if (s->size) { __try { memcpy(s->data, src, s->size); } __except (EXCEPTION_EXECUTE_HANDLER) {} }
+        oUpdSubG(c, r, sub, box, src, rp, dp);
+    }
+    int vs_hud_index(void* vs);
+    void mark_record(ID3D11DeviceContext* c, bool split)
+    {
+        if (g_mrCurN >= 96) return;
+        MarkRow& m = g_mrCur[g_mrCurN++];
+        m.vs = vs_hud_index(g_curVs); m.split = split ? 1 : 0; m.nHits = 0; m.cbSize = 0;
+        Shadow* s = g_vsCb0 ? sh_find(g_vsCb0, false) : nullptr;
+        if (!s || !s->size) { m.nHits = -1; return; }
+        m.cbSize = s->size;
+        const float* f = (const float*)s->data;
+        for (UINT i = 0; i < s->size / 4; ++i)
+        {
+            const float a = f[i] < 0.0f ? -f[i] : f[i];
+            if (a > 0.001f && a < 0.003f)
+            {
+                if (m.nHits < 4) { m.where[m.nHits] = (int)i; m.val[m.nHits] = f[i]; }
+                ++m.nHits;
+            }
+        }
+    }
+
     template <int L> struct Det
     {
         static inline DrawIndexedFn oDrawIndexed = nullptr;
@@ -442,6 +515,7 @@ namespace {
         static void __stdcall DrawIndexed(ID3D11DeviceContext* c, UINT n, UINT s, INT b)
         {
             note_draw(c, L);
+            if (L == 0 && snoop_ctx(c)) mark_record(c, split_now(c));   // MARKREC
             if (L == 0 && split_now(c)) { split_pre(c); oDrawIndexed(c, n, s, b); split_mid(c); oDrawIndexed(c, n, s, b); split_post(c); return; }
             if (L == 0 && c == g_gameCtx && akvr_hudsplit_active())
             {   // VSID2: geo-11 may bind its real shader only when the draw arrives - learn the pairing here
@@ -455,6 +529,7 @@ namespace {
         static void __stdcall Draw(ID3D11DeviceContext* c, UINT n, UINT s)
         {
             note_draw(c, L);
+            if (L == 0 && snoop_ctx(c)) mark_record(c, split_now(c));   // MARKREC
             if (L == 0 && split_now(c)) { split_pre(c); oDraw(c, n, s); split_mid(c); oDraw(c, n, s); split_post(c); return; }
             if (L == 0 && c == g_gameCtx && akvr_hudsplit_active())
             {   // VSID2: geo-11 may bind its real shader only when the draw arrives - learn the pairing here
@@ -468,6 +543,7 @@ namespace {
         static void __stdcall DrawIdxInst(ID3D11DeviceContext* c, UINT a, UINT i, UINT s, INT b, UINT si)
         {
             note_draw(c, L);
+            if (L == 0 && snoop_ctx(c)) mark_record(c, split_now(c));   // MARKREC
             if (L == 0 && split_now(c)) { split_pre(c); oDrawIdxInst(c, a, i, s, b, si); split_mid(c); oDrawIdxInst(c, a, i, s, b, si); split_post(c); return; }
             if (L == 0 && c == g_gameCtx && akvr_hudsplit_active())
             {   // VSID2: geo-11 may bind its real shader only when the draw arrives - learn the pairing here
@@ -481,6 +557,7 @@ namespace {
         static void __stdcall DrawInst(ID3D11DeviceContext* c, UINT a, UINT i, UINT s, UINT si)
         {
             note_draw(c, L);
+            if (L == 0 && snoop_ctx(c)) mark_record(c, split_now(c));   // MARKREC
             if (L == 0 && split_now(c)) { split_pre(c); oDrawInst(c, a, i, s, si); split_mid(c); oDrawInst(c, a, i, s, si); split_post(c); return; }
             if (L == 0 && c == g_gameCtx && akvr_hudsplit_active())
             {   // VSID2: geo-11 may bind its real shader only when the draw arrives - learn the pairing here
@@ -719,6 +796,16 @@ namespace {
         return true;
     }
 
+    bool snoop_ctx(ID3D11DeviceContext* c) { return c == g_gameCtx && g_gameCtx && akvr_hudsplit_active(); }
+    int vs_hud_index(void* vs)
+    {
+        if (!vs) return -1;
+        int r = -1;
+        AcquireSRWLockShared(&g_vsLock);
+        for (int i = 0; i < g_hudVsN; ++i) if (g_hudVs[i] == vs) { r = g_hudVsIdx[i]; break; }
+        ReleaseSRWLockShared(&g_vsLock);
+        return r;
+    }
     int hud_names_found()
     {
         int n = 0;
@@ -795,6 +882,7 @@ namespace {
 
     void layer_begin()
     {
+        g_mrCurN = 0;   // MARKREC
         g_hBound = false; g_hCleared = false; g_scopeSubs = 0; g_reqValid = false; g_reqBlendValid = false;
         g_splitDraws = 0;
         if (!g_scopeLayer) return;
@@ -841,6 +929,7 @@ namespace {
             if (g_cb13Orig) { g_cb13Orig->Release(); g_cb13Orig = nullptr; }
         }
         g_splitDrawsRep = g_splitDraws;
+        if (g_mrCurN > 0) { memcpy(g_mrRep, g_mrCur, sizeof(MarkRow) * g_mrCurN); g_mrRepN = g_mrCurN; g_mrRepFrame = g_frame; }   // MARKREC
         if (g_scopeSubs > 0) { g_lastSubFrame = g_frame; ++g_layerFrames; }
         g_subsRep = g_scopeSubs;
     }
@@ -942,6 +1031,11 @@ namespace {
         module_of(gvt[12], g_gameModule, sizeof(g_gameModule));
         if (gvt[12] == rvt[12]) { g_gameState = 2; gc->Release(); return; }   // geo-11 handed back the real one
         const int n = hook_table<0>(gvt, nullptr, true, true, true, true);
+        // MARKREC: constant-buffer traffic on the game context (slots 7 VSSetConstantBuffers, 14 Map, 15 Unmap, 48 UpdateSubresource)
+        hook_slot(gvt, nullptr, 7, (void*)&hkVSSetCB, (void**)&oVSSetCB);
+        hook_slot(gvt, nullptr, 14, (void*)&hkMapG, (void**)&oMapG);
+        hook_slot(gvt, nullptr, 15, (void*)&hkUnmapG, (void**)&oUnmapG);
+        hook_slot(gvt, nullptr, 48, (void*)&hkUpdSubG, (void**)&oUpdSubG);
         g_gameHooked = n;
         g_gameState = n < 0 ? -2 : 1;
         g_gameCtx = gc;                                   // keeps our reference: lives as long as the game
@@ -1151,6 +1245,25 @@ const char* akvr_hudsplit_diag()
                              s.b[j].binds, s.b[j].draws);
     }
     return d;
+}
+
+void akvr_hudsplit_marks_dump(const wchar_t* path)
+{
+    FILE* f = nullptr;
+    if (!path || _wfopen_s(&f, path, L"w") != 0 || !f) return;
+    fprintf(f, "# MARKREC: HUD draws of the last HUD frame (%u). vs = index into the 13 (-1 = not one of them); hits = floats in cb0\n", g_mrRepFrame);
+    fprintf(f, "# with |v| in 0.001..0.003 (the part mark is -0.001953), as float index (row = idx/4, component = idx%%4) and value.\n");
+    fprintf(f, "# hooks: VSSetCB %d Map %d Unmap %d UpdSub %d, shadows %d\n", oVSSetCB ? 1 : 0, oMapG ? 1 : 0, oUnmapG ? 1 : 0, oUpdSubG ? 1 : 0, g_shN);
+    fprintf(f, "draw,vs,vs_hash,split,cb_bytes,hits,idx1,val1,idx2,val2,idx3,val3,idx4,val4\n");
+    for (int i = 0; i < g_mrRepN; ++i)
+    {
+        const MarkRow& m = g_mrRep[i];
+        fprintf(f, "%d,%d,%016llx,%d,%u,%d", i, m.vs, m.vs >= 0 ? (unsigned long long)kHudVsHash[m.vs] : 0ull, m.split, m.cbSize, m.nHits);
+        for (int k = 0; k < 4; ++k)
+            if (k < m.nHits) fprintf(f, ",%d,%.6f", m.where[k], m.val[k]); else fprintf(f, ",,");
+        fprintf(f, "\n");
+    }
+    fclose(f);
 }
 
 void akvr_hudsplit_layer_shot(const wchar_t* path)

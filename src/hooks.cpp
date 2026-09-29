@@ -1439,6 +1439,7 @@ namespace
         akvr_hudprobe_dump((capture + L"hudprobe.csv").c_str());
         akvr_hudsplit_dump((capture + L"hudsplit.csv").c_str());   // HUDSPLIT
         akvr_hudsplit_layer_shot((capture + L"hudlayer.bmp").c_str());   // LAYERSHOT
+        akvr_hudsplit_marks_dump((capture + L"hudmarks.csv").c_str());   // MARKREC
         akvr_hud_layers_dump((capture + L"hudlayers.txt").c_str());   // HUDLAYERS phase 1
         CopyFileW((base + L"akvr_camera_trace.csv").c_str(), (capture + L"camera.csv").c_str(), TRUE);
         CopyFileW((base + L"akvr_mode_trace.csv").c_str(), (capture + L"mode.csv").c_str(), TRUE);
@@ -2448,7 +2449,7 @@ namespace
             float pvRatio = 0.0f, pvFov = 0.0f; int pvHits = 0;
             akvr_projvr_diag(pvRatio, pvHits, pvFov);
             fprintf(f, "\npatches:\n");
-            fprintf(f, "   build: PARTTAG2 " __DATE__ " " __TIME__ "\n");
+            fprintf(f, "   build: MARKREC " __DATE__ " " __TIME__ "\n");
             fprintf(f, "   zoom vignette: %s\n", akvr_xr_vig_diag());
             fprintf(f, "   native capture timing: %s Present (comparison test)\n", g_nativeAfterPresent ? "AFTER" : "BEFORE");
             {
