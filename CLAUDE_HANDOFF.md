@@ -102,6 +102,14 @@ made it worse and is undone. MENUONE: on the live main menu the whole UI goes to
 `<capture>hudlayer.bmp` (the layer image). OPEN: gameplay compass/tips still head-locked; a correct split needs to tell
 world markers from screen-fixed HUD per ELEMENT (e.g. per Scaleform movie/container), not per piece tag or position.
 
+**Build ZOOMVIG (2026-09-29 late, installed, untested):** right-stick-click zoom = our FOV lock cancels the magnification,
+so only the game's 2D overlay was left. New: our own vignette (view-space quad, black alpha ramp) while the game's OWN
+FOV (camera.cpp `g_gameFov`, before the lock) < `vigbelow` (default 45 deg, GUESS - the panel shows now/lowest/widest; set
+it from JJ's numbers). Panel section ZOOM VIGNETTE: strength, clear centre, threshold, preview. The game's overlay: JJ to
+hide its HUD part (not yet identified). MENUONE2: phase 0 (start screen) counts as menu too.
+JJ's HUD part map: C0.0.0 = gameplay tips; C1.0.0.0.1.0.0.0 reticle, .1 target distance, .2 compass. Menu 3D (Batman)
+jiggles on menus only, not in gameplay - asked JJ to try pose delay 2 / 4 on the menu.
+
 ## Open issues, in priority order
 
 1. **The fresh-install test above.**
