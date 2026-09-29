@@ -89,6 +89,12 @@ Installer: picks the game from ANY folder of it (searches 4 levels down; several
 own message), and asks the picture sharpness on a first install: Low 2016 / Medium 2432 (Enter) / High 2860 =
 engineres + rendersize (`-Picture` for scripts). Tested on a fake game folder in the scratchpad, JJ's store restored.
 
+**Build HUDWORLD (2026-09-29 evening, deployed to JJ's game, NOT in the release yet):** JJ wants the HUD fixed in the
+room by default (UEVR-style), glued to the head only as the panel option "attach UI to head movement" (`hudattach`,
+default 0). xr.cpp g_hudSpace 2 = the HUD quad placed once in LOCAL space in front of the LEVEL head pose at the last
+recenter (akvr_head_recenter -> akvr_xr_hud_reanchor) and left there. Backup: diagnostics/before-HUDWORLD-20260929/.
+Check in the headset: HUD stays put when turning the head, F12 re-hangs it, depth still right (per-eye quads).
+
 ## Open issues, in priority order
 
 1. **The fresh-install test above.**

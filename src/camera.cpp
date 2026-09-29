@@ -1171,6 +1171,7 @@ void akvr_head_recenter()
         g_refYawDeg = ry;
     }
     g_refPX = px; g_refPY = py; g_refPZ = pz;
+    akvr_xr_hud_reanchor();   // HUDWORLD: the room-fixed HUD hangs in front of this new straight ahead
 }
 
 void akvr_head_toggle()

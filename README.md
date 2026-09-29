@@ -167,7 +167,8 @@ pictures and a recording, for troubleshooting.
 | HUD size | How big the HUD is. |
 | HUD up / down | Moves the whole HUD up or down. |
 | HUD distance | How far away the HUD looks, in metres. 0 or **far away** puts it at the distance of far-off scenery. |
-| HUD on its own layer (steady HUD) | Draws the HUD separately, attached to your head by the headset itself, so it stays steady instead of jumping with the game's frame rate. |
+| HUD on its own layer (steady HUD) | Draws the HUD separately, placed by the headset itself, so it stays steady instead of jumping with the game's frame rate. |
+| Attach UI to head movement | Off (normal): the HUD hangs still in front of you, and you can look around it; **F12** hangs it in front of you again. On: the HUD moves with your head. Needs the HUD on its own layer. |
 | Keep the reticle at the depth it points at | With the HUD layer on: reticles and markers that point at things (grapple reticle, objective marker) stay at the depth of what they point at, while the rest of the HUD stays on the steady layer. |
 | Menus and map use the full height | Lets menus and the map fill the view from top to bottom. |
 | Move / resize single HUD parts | Adjust the radar, compass and other parts one by one. With the HUD on screen, press **find the HUD parts**. Tick **hide** on a part to see which one it is, then open it to change its size and position. **Reset** undoes a part. Your layout is remembered. |

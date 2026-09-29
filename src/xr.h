@@ -159,8 +159,9 @@ void        akvr_xr_our_sizes(uint32_t& eyeW, uint32_t& eyeH, uint32_t& ovW, uin
 void        akvr_xr_backbuffer_size(uint32_t& w, uint32_t& h);  // the game's live render resolution
 const char* akvr_xr_hud_layer_diag();   // HUDLAYER: the head-locked HUD quad
 void        akvr_xr_game_tan(float& th, float& tv);   // RETSQUASH: tan half-angles of the game frame
-int         akvr_xr_hud_space();        // HUDLAYER4: 0 room space re-placed per frame, 1 view space
-void        akvr_xr_hud_space_set(int v);
+int         akvr_xr_hud_space();        // HUDLAYER4: 0 room space re-placed per frame, 1 view space (attached
+void        akvr_xr_hud_space_set(int v);  //   to the head), 2 fixed in the room (HUDWORLD, default)
+void        akvr_xr_hud_reanchor();     // HUDWORLD: hang the room-fixed HUD in front of the head again
 int         akvr_xr_hud_colour();       // HUDLAYER4: 0 raw copy, 1 converted to linear premultiplied
 void        akvr_xr_hud_colour_set(int v);
 int         akvr_xr_hud_eyes();         // HUDLAYER5: 1 = one quad per eye with the eye shift

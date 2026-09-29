@@ -1016,7 +1016,14 @@ XrQuaternionf hud_qmul(const XrQuaternionf &a, const XrQuaternionf &b) {
 // 45 Hz step shows as HUD motion, which lazy follow only masked. VIEW space: the compositor places the quad from
 // the actual head pose at every refresh - nothing to predict. The HUDLAYER3 view-space test ("not steadier") ran
 // with VD SSW on, which warps the whole picture, so it never measured this. Lazy follow is off for good.
-int g_hudSpace = 1;          // 0 LOCAL (re-placed per frame), 1 VIEW
+// HUDWORLD 2026-09-29 — JJ: "the main HUD should be fixed to world space by default, not fixed to head
+// movement; fixed to head movement should be an option, 'attach UI to head movement'" (UEVR's default).
+// Mode 2 hangs the quad in the room: the head-relative pose placed once in front of the LEVEL head pose
+// at the last recenter (F12, the Meta button, head tracking on) - the same heading camera.cpp takes as the
+// game's straight ahead - and left there. Turning the head looks around it; the compositor keeps it put.
+int g_hudSpace = 2;          // 0 LOCAL (re-placed per frame), 1 VIEW (attached to the head), 2 fixed in the room
+bool g_hudWorldOk = false;   // mode 2: anchor taken since the last recenter
+XrPosef g_hudWorldAnchor{};  // mode 2: level head pose at the recenter, LOCAL space
 // HUDLAYER5 — JJ on HUDLAYER4: the HUD distance slider still changes nothing, though the log shows the
 // quad moving (3.0 m). The quad keeps its angular size, so only the two eyes' difference shows depth:
 // if the runtime composites a quad without that difference, depth never changes. Eye shift (option):
@@ -1037,6 +1044,30 @@ char g_hudConvDiag[96] = "";
 // Place the quad for display time t. LOCAL: head pose at t composed with the head-relative pose.
 bool hud_place(XrCompositionLayerQuad &q, XrTime t) {
   if (g_hudSpace == 1) { q.space = g_viewSpace; q.pose = g_hudViewPose; return true; }
+  if (g_hudSpace == 2) {
+    if (!g_hudWorldOk) {
+      XrSpaceLocation hl{XR_TYPE_SPACE_LOCATION};
+      if (XR_FAILED(xrLocateSpace(g_viewSpace, g_localSpace, t, &hl)) ||
+          (hl.locationFlags & (XR_SPACE_LOCATION_ORIENTATION_VALID_BIT | XR_SPACE_LOCATION_POSITION_VALID_BIT)) !=
+              (XR_SPACE_LOCATION_ORIENTATION_VALID_BIT | XR_SPACE_LOCATION_POSITION_VALID_BIT)) {
+        ++g_hudPlaceFails; return false;
+      }
+      // heading only: the twist about +Y (as level_pose below), so a recenter while looking down still
+      // hangs the HUD level in front of you
+      g_hudWorldAnchor = hl.pose;
+      const XrQuaternionf &o = hl.pose.orientation;
+      const float n = sqrtf(o.w * o.w + o.y * o.y);
+      g_hudWorldAnchor.orientation = n > 1e-6f ? XrQuaternionf{0.0f, o.y / n, 0.0f, o.w / n} : XrQuaternionf{0.0f, 0.0f, 0.0f, 1.0f};
+      g_hudWorldOk = true;
+    }
+    const XrQuaternionf &a = g_hudWorldAnchor.orientation;
+    const XrVector3f o = quat_rotate(a, g_hudViewPose.position);
+    q.space = g_localSpace;
+    q.pose.orientation = hud_qmul(a, g_hudViewPose.orientation);
+    q.pose.position = {g_hudWorldAnchor.position.x + o.x, g_hudWorldAnchor.position.y + o.y,
+                       g_hudWorldAnchor.position.z + o.z};
+    return true;
+  }
   XrSpaceLocation loc{XR_TYPE_SPACE_LOCATION};
   if (XR_FAILED(xrLocateSpace(g_viewSpace, g_localSpace, t, &loc)) ||
       !(loc.locationFlags & XR_SPACE_LOCATION_ORIENTATION_VALID_BIT)) { ++g_hudPlaceFails; return false; }
@@ -2741,13 +2772,14 @@ const char *akvr_xr_hud_layer_diag() {
   else if (g_hudSwap == XR_NULL_HANDLE) snprintf(d, sizeof(d), "headset HUD layer: not started");
   else snprintf(d, sizeof(d), "headset HUD layer: %ld frames sent, %ux%u fmt %d, at %.1f m, %.2f x %.2f m, %s, %s, place fails %ld%s",
                 g_hudSubmits, g_hudW, g_hudH, (int)g_hudFmt, g_hudDistUsed, g_hudSizeW, g_hudSizeH,
-                g_hudSpace == 1 ? "view space" : "room space, re-placed each frame",
+                g_hudSpace == 1 ? "attached to the head" : (g_hudSpace == 2 ? "fixed in the room" : "room space, re-placed each frame"),
                 g_hudColour == 1 ? g_hudConvDiag : "raw colour copy", g_hudPlaceFails,
                 g_rpHasHud ? "" : " (not in the last frame)");
   return d;
 }
 int  akvr_xr_hud_space() { return g_hudSpace; }
-void akvr_xr_hud_space_set(int v) { g_hudSpace = v == 1 ? 1 : 0; }
+void akvr_xr_hud_space_set(int v) { g_hudSpace = (v == 1 || v == 2) ? v : 0; g_hudWorldOk = false; }
+void akvr_xr_hud_reanchor() { g_hudWorldOk = false; }
 int  akvr_xr_hud_colour() { return g_hudColour; }
 void akvr_xr_hud_colour_set(int v) { g_hudColour = v == 0 ? 0 : 1; }
 int  akvr_xr_hud_eyes() { return g_hudEyes; }

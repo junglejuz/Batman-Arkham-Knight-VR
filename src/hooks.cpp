@@ -782,6 +782,7 @@ namespace
         fprintf(f, "huddist=%.2f\n", akvr_geo11_hud_dist());
         fprintf(f, "hudlayer=%d\n", akvr_hudsplit_layer() ? 1 : 0);   // HUDLAYER
         // PANELTIDY: hudlayerspace / hudlayercolour / hudlayereyes / hudlayersquash are fixed now, not saved.
+        fprintf(f, "hudattach=%d\n", akvr_xr_hud_space() == 1 ? 1 : 0);   // HUDWORLD: 0 = fixed in the room
         fprintf(f, "hudlayersplit=%d\n", akvr_hudsplit_split() ? 1 : 0);   // HUDSPLIT
         fprintf(f, "hudsteady=%.2f\n", akvr_hud_steady());
         fprintf(f, "convergence=%.4f\n", akvr_head_convergence());
@@ -883,6 +884,7 @@ namespace
             else if (sscanf(line, "overscanv=%f", &v) == 1) g_ovV = v < 0.0f ? -1.0f : (v > 40.0f ? 40.0f : v);
             else if (sscanf(line, "huddist=%f", &v) == 1) akvr_geo11_hud_dist_set(v);
             else if (sscanf(line, "hudlayer=%d", &iv) == 1) akvr_hudsplit_layer_set(iv != 0);   // HUDLAYER
+            else if (sscanf(line, "hudattach=%d", &iv) == 1) akvr_xr_hud_space_set(iv ? 1 : 2);   // HUDWORLD
             else if (sscanf(line, "hudlayersplit=%d", &iv) == 1) akvr_hudsplit_split_set(iv != 0);   // HUDSPLIT
             else if (sscanf(line, "hudsteady=%f", &v) == 1) akvr_hud_steady_set(0.0f);   // HUDDEPTH: parked, always off
             else if (sscanf(line, "depth=%f",      &v) == 1) akvr_head_stereo_set(v);
@@ -1916,6 +1918,14 @@ namespace
             {
                 bool lay = akvr_hudsplit_layer();
                 if (ImGui::Checkbox("HUD on its own layer (steady HUD)", &lay)) { akvr_hudsplit_layer_set(lay); s_hudDirty = true; }
+                // HUDWORLD 2026-09-29 (JJ): the HUD hangs fixed in the room by default; this glues it to the head.
+                bool attach = akvr_xr_hud_space() == 1;
+                if (!lay) ImGui::BeginDisabled();
+                if (ImGui::Checkbox("attach UI to head movement", &attach)) { akvr_xr_hud_space_set(attach ? 1 : 2); s_hudDirty = true; }
+                if (!lay) ImGui::EndDisabled();
+                ImGui::TextDisabled(lay ? (attach ? "   the HUD moves with your head"
+                                                  : "   the HUD stays put in the room; F12 hangs it in front of you again")
+                                        : "   needs the HUD on its own layer");
                 if (lay && ImGui::TreeNode("HUD layer settings"))
                 {
                     // PANELTIDY 2026-09-28 (JJ: confusing for new users): placement (view space since HUDVIEW),
@@ -1925,8 +1935,8 @@ namespace
                     ImGui::TextDisabled("      %s", akvr_hudsplit_split_diag());
                     // Compass band slider removed 2026-09-29 (JJ): fixed at 28% in hudsplit.cpp.
                     // DIAG RB record button removed 2026-09-28 (done: the RB icon is a glyph in the shared font cache).
-                    // HUDVIEW 2026-09-28: lazy follow removed (JJ: a "cheap trick"); the HUD is glued to the head
-                    // by the headset itself every refresh (xr.cpp g_hudSpace = 1).
+                    // HUDVIEW 2026-09-28: lazy follow removed (JJ: a "cheap trick"). Attached = glued to the head by
+                    // the headset itself every refresh (xr.cpp g_hudSpace = 1); HUDWORLD default = fixed in the room (2).
                     if (akvr_xr_fps_lock_ssw())
                         ImGui::TextColored(kAmber, "   frame rate is on Virtual Desktop SSW: the HUD can only move 45 times a second. Try \"repeat the frame\".");
                     ImGui::TextDisabled("   %s", akvr_hudsplit_layer_diag());
@@ -2397,7 +2407,7 @@ namespace
             float pvRatio = 0.0f, pvFov = 0.0f; int pvHits = 0;
             akvr_projvr_diag(pvRatio, pvHits, pvFov);
             fprintf(f, "\npatches:\n");
-            fprintf(f, "   build: GSACOMFORT " __DATE__ " " __TIME__ "\n");
+            fprintf(f, "   build: HUDWORLD " __DATE__ " " __TIME__ "\n");
             fprintf(f, "   native capture timing: %s Present (comparison test)\n", g_nativeAfterPresent ? "AFTER" : "BEFORE");
             {
                 int div = 1; double hz = 0.0; long late = 0, frames = 0;
