@@ -162,6 +162,15 @@ SCREENTAN: flat screens scaled half-ANGLES (16:9 showed 1.58:1 at 70%); now widt
 SPLASHSIZE: screens before the main menu (phase 0) get `splashscreen` (default 0.55, panel slider). Loading content is
 still drawn 1.22:1 inside the frame by the menu fill - re-check with JJ after SCREENTAN.
 
+**ROOMALL (2026-09-30 ~02:00, installed, untested):** JJ: "have everything hang in the room automatically, and just the
+ones that shouldn't be unticked". `hudroomall=1`: the mod marks every MAXIMAL branch of each ModularHud tree that holds
+no part ticked "stays on its target" (8th field in `hudlayers`); no stacking/cancelling, new children inherit. JJ's world
+parts set: K2/0.0.0.0.1.0.0.0 (reticle), .0.0.1 (target distance). Parts list shows "[in the room]" on auto-marked
+branches. Tree rebuilt at 0.5 s and 3 s into every gameplay stretch (was only 3 s, only with saved parts). Limits:
+only ModularHud movies are in the tree (other HUD movies keep the fix's per-piece split); world markers not yet ticked
+(enemy indicators, grapple points?) will float in the room until ticked. Also ZOOMHIDE (per-part 'hide while zoomed',
+set on K1/0.0.0.0.2 = tips/zoom overlay). Splash crop: need JJ's F2 on the logo screen.
+
 ## Open issues, in priority order
 
 1. **The fresh-install test above.**

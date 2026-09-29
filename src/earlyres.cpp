@@ -52,6 +52,7 @@
 void akvr_hud_layers_hook_vtable(void** vt);   // HUDLAYERS, defined below
 void akvr_hud_layers_discover();
 void akvr_hud_layers_discover_quick();
+bool akvr_hud_room_all();   // ROOMALL
 const char* akvr_hud_layer_xf_list();
 #include <cstddef>
 
@@ -2817,14 +2818,19 @@ void akvr_hud_tick()
     for (auto& r : g_roots) if (r.view && r.want) apply_root(r.view, false);
     // HUDLAYERS: find the layers again 3 s into every gameplay stretch (after loads the
     // movies are new), but only when the player has saved layer adjustments.
+    // ROOMALL 2026-09-30: always with the whole-HUD rule on, and a first pass at 0.5 s so the HUD reaches the room
+    // almost at once (JJ: "enters with the HUD elements attached to the face very briefly").
     {
-        static ULONGLONG since = 0; static bool done = false;
-        if (!g_hudGameplay) { since = 0; done = false; }
+        static ULONGLONG since = 0; static bool done = false, early = false;
+        if (!g_hudGameplay) { since = 0; done = false; early = false; }
         else
         {
             if (!since) since = GetTickCount64();
+            const bool want = akvr_hud_layer_xf_list()[0] || akvr_hud_room_all();
+            if (!early && GetTickCount64() - since > 500)
+            { early = true; if (want) akvr_hud_layers_discover_quick(); }
             if (!done && GetTickCount64() - since > 3000)
-            { done = true; if (akvr_hud_layer_xf_list()[0]) akvr_hud_layers_discover_quick(); }
+            { done = true; if (want) akvr_hud_layers_discover_quick(); }
         }
     }
     if (!g_uiHaveBase) return;             // not initialised yet
@@ -3093,28 +3099,36 @@ namespace
         bool hidByUs, baseVisible;                  // HIDE: our visible=false and the game's own state
         bool room, taggedByUs;                      // PARTTAG: "hang in the room" (colour mark) and ours applied
         bool zoomHide;                              // ZOOMHIDE: hidden only while the zoom vignette is on
+        bool world, autoRoom;                       // ROOMALL: "stays on its target"; marked by the whole-HUD rule
     };
     Layer   g_layers[2048];
     int     g_nLayers = 0;
     SRWLOCK g_layerLock = SRWLOCK_INIT;
-    char    g_layerXf[4096] = "";               // ";key:size:x:y:hide:room:zoomhide" per adjusted layer
+    char    g_layerXf[4096] = "";               // ";key:size:x:y:hide:room:zoomhide:world" per adjusted layer
+    // ROOMALL 2026-09-30 — JJ: ticking parts one by one "is pretty hard to sift through"; "have everything hang in the
+    // room automatically, and just the ones that shouldn't be unticked". With g_roomAll the mod marks every MAXIMAL
+    // branch of the HUD tree that holds no "stays on its target" part: a branch is marked when it contains no world
+    // part but its parent does (or it is a container root). Marks never stack or need cancelling, and anything the
+    // game adds under a marked branch later (pop-ups, tips) inherits the mark.
+    bool    g_roomAll = true;
+    volatile bool g_autoDirty = true;
     int     g_layerAdjusted = 0;                // layers with an adjustment (fast skip)
     long    g_layerSets = 0;
     char    g_layerDiag[224] = "HUD layers: not searched yet";
 
     bool layer_custom(const Layer& L)
     {
-        return L.hide || L.room || L.zoomHide || std::fabs(L.s - 1.0f) > 0.001f || std::fabs(L.dx) > 0.0005f || std::fabs(L.dy) > 0.0005f;
+        return L.hide || L.room || L.zoomHide || L.world || std::fabs(L.s - 1.0f) > 0.001f || std::fabs(L.dx) > 0.0005f || std::fabs(L.dy) > 0.0005f;
     }
     void layer_load(Layer& L)
     {
-        L.s = 1.0f; L.dx = L.dy = 0.0f; L.hide = false; L.room = false; L.zoomHide = false;
+        L.s = 1.0f; L.dx = L.dy = 0.0f; L.hide = false; L.room = false; L.zoomHide = false; L.world = false;
         char k[112]; _snprintf_s(k, sizeof(k), _TRUNCATE, ";%s:", L.key);
         const char* hit = strstr(g_layerXf, k);
         if (!hit) return;
-        float s = 1, x = 0, y = 0; int h = 0, rm = 0, zh = 0;
-        if (sscanf_s(hit + strlen(k), "%f:%f:%f:%d:%d:%d", &s, &x, &y, &h, &rm, &zh) >= 3)
-        { L.s = s; L.dx = x; L.dy = y; L.hide = h != 0; L.room = rm != 0; L.zoomHide = zh != 0; }
+        float s = 1, x = 0, y = 0; int h = 0, rm = 0, zh = 0, wd = 0;
+        if (sscanf_s(hit + strlen(k), "%f:%f:%f:%d:%d:%d:%d", &s, &x, &y, &h, &rm, &zh, &wd) >= 3)
+        { L.s = s; L.dx = x; L.dy = y; L.hide = h != 0; L.room = rm != 0; L.zoomHide = zh != 0; L.world = wd != 0; }
     }
     void layer_save(const Layer& L)
     {
@@ -3130,7 +3144,7 @@ namespace
         if (layer_custom(L))
         {
             char add[160];
-            _snprintf_s(add, sizeof(add), _TRUNCATE, ";%s:%.3f:%.4f:%.4f:%d:%d:%d", L.key, L.s, L.dx, L.dy, L.hide ? 1 : 0, L.room ? 1 : 0, L.zoomHide ? 1 : 0);
+            _snprintf_s(add, sizeof(add), _TRUNCATE, ";%s:%.3f:%.4f:%.4f:%d:%d:%d:%d", L.key, L.s, L.dx, L.dy, L.hide ? 1 : 0, L.room ? 1 : 0, L.zoomHide ? 1 : 0, L.world ? 1 : 0);
             strncat_s(out, add, _TRUNCATE);
         }
         strcpy_s(g_layerXf, out);
@@ -3388,7 +3402,7 @@ namespace
                 memcpy(carry[nCarry].last, g_layers[i].last, sizeof(carry[0].last));
                 ++nCarry;
             }
-        g_nLayers = 0; g_layerAdjusted = 0;
+        g_nLayers = 0; g_layerAdjusted = 0; g_autoDirty = true;   // ROOMALL
         int containers = 0, named = 0;
         int cFirst[16] = {}, cLast[16] = {};
         for (int i = 0; i < g_nContFps; ++i) g_contFps[i].taken = false;
@@ -3488,7 +3502,7 @@ namespace
     // marked node, the mark goes straight back, before the frame is captured.
     typedef void (*ObjSetCxformFn)(void* obj, const float* cx);
     ObjSetCxformFn g_origObjCx = nullptr;
-    uintptr_t volatile g_tagNodes[64] = {};
+    uintptr_t volatile g_tagNodes[1024] = {};   // ROOMALL: many branches
     volatile LONG g_tagNodeN = 0;
     long g_tagRewrites = 0, g_tagReadOk = 0, g_tagReadBad = 0;
     bool tag_node(uintptr_t node)
@@ -3556,8 +3570,21 @@ namespace
     }
     void apply_layers(void* view)
     {
-        if ((!g_layerAdjusted && !g_layerRestores) || !g_treeSetMatrix || !layer_fns_ready()) return;
+        if ((!g_layerAdjusted && !g_layerRestores && !g_roomAll && g_tagNodeN == 0) || !g_treeSetMatrix || !layer_fns_ready()) return;
         if (!TryAcquireSRWLockShared(&g_layerLock)) return;
+        if (g_autoDirty)
+        {   // ROOMALL: which branches hold a world part (children follow their parent in the list)
+            static bool s_holds[2048];
+            for (int i = 0; i < g_nLayers; ++i) s_holds[i] = g_layers[i].world;
+            for (int i = g_nLayers - 1; i > 0; --i)
+                if (s_holds[i] && g_layers[i].parent >= 0 && g_layers[i].parent < i) s_holds[g_layers[i].parent] = true;
+            for (int i = 0; i < g_nLayers; ++i)
+            {
+                const int p = g_layers[i].parent;
+                g_layers[i].autoRoom = !s_holds[i] && (p < 0 || (p < i && s_holds[p]));
+            }
+            g_autoDirty = false;
+        }
         for (int i = 0; i < g_nLayers; ++i)
         {
             Layer& L = g_layers[i];
@@ -3566,7 +3593,8 @@ namespace
             // ZOOMHIDE 2026-09-30 — JJ: the game's own 2D zoom vignette is the same part as the gameplay tips, so a
             // plain hide took the tips too. "hide while zoomed" hides it only while our zoom vignette is on.
             const bool hideNow = L.hide || (L.zoomHide && akvr_xr_vig_active());
-            if (!moved && !hideNow && !L.haveLast && !L.hidByUs && !L.room && !L.taggedByUs) continue;
+            const bool roomNow = !L.world && (L.room || (g_roomAll && L.autoRoom));   // ROOMALL
+            if (!moved && !hideNow && !L.haveLast && !L.hidByUs && !roomNow && !L.taggedByUs) continue;
             __try
             {
                 if (!is_child_of(L.node, L.parentNode)) continue;          // node gone or moved
@@ -3576,25 +3604,25 @@ namespace
                 const int  nf = is3d ? 12 : 8;
                 const bool wasPending = L.haveLast || L.hidByUs || L.taggedByUs;
                 // --- PARTTAG: the colour mark (add blue = kPartTag) the 7 colour HUD shaders look for
-                if ((L.room || L.taggedByUs) && g_treeWritable)
+                if ((roomNow || L.taggedByUs) && g_treeWritable)
                 {
                     uintptr_t d = 0;
                     if (node_data(L.node, d))
                     {
                         const float b = *(const float*)(d + 0x68);
-                        if (L.room && b == kPartTag) ++g_tagReadOk; else if (L.room) ++g_tagReadBad;   // PARTTAG2 diag
-                        if (L.room && !tag_node(L.node) && g_tagNodeN < 64)
+                        if (roomNow && b == kPartTag) ++g_tagReadOk; else if (roomNow) ++g_tagReadBad;   // PARTTAG2 diag
+                        if (roomNow && !tag_node(L.node) && g_tagNodeN < 1024)
                         { g_tagNodes[g_tagNodeN] = L.node; InterlockedIncrement(&g_tagNodeN); }
-                        if (L.room && b != kPartTag)
+                        if (roomNow && b != kPartTag)
                         {
                             if (uint8_t* w = (uint8_t*)g_treeWritable((void*)L.node, 2)) { mark_rgb(w, kPartTag); ++g_tagSets; }
                         }
-                        else if (!L.room && b == kPartTag)
+                        else if (!roomNow && b == kPartTag)
                         {
                             if (uint8_t* w = (uint8_t*)g_treeWritable((void*)L.node, 2)) mark_rgb(w, 0.0f);
                         }
-                        L.taggedByUs = L.room;
-                        if (!L.room)   // PARTTAG2: off the guard's list, so the game's own colour stays
+                        L.taggedByUs = roomNow;
+                        if (!roomNow)   // PARTTAG2: off the guard's list, so the game's own colour stays
                             for (LONG k = 0; k < g_tagNodeN; ++k)
                                 if (g_tagNodes[k] == L.node) { g_tagNodes[k] = g_tagNodes[g_tagNodeN - 1]; InterlockedDecrement(&g_tagNodeN); break; }
                     }
@@ -3717,6 +3745,26 @@ bool  akvr_hud_layer_get(int i, int& depth, int& parent, int& kids, const char*&
 }
 bool  akvr_hud_layer_room(int i) { return i >= 0 && i < g_nLayers && g_layers[i].room; }
 bool  akvr_hud_layer_zoomhide(int i) { return i >= 0 && i < g_nLayers && g_layers[i].zoomHide; }
+bool  akvr_hud_layer_world(int i) { return i >= 0 && i < g_nLayers && g_layers[i].world; }
+bool  akvr_hud_layer_autoroom(int i) { return i >= 0 && i < g_nLayers && g_roomAll && g_layers[i].autoRoom && !g_layers[i].world; }
+void  akvr_hud_layer_world_set(int i, bool on)
+{
+    AcquireSRWLockExclusive(&g_layerLock);
+    if (i >= 0 && i < g_nLayers)
+    {
+        Layer& L = g_layers[i];
+        const bool was = layer_custom(L);
+        L.world = on;
+        const bool now = layer_custom(L);
+        if (was && !now && (L.haveLast || L.hidByUs || L.taggedByUs)) InterlockedIncrement(&g_layerRestores);
+        g_layerAdjusted += (now ? 1 : 0) - (was ? 1 : 0);
+        layer_save(L);
+        g_autoDirty = true;
+    }
+    ReleaseSRWLockExclusive(&g_layerLock);
+}
+bool  akvr_hud_room_all() { return g_roomAll; }
+void  akvr_hud_room_all_set(bool on) { g_roomAll = on; g_autoDirty = true; }
 void  akvr_hud_layer_zoomhide_set(int i, bool on)
 {
     AcquireSRWLockExclusive(&g_layerLock);

@@ -127,6 +127,11 @@ void        akvr_hud_layer_room_set(int i, bool on);
 long        akvr_hud_layer_tag_sets();
 const char* akvr_hud_layer_tag_diag();      // PARTTAG2
 bool        akvr_hud_layer_zoomhide(int i);  // ZOOMHIDE
+bool        akvr_hud_layer_world(int i);     // ROOMALL: "stays on its target"
+bool        akvr_hud_layer_autoroom(int i);  // ROOMALL: marked by the whole-HUD rule
+void        akvr_hud_layer_world_set(int i, bool on);
+bool        akvr_hud_room_all();
+void        akvr_hud_room_all_set(bool on);
 void        akvr_hud_layer_zoomhide_set(int i, bool on);
 const char* akvr_hud_layer_xf_list();
 void        akvr_hud_layer_xf_list_set(const char* list);
@@ -790,6 +795,7 @@ namespace
         fprintf(f, "hudlayer=%d\n", akvr_hudsplit_layer() ? 1 : 0);   // HUDLAYER
         // PANELTIDY: hudlayerspace / hudlayercolour / hudlayereyes / hudlayersquash are fixed now, not saved.
         fprintf(f, "hudattach=%d\n", akvr_xr_hud_space() == 1 ? 1 : 0);   // HUDWORLD: 0 = fixed in the room
+        fprintf(f, "hudroomall=%d\n", akvr_hud_room_all() ? 1 : 0);   // ROOMALL
         fprintf(f, "vigstrength=%.2f\n", akvr_xr_vig_strength());   // ZOOMVIG
         fprintf(f, "vigclear=%.0f\n", akvr_xr_vig_clear());
         fprintf(f, "vigbelow=%.0f\n", akvr_xr_vig_below());
@@ -897,6 +903,7 @@ namespace
             else if (sscanf(line, "huddist=%f", &v) == 1) akvr_geo11_hud_dist_set(v);
             else if (sscanf(line, "hudlayer=%d", &iv) == 1) akvr_hudsplit_layer_set(iv != 0);   // HUDLAYER
             else if (sscanf(line, "hudattach=%d", &iv) == 1) akvr_xr_hud_space_set(iv ? 1 : 2);   // HUDWORLD
+            else if (sscanf(line, "hudroomall=%d", &iv) == 1) akvr_hud_room_all_set(iv != 0);   // ROOMALL
             else if (sscanf(line, "vigstrength=%f", &v) == 1) akvr_xr_vig_strength_set(v);   // ZOOMVIG
             else if (sscanf(line, "vigclear=%f", &v) == 1) akvr_xr_vig_clear_set(v);
             else if (sscanf(line, "vigbelow=%f", &v) == 1) akvr_xr_vig_below_set(v);
@@ -1688,7 +1695,7 @@ namespace
             {
                 int d, par, kids; const char* lab; float ls, lx, ly; bool lh, l3;
                 if (!akvr_hud_layer_get(k, d, par, kids, lab, ls, lx, ly, lh, l3)) continue;
-                const bool custom = lh || akvr_hud_layer_room(k) || akvr_hud_layer_zoomhide(k) || fabsf(ls - 1.0f) > 0.001f || fabsf(lx) > 0.0005f || fabsf(ly) > 0.0005f;
+                const bool custom = lh || akvr_hud_layer_room(k) || akvr_hud_layer_zoomhide(k) || akvr_hud_layer_world(k) || fabsf(ls - 1.0f) > 0.001f || fabsf(lx) > 0.0005f || fabsf(ly) > 0.0005f;
                 for (int j = custom ? k : -1, guard = 0; j >= 0 && j < n && guard < 64; ++guard)
                 {
                     if (s_partHint[j]) break;
@@ -1718,11 +1725,14 @@ namespace
             bool room = akvr_hud_layer_room(i);
             if (ImGui::Checkbox("hang in the room", &room)) { akvr_hud_layer_room_set(i, room); settings_save(); s_partHintDirty = true; }
             ImGui::SameLine();
+            bool wd = akvr_hud_layer_world(i);   // ROOMALL (JJ: everything in the room except what points at the world)
+            if (ImGui::Checkbox("stays on its target", &wd)) { akvr_hud_layer_world_set(i, wd); settings_save(); s_partHintDirty = true; }
+            ImGui::SameLine();
             bool zh = akvr_hud_layer_zoomhide(i);   // ZOOMHIDE (JJ: the game's zoom overlay shares its part with the tips)
             if (ImGui::Checkbox("hide while zoomed", &zh)) { akvr_hud_layer_zoomhide_set(i, zh); settings_save(); s_partHintDirty = true; }
             ImGui::SameLine();
             if (part_hint(i)) ImGui::SetNextItemOpen(true, ImGuiCond_Once);   // PARTOPEN
-            const bool open = ImGui::TreeNode("part", "%s%s%s", lab, l3 ? "  (3D panel)" : "",
+            const bool open = ImGui::TreeNode("part", "%s%s%s%s", lab, akvr_hud_layer_autoroom(i) ? "  [in the room]" : "", l3 ? "  (3D panel)" : "",
                                               kids ? "" : "  (single)");
             if (open)
             {
@@ -2018,6 +2028,11 @@ namespace
                 if (ImGui::Button("find the HUD parts  (with the HUD on screen)")) akvr_hud_layers_discover();
                 ImGui::TextDisabled("%s", akvr_hud_layers_diag());
                 ImGui::TextDisabled("tick 'hide' on a part to see which one it is, then open it to move or resize it.");
+                {   // ROOMALL
+                    bool all = akvr_hud_room_all();
+                    if (ImGui::Checkbox("whole HUD hangs in the room  (tick 'stays on its target' on parts that point at the world)", &all))
+                    { akvr_hud_room_all_set(all); settings_save(); }
+                }
                 ImGui::TextDisabled("'hang in the room': the whole part joins the room-fixed HUD (for parts that do not point at the world).");
                 ImGui::TextDisabled("   %s", akvr_hud_layer_tag_diag());
                 for (int i = 0; i < akvr_hud_layer_count(); ++i)
@@ -2490,7 +2505,7 @@ namespace
             float pvRatio = 0.0f, pvFov = 0.0f; int pvHits = 0;
             akvr_projvr_diag(pvRatio, pvHits, pvFov);
             fprintf(f, "\npatches:\n");
-            fprintf(f, "   build: ZOOMHIDE " __DATE__ " " __TIME__ "\n");
+            fprintf(f, "   build: ROOMALL " __DATE__ " " __TIME__ "\n");
             fprintf(f, "   zoom vignette: %s\n", akvr_xr_vig_diag());
             fprintf(f, "   native capture timing: %s Present (comparison test)\n", g_nativeAfterPresent ? "AFTER" : "BEFORE");
             {
