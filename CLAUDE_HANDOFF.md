@@ -76,6 +76,14 @@ If anything is wrong, compare with the old tuned install and with the practice t
 Stutter analysis (capture 00:19): 6 of 7 hitches > 50 ms were the game; the worst came from waiting in the hand-off
 to Virtual Desktop (xr_submit 20-80 ms). Not split further; only if JJ asks.
 
+## Update 2026-09-29 evening (fresh-install test, part 1)
+
+JJ installed from the release at 17:20 and ran it: GSACOMFORT WORKS (log: "blur/vsync off 3 (store held blur 1)").
+JJ reported the four GameWorks effects were NOT turned off: the installer's graphics list never had them (stock is off)
+and NVIDIA's store was never written. Fixed in the installer (commit 5c9c080, FIX_CHANGES.md section 6), package
+re-uploaded to v0.1.0 and verified by download. JJ's current install still has them on: Uninstall-AKVR.bat, then
+install again from the new zip (the uninstall makes the reinstall a first install).
+
 ## Open issues, in priority order
 
 1. **The fresh-install test above.**
