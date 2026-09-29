@@ -1392,7 +1392,12 @@ void akvr_head_update()
     // yaw 12.6 wrote +15.5 deg where UE needed -8.6. Fix: build the head in UE's sense (-gr
     // in our basis), compose, and hand UE the roll back in its sense (-froll). At zero game
     // pitch this is still exactly the level path (froll = gr).
-    const bool tipped = g_pitchUnlink == 2 && !screenFrozen && !akvr_xr_main_menu_detected();
+    // MENUTIPPED 2026-09-30 — JJ: on the title screen, the shot looking down on Batman from above sat "right down
+    // low, you have to tilt your head down to see it". The live main menu was kept LEVEL (pitchkeep 0) since the
+    // full-pitch menu rolled Batman on head turns (GEOSHAPE, 2026-09-26) - before TIPPED and ROLLSIGN made the rigid
+    // composition roll-free. With mode 2 the menu now uses it too: the menu camera's framing stays straight ahead,
+    // head turns slide the picture. (Modes 0/1 keep the old level menu.)
+    const bool tipped = g_pitchUnlink == 2 && !screenFrozen;
     if (tipped)
     {
         V3 bf, br, bu; build_basis(b2yaw, b2pitch, 0.0f, bf, br, bu);
