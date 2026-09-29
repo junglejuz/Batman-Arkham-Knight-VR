@@ -127,6 +127,12 @@ NEXT: JJ's F2 with the compass on screen -> read hudmarks.csv. Loading screen (J
 is drawn 1.22:1 in the 2888x2860 frame (cols 63-928 x rows 117-825 at 1/3), not 16:9 - stretched or cropped by the
 menu full-height fill; not investigated further yet. Main menu size = `screen` (JJ has 1.00).
 
+**PARTTAG3 + MENUTIPPED (2026-09-30, installed, untested):** MARKREC proved the part mark arrives exactly in cb0,
+in the FIRST row of each colour pair (add before multiply) - fix step 1g corrected to read that row, plus the `mad`
+layout (4b432a87, 91e2b222): 9 shaders, driver-tested, applied. JJ's compass tick is saved (K2/0.0.0.0.1.0.0.2).
+MENUTIPPED: the live main menu used pitchkeep 0 (level) -> the top-down title shot sat far below eye level; with
+pitchunlink 2 it now uses the roll-free tipped composition like gameplay. Rollbacks in diagnostics/before-*-20260930.
+
 ## Open issues, in priority order
 
 1. **The fresh-install test above.**
