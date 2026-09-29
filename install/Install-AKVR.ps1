@@ -30,6 +30,25 @@ $Game = @{
         'MaxDrawDistanceScale'           = '1.200000'
         'SkeletalMeshDisplayFactorScale' = '0.800000'
         'TextureFiltering'               = '1'
+        # GameWorks off (JJ, 2026-09-29: a player who had them on kept them on - the stock install
+        # has them off, so the first list never needed them).
+        'bEnableInteractiveSmoke'        = '0'
+        'bEnableInteractivePaperDebris'  = '0'
+        'bEnableRainFX'                  = '0'
+        'bEnableVolumetricLighting'      = '0'
+    }
+    # The same menu in NVIDIA's settings store (GFXSettings.BatmanArkhamKnight.xml), which the game reads
+    # at every start and saves back into the ini (that is how MotionBlur came back, FIX_CHANGES.md section 6).
+    # Only options already in the file are changed; no file = the game builds it from the ini.
+    GameStore    = [ordered]@{
+        'Texture_Resolution'       = '2'
+        'Shadow_Quality'           = '2'
+        'Level_Of_Detail'          = '2'
+        'TextureFiltering'         = '1'
+        'Interactive_Smoke'        = 'false'
+        'Interactive_Paper_Debris' = 'false'
+        'Rain_FX'                  = 'false'
+        'Volumetric_Lighting'      = 'false'
     }
     OldProxy     = 'version.dll'
     BuildDirs    = @('build-dinput8', 'build')
@@ -215,6 +234,26 @@ function Set-SystemSettings([string]$path, $pairs) {
         if (-not $seen[$k]) { $doc.Lines.Insert($secStart + 1, "$k=$($pairs[$k])"); $changed++ }
     }
     if ($changed) { Save-Ini $doc }
+    return $changed
+}
+
+# Sets Value="..." on <OPTION Name="..."> entries of NVIDIA's settings store (UTF-16, no byte-order mark,
+# as the game writes it). Options missing from the file are left out. Returns options changed.
+function Set-GfxStore([string]$path, $pairs) {
+    $bytes = [System.IO.File]::ReadAllBytes($path)
+    $bom = $bytes.Length -ge 2 -and $bytes[0] -eq 0xFF -and $bytes[1] -eq 0xFE
+    $enc = New-Object System.Text.UnicodeEncoding($false, $bom)
+    $text = [System.IO.File]::ReadAllText($path, $enc)
+    $changed = 0
+    foreach ($k in $pairs.Keys) {
+        $rx = '(<OPTION Name="' + [regex]::Escape($k) + '"[^>]*?Value=")([^"]*)(")'
+        $m = [regex]::Match($text, $rx)
+        if ($m.Success -and $m.Groups[2].Value -ne $pairs[$k]) {
+            $text = $text.Substring(0, $m.Groups[2].Index) + $pairs[$k] + $text.Substring($m.Groups[2].Index + $m.Groups[2].Length)
+            $changed++
+        }
+    }
+    if ($changed) { [System.IO.File]::WriteAllText($path, $text, $enc) }
     return $changed
 }
 
@@ -446,7 +485,14 @@ elseif (Test-Path $tested) {
         $target = if (Test-Path $gen) { $gen } elseif (Test-Path $tmpl) { $tmpl } else { $null }
         if ($target) {
             $n = Set-SystemSettings $target $Game.GameGraphics
-            Say "   tested graphics settings applied ($n changed): Max FPS 90, High detail, 2x anisotropic filtering" 'Green'
+            Say "   tested graphics settings applied ($n changed): Max FPS 90, High detail, 2x anisotropic filtering, GameWorks off" 'Green'
+        }
+    }
+    if ($Game.GameStore) {
+        $store = Get-GfxStoreCandidates | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
+        if ($store) {
+            $n = Set-GfxStore $store $Game.GameStore
+            Say "   the same settings put in NVIDIA's settings store ($n changed)" 'Green'
         }
     }
 }

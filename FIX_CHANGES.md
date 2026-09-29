@@ -349,6 +349,16 @@ ShadowQuality / LevelOfDetail 1 and both scales 1.0 - lower detail, not needed.)
 had to change. Reference: `Set-SystemSettings` in `install/Install-AKVR.ps1` (unit-tested on both files: 6 changed,
 second run 0).
 
+**GameWorks + NVIDIA store, added 2026-09-29 (installer, first install only):** `bEnableInteractiveSmoke`,
+`bEnableInteractivePaperDebris`, `bEnableRainFX`, `bEnableVolumetricLighting` = `0` in the same `[SystemSettings]` list,
+and the same menu written into NVIDIA's settings store (below) with `Set-GfxStore`: `Texture_Resolution` /
+`Shadow_Quality` / `Level_Of_Detail` 2, `TextureFiltering` 1, `Interactive_Smoke` / `Interactive_Paper_Debris` /
+`Rain_FX` / `Volumetric_Lighting` false (only options already in the file; encoding kept, UTF-16 without BOM).
+**Why:** JJ's clean fresh-install test: he had set GameWorks on for flat play, and they stayed on in VR - the first list
+only covered what differs from a STOCK install (GameWorks off there), and the store (read every start, 16x filtering,
+GameWorks true) was never touched. Tested on copies of JJ's files: ini 4 changed, store 5 changed, second run 0 / 0.
+The uninstaller already puts both files back from `vrmod_graphics_backup`.
+
 **The mod itself, every start** (earlyres.cpp `force_comfort_settings`, older than this record): MotionBlur,
 ChromaticAberration, FilmGrain, UseVsync, UseAdaptiveVsync = False; Fullscreen=False, WindowDisplayMode=0 (with the
 forced render size); each also as its `Default*` key and in every section (buckets re-enable blur); MaxFPS / DefaultMaxFPS
@@ -414,3 +424,4 @@ baseline versions). Needs JJ: where the 2026-09-26 update came from, or an in-ga
 | 2026-09-28 | DEPTHALL | 11 HUD vertex shaders: copy the fix's own scene-depth decision into the split | 1e |
 | 2026-09-29 | PANELTIDY / BAND28 (DLL only) | none - RETSQUASH (1d) now inert; compass band fixed at 28% by the mod | 1c, 1d |
 | 2026-09-29 | installer | Install-AKVR.ps1 runs the patch script; NonSquareRT block on for Arkham; verified on practice folders | all |
+| 2026-09-29 | installer (GAMEWORKS) | BmSystemSettings.ini GameWorks keys = 0; NVIDIA store: detail / 2x filtering / GameWorks off (first install) | 6 |
