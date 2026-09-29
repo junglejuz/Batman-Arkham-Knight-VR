@@ -3091,28 +3091,29 @@ namespace
         float s, dx, dy; bool hide;             // the player's adjustment
         float base[12], last[12]; bool haveLast;   // 2D uses the first 8 (2x4), 3D all 12 (3x4)
         bool hidByUs, baseVisible;                  // HIDE: our visible=false and the game's own state
+        bool room, taggedByUs;                      // PARTTAG: "hang in the room" (colour mark) and ours applied
     };
     Layer   g_layers[2048];
     int     g_nLayers = 0;
     SRWLOCK g_layerLock = SRWLOCK_INIT;
-    char    g_layerXf[4096] = "";               // ";key:size:x:y:hide" per adjusted layer
+    char    g_layerXf[4096] = "";               // ";key:size:x:y:hide:room" per adjusted layer
     int     g_layerAdjusted = 0;                // layers with an adjustment (fast skip)
     long    g_layerSets = 0;
     char    g_layerDiag[224] = "HUD layers: not searched yet";
 
     bool layer_custom(const Layer& L)
     {
-        return L.hide || std::fabs(L.s - 1.0f) > 0.001f || std::fabs(L.dx) > 0.0005f || std::fabs(L.dy) > 0.0005f;
+        return L.hide || L.room || std::fabs(L.s - 1.0f) > 0.001f || std::fabs(L.dx) > 0.0005f || std::fabs(L.dy) > 0.0005f;
     }
     void layer_load(Layer& L)
     {
-        L.s = 1.0f; L.dx = L.dy = 0.0f; L.hide = false;
+        L.s = 1.0f; L.dx = L.dy = 0.0f; L.hide = false; L.room = false;
         char k[112]; _snprintf_s(k, sizeof(k), _TRUNCATE, ";%s:", L.key);
         const char* hit = strstr(g_layerXf, k);
         if (!hit) return;
-        float s = 1, x = 0, y = 0; int h = 0;
-        if (sscanf_s(hit + strlen(k), "%f:%f:%f:%d", &s, &x, &y, &h) >= 3)
-        { L.s = s; L.dx = x; L.dy = y; L.hide = h != 0; }
+        float s = 1, x = 0, y = 0; int h = 0, rm = 0;
+        if (sscanf_s(hit + strlen(k), "%f:%f:%f:%d:%d", &s, &x, &y, &h, &rm) >= 3)
+        { L.s = s; L.dx = x; L.dy = y; L.hide = h != 0; L.room = rm != 0; }
     }
     void layer_save(const Layer& L)
     {
@@ -3128,7 +3129,7 @@ namespace
         if (layer_custom(L))
         {
             char add[160];
-            _snprintf_s(add, sizeof(add), _TRUNCATE, ";%s:%.3f:%.4f:%.4f:%d", L.key, L.s, L.dx, L.dy, L.hide ? 1 : 0);
+            _snprintf_s(add, sizeof(add), _TRUNCATE, ";%s:%.3f:%.4f:%.4f:%d:%d", L.key, L.s, L.dx, L.dy, L.hide ? 1 : 0, L.room ? 1 : 0);
             strncat_s(out, add, _TRUNCATE);
         }
         strcpy_s(g_layerXf, out);
@@ -3475,6 +3476,10 @@ namespace
     // (copies 0x30 bytes = 3x4 to data+0x10, sets flag 0x200), found 2026-09-27 (HIDE3D).
     typedef void (*TreeSetVisibleFn)(void* node, bool visible);
     typedef void (*TreeSetMatrix3Fn)(void* node, const float* m3x4);
+    typedef void* (*TreeWritableFn)(void* node, unsigned change);   // PARTTAG: TreeNode::GetWritableData
+    TreeWritableFn g_treeWritable = nullptr;
+    constexpr float kPartTag = -1.0f / 512.0f;   // add blue: below one 8-bit step; shaders look for -0.003..-0.001
+    long g_tagSets = 0;
     TreeSetVisibleFn g_treeSetVisible = nullptr;
     TreeSetMatrix3Fn g_treeSetMatrix3 = nullptr;
     bool layer_fns_ready()
@@ -3486,14 +3491,22 @@ namespace
         const uint8_t* m3  = (const uint8_t*)(base + (0x1411cdce0 - 0x140000000));
         static const uint8_t visPro[] = { 0x48,0x89,0x5C,0x24,0x08, 0x57, 0x48,0x83,0xEC,0x20, 0x4C,0x8B,0xC9 };
         static const uint8_t m3Pro[]  = { 0x48,0x89,0x5C,0x24,0x08, 0x48,0x89,0x6C,0x24,0x10 };
+        // PARTTAG: TreeNode::GetWritableData(node, change) 0x1411c96f0 - every setter calls it (1 matrix, 2 colour
+        // transform, 4 visible) and writes the returned data; the colour transform is data+0x50 (multiply RGBA)
+        // and data+0x60 (add RGBA), as the game's own code at 0x1411f53bd writes it.
+        const uint8_t* gwd = (const uint8_t*)(base + (0x1411c96f0 - 0x140000000));
+        static const uint8_t gwdPro[] = { 0x48,0x89,0x5C,0x24,0x08, 0x48,0x89,0x6C,0x24,0x10, 0x48,0x89,0x74,0x24,0x18,
+                                          0x48,0x89,0x7C,0x24,0x20, 0x41,0x54, 0x48,0x83,0xEC,0x20, 0x8B,0xEA };
         __try
         {
             if (memcmp(vis, visPro, sizeof(visPro)) == 0 && memcmp(m3, m3Pro, sizeof(m3Pro)) == 0)
             { g_treeSetVisible = (TreeSetVisibleFn)vis; g_treeSetMatrix3 = (TreeSetMatrix3Fn)m3; state = 1; }
             else state = -1;
+            if (memcmp(gwd, gwdPro, sizeof(gwdPro)) == 0) g_treeWritable = (TreeWritableFn)gwd;
         }
         __except (EXCEPTION_EXECUTE_HANDLER) { state = -1; }
-        log_add("hud-layers: visible/3D setters %s", state > 0 ? "found" : "NOT matched (hide/3D moves off)");
+        log_add("hud-layers: visible/3D setters %s; colour mark %s", state > 0 ? "found" : "NOT matched (hide/3D moves off)",
+                g_treeWritable ? "found" : "NOT matched (hang in the room off)");
         return state > 0;
     }
     bool layer_moved(const Layer& L)
@@ -3509,7 +3522,7 @@ namespace
             Layer& L = g_layers[i];
             if (L.view != view || L.depth == 0) continue;
             const bool moved = layer_moved(L);
-            if (!moved && !L.hide && !L.haveLast && !L.hidByUs) continue;
+            if (!moved && !L.hide && !L.haveLast && !L.hidByUs && !L.room && !L.taggedByUs) continue;
             __try
             {
                 if (!is_child_of(L.node, L.parentNode)) continue;          // node gone or moved
@@ -3517,7 +3530,25 @@ namespace
                 if (!node_matrix(L.node, cur, &flags)) continue;
                 const bool is3d = (flags & 0x200) != 0;
                 const int  nf = is3d ? 12 : 8;
-                const bool wasPending = L.haveLast || L.hidByUs;
+                const bool wasPending = L.haveLast || L.hidByUs || L.taggedByUs;
+                // --- PARTTAG: the colour mark (add blue = kPartTag) the 7 colour HUD shaders look for
+                if ((L.room || L.taggedByUs) && g_treeWritable)
+                {
+                    uintptr_t d = 0;
+                    if (node_data(L.node, d))
+                    {
+                        const float b = *(const float*)(d + 0x68);
+                        if (L.room && b != kPartTag)
+                        {
+                            if (uint8_t* w = (uint8_t*)g_treeWritable((void*)L.node, 2)) { *(float*)(w + 0x68) = kPartTag; ++g_tagSets; }
+                        }
+                        else if (!L.room && b == kPartTag)
+                        {
+                            if (uint8_t* w = (uint8_t*)g_treeWritable((void*)L.node, 2)) *(float*)(w + 0x68) = 0.0f;
+                        }
+                        L.taggedByUs = L.room;
+                    }
+                }
                 // --- hide / show through the node's own visible bit
                 if (L.hide)
                 {
@@ -3566,7 +3597,7 @@ namespace
                     }
                     L.haveLast = false;
                 }
-                if (wasPending && !L.haveLast && !L.hidByUs && !layer_custom(L) && g_layerRestores > 0)
+                if (wasPending && !L.haveLast && !L.hidByUs && !L.taggedByUs && !layer_custom(L) && g_layerRestores > 0)
                     InterlockedDecrement(&g_layerRestores);
             }
             __except (EXCEPTION_EXECUTE_HANDLER) { L.node = 0; }
@@ -3634,6 +3665,24 @@ bool  akvr_hud_layer_get(int i, int& depth, int& parent, int& kids, const char*&
     s = L.s; x = L.dx; y = L.dy; hide = L.hide; is3d = (L.flags & 0x200) != 0;
     return true;
 }
+bool  akvr_hud_layer_room(int i) { return i >= 0 && i < g_nLayers && g_layers[i].room; }
+// PARTTAG: "hang in the room" = mark the whole part so the HUD shaders never put it at scene depth.
+void  akvr_hud_layer_room_set(int i, bool on)
+{
+    AcquireSRWLockExclusive(&g_layerLock);
+    if (i >= 0 && i < g_nLayers)
+    {
+        Layer& L = g_layers[i];
+        const bool was = layer_custom(L);
+        L.room = on;
+        const bool now = layer_custom(L);
+        if (was && !now && (L.haveLast || L.hidByUs || L.taggedByUs)) InterlockedIncrement(&g_layerRestores);
+        g_layerAdjusted += (now ? 1 : 0) - (was ? 1 : 0);
+        layer_save(L);
+    }
+    ReleaseSRWLockExclusive(&g_layerLock);
+}
+long  akvr_hud_layer_tag_sets() { return g_tagSets; }
 void  akvr_hud_layer_set(int i, float s, float x, float y, bool hide)
 {
     AcquireSRWLockExclusive(&g_layerLock);
@@ -3646,7 +3695,7 @@ void  akvr_hud_layer_set(int i, float s, float x, float y, bool hide)
         L.dy = y < -0.6f ? -0.6f : (y > 0.6f ? 0.6f : y);
         L.hide = hide;
         const bool now = layer_custom(L);
-        if (was && !now && (L.haveLast || L.hidByUs)) InterlockedIncrement(&g_layerRestores);   // game thread does it
+        if (was && !now && (L.haveLast || L.hidByUs || L.taggedByUs)) InterlockedIncrement(&g_layerRestores);   // game thread does it
         g_layerAdjusted += (now ? 1 : 0) - (was ? 1 : 0);
         layer_save(L);
     }

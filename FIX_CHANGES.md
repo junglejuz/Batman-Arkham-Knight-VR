@@ -291,6 +291,38 @@ run 0). **Driver test:** 13/13 assembled (cmd_Decompiler 0.6.90 `-a`) and loaded
 
 ---
 
+## 1g. ShaderFixesDM: HUD parts marked "hang in the room" never follow scene depth (AKVR, PARTTAG, 2026-09-30)
+
+**Files:** the 7 HUD `-vs.txt` that pass a colour transform (`9938094a`, `05154232`, `fd60f2d7`, `c9b47e60`, `54cd897e`,
+`ef1c1604`, `9689d605`; after 1-1e); `-vs.bin` deleted. The other 6 have no colour transform and are left alone.
+
+**Why:** JJ: every HUD element except those attached to world objects must hang, whole, on one room-fixed plane. The
+fix's scene-depth decision is per piece (texture tags incl. shared atlases), so one element came apart between AKVR's
+room-fixed layer and the 3D picture (doubled). AKVR now marks whole Scaleform parts (panel box "hang in the room") by
+writing add blue = -1/512 into the part's colour transform (TreeNode data +0x68, through GetWritableData(node, 2)
+0x1411c96f0); every piece of the part inherits it.
+
+**Edit (per file; `rT` = new temp, `dcl_temps` +1):** the colour transform is the pair `mov oA.xyzw, cb0[M].xyzw` /
+`mov oB.xyzw, cb0[ADD].xyzw` (multiply, add). Directly before the 1b / 1e line that remembers the fix's decision
+(`// AKVR DEPTHALL` + `ine rN.x, rX.c, l(0)`, or `// AKVR HUDSPLIT: remember` + `mov rN.x, r0.z`), insert:
+```
+// AKVR PARTTAG 2026-09-30: ...
+lt rT.x, cb0[ADD].z, l(-0.001000)
+lt rT.y, l(-0.003000), cb0[ADD].z
+and rT.x, rT.x, rT.y
+not rT.x, rT.x
+and DEC, DEC, rT.x
+```
+(DEC = the decision register: r0.z in 9938094a / 05154232 / 54cd897e / ef1c1604, r1.x in fd60f2d7 / c9b47e60 / 9689d605;
+ADD = cb0[13], cb0[7] or the looked-up cb0[r0.y + 0], whose index register is checked unchanged in between.) A marked
+piece skips the depth search (flat, takes the HUD distance) and the split sends it only to the layer. No mark = no change.
+
+**Detect:** `// AKVR PARTTAG`. **Reference:** `Patch-PartTag` in `tools/AKVR-fix-patches.ps1` (copy: 7 patched, 6 not
+needed, second run 0). **Driver test:** 7/7 assembled (cmd_Decompiler 0.6.90 `-a`) and loaded OK. **Applied** 2026-09-30
+to JJ's game (texts byte-identical to the tested copy). Rollback: `akvr/diagnostics/before-PARTTAG-20260930/`.
+
+---
+
 ## 2. d3dxdm.ini
 
 | Key / section | Baseline | AKVR value | Status and reason |
@@ -466,3 +498,4 @@ baseline versions). Needs JJ: where the 2026-09-26 update came from, or an in-ga
 | 2026-09-29 | installer (GAMEWORKS) | BmSystemSettings.ini GameWorks keys = 0; NVIDIA store: detail / 2x filtering / GameWorks off (first install) | 6 |
 | 2026-09-29 | EDGEBAND | 13 HUD vertex shaders: top + bottom strips stay on the layer (CB13[2]) | 1f |
 | 2026-09-29 | EDGEBAND undone | 13 HUD vertex shaders restored to the 1e state (doubled elements) | 1f |
+| 2026-09-30 | PARTTAG | 7 HUD vertex shaders: marked parts never at scene depth | 1g |

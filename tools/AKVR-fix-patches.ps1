@@ -351,6 +351,66 @@ function Patch-DepthAll([string]$hash) {
 # lines and are built from pieces the fix tags differently, so with the layer hung in the room one element
 # came apart into two copies (JJ). Not applied any more; FIX_CHANGES.md 1f has the text and the rollback.
 
+# ---- 1g. PARTTAG: HUD parts AKVR marks "hang in the room" never follow scene depth ---------------------
+# JJ 2026-09-30: every HUD element except the ones attached to world objects must hang, whole, on one plane in
+# the room. The fix's scene-depth decision is per PIECE (texture tags, shared atlases), so with AKVR's room-fixed
+# layer one element came apart (part layer, part picture = doubled). AKVR now marks whole Scaleform parts (the
+# panel's "hang in the room") by writing a tiny negative blue ADD (-1/512, below one 8-bit step) into the part's
+# colour transform; every piece of the part inherits it. Here, in the 7 HUD shaders that receive the colour
+# transform, a piece whose add .z lies in -0.003..-0.001 has the fix's decision turned off before it is used:
+# no depth search, flat, and AKVR's split sends it only to the layer. No mark = unchanged.
+$tagMarker = '// AKVR PARTTAG'
+function Patch-PartTag([string]$hash) {
+    $txt = Join-Path $dm "$hash-vs.txt"
+    $bin = Join-Path $dm "$hash-vs.bin"
+    if (-not (Test-Path $txt)) { return }
+    $s = [System.IO.File]::ReadAllText($txt)
+    if ($s.Contains($tagMarker)) { Say "  $hash : part mark already patched"; return }
+    $nl = if ($s.Contains("`r`n")) { "`r`n" } else { "`n" }
+    $code = $s.IndexOf('// HLSL Code')
+    if ($code -lt 0) { $code = $s.Length }
+    # The colour transform: two consecutive "mov oN.xyzw, cb0[...].xyzw" lines (multiply, then add).
+    $cx = [regex]::Matches($s.Substring(0, $code), '(?m)^mov o\d+\.xyzw, cb0\[[^\]]+\]\.xyzw[ \t]*\r?\nmov o\d+\.xyzw, (?<add>cb0\[[^\]]+\])\.xyzw[ \t]*$')
+    if ($cx.Count -eq 0) { Say "  $hash : no colour transform - part mark not needed"; return }
+    if ($cx.Count -ne 1) { Say "  $hash : colour transform found $($cx.Count) times - part mark NOT patched" 'Red'; return }
+    $add = $cx[0].Groups['add'].Value
+    # Where the fix's decision is remembered (1b / 1e); the decision register comes from the next line.
+    $m = [regex]::Match($s, '(?m)^(?<i>[ \t]*)// AKVR (DEPTHALL[^\r\n]*|HUDSPLIT: remember[^\r\n]*)\r?\n[ \t]*(ine r\d+\.x, (?<d1>r\d+\.[xyzw]), l\(0\)|mov r\d+\.x, (?<d2>r\d+\.[xyzw]))[ \t]*$')
+    if (-not $m.Success) { Say "  $hash : decision (1b / 1e) not found - part mark NOT patched" 'Red'; return }
+    $dec = if ($m.Groups['d1'].Success) { $m.Groups['d1'].Value } else { $m.Groups['d2'].Value }
+    # A looked-up row (cb0[rK.c + 0]) must hold the same index here as at the colour lines.
+    $ix = [regex]::Match($add, 'cb0\[(?<r>r\d+)\.(?<c>[xyzw]) \+ 0\]')
+    if ($ix.Success) {
+        $r = $ix.Groups['r'].Value; $c = $ix.Groups['c'].Value
+        $mid = $s.Substring($m.Index, $cx[0].Index - $m.Index)
+        $pre = $s.Substring(0, $m.Index)
+        $w = '(?m)^[ \t]*[a-z_0-9]+(\([^)]*\))* ' + $r + '\.[xyzw]*' + $c + '[xyzw]*,'
+        if ([regex]::IsMatch($mid, $w) -or -not [regex]::IsMatch($pre.Substring([Math]::Max(0, $pre.IndexOf('vs_5_0'))), $w)) {
+            Say "  $hash : colour row index $r.$c not stable - part mark NOT patched" 'Red'; return
+        }
+    }
+    $temps = [regex]::Match($s, '(?m)^dcl_temps (\d+)\s*$')
+    if (-not $temps.Success) { Say "  $hash : no dcl_temps - part mark NOT patched" 'Red'; return }
+    $n = [int]$temps.Groups[1].Value; $t = "r$n"; $i = $m.Groups['i'].Value
+    $block = @(
+        "$tagMarker 2026-09-30: a piece of a HUD part AKVR marked 'hang in the room' (colour add .z in -0.003..-0.001)",
+        "// never follows scene depth: flat, and AKVR's split sends it whole to the layer.",
+        "lt $t.x, $add.z, l(-0.001000)",
+        "lt $t.y, l(-0.003000), $add.z",
+        "and $t.x, $t.x, $t.y",
+        "not $t.x, $t.x",
+        "and $dec, $dec, $t.x"
+    ) | ForEach-Object { $i + $_ }
+    $s = $s.Substring(0, $m.Index) + ($block -join $nl) + $nl + $s.Substring($m.Index)
+    $temps = [regex]::Match($s, '(?m)^dcl_temps (\d+)\s*$')
+    $s = $s.Substring(0, $temps.Index) + "dcl_temps $($n + 1)" + $s.Substring($temps.Index + $temps.Length)
+    Backup-Once $txt $bakDm
+    Backup-Once $bin $bakDm
+    [System.IO.File]::WriteAllText($txt, $s, $utf8)
+    if (Test-Path $bin) { Remove-Item $bin }
+    Say "  $hash : part mark patched (colour add $add, decision $dec)" 'Green'
+}
+
 # ---- 2. d3dxdm.ini --------------------------------------------------------------------------------
 $stereoKeys = [ordered]@{
     'dm_hud_detection'       = '1'
@@ -449,6 +509,7 @@ switch ($Mode) {
         foreach ($h in $hudVs) { Patch-RetFlat $h }
         foreach ($h in $hudVs) { Patch-RetSquash $h }
         foreach ($h in $hudVs) { Patch-DepthAll $h }
+        foreach ($h in $hudVs) { Patch-PartTag $h }
         Patch-DmIni
         if ($script:failed -gt 0) { Say "$($script:failed) edit(s) could not be applied - see the red lines above." 'Yellow'; exit 2 }
         Say 'Done. Originals are in akvr_fix_backup\.' 'Cyan'

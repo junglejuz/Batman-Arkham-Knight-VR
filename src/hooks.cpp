@@ -121,6 +121,9 @@ int         akvr_hud_layer_count();
 bool        akvr_hud_layer_get(int i, int& depth, int& parent, int& kids, const char*& label,
                                float& s, float& x, float& y, bool& hide, bool& is3d);
 void        akvr_hud_layer_set(int i, float s, float x, float y, bool hide);
+bool        akvr_hud_layer_room(int i);              // PARTTAG: part marked "hang in the room"
+void        akvr_hud_layer_room_set(int i, bool on);
+long        akvr_hud_layer_tag_sets();
 const char* akvr_hud_layer_xf_list();
 void        akvr_hud_layer_xf_list_set(const char* list);
 const char* akvr_hud_containers_list();                  // CONTAINERFP
@@ -1678,6 +1681,10 @@ namespace
             bool hide = lh;
             if (ImGui::Checkbox("hide", &hide)) { akvr_hud_layer_set(i, ls, lx, ly, hide); settings_save(); }
             ImGui::SameLine();
+            // PARTTAG (JJ 2026-09-30): the whole part hangs in the room with the rest of the HUD, never at scene depth.
+            bool room = akvr_hud_layer_room(i);
+            if (ImGui::Checkbox("hang in the room", &room)) { akvr_hud_layer_room_set(i, room); settings_save(); }
+            ImGui::SameLine();
             const bool open = ImGui::TreeNode("part", "%s%s%s", lab, l3 ? "  (3D panel)" : "",
                                               kids ? "" : "  (single)");
             if (open)
@@ -1972,6 +1979,7 @@ namespace
                 if (ImGui::Button("find the HUD parts  (with the HUD on screen)")) akvr_hud_layers_discover();
                 ImGui::TextDisabled("%s", akvr_hud_layers_diag());
                 ImGui::TextDisabled("tick 'hide' on a part to see which one it is, then open it to move or resize it.");
+                ImGui::TextDisabled("'hang in the room': the whole part joins the room-fixed HUD (for parts that do not point at the world).  marks set %ld", akvr_hud_layer_tag_sets());
                 for (int i = 0; i < akvr_hud_layer_count(); ++i)
                 {
                     int d, par, kids; const char* lab; float ls, lx, ly; bool lh, l3;
@@ -2438,7 +2446,7 @@ namespace
             float pvRatio = 0.0f, pvFov = 0.0f; int pvHits = 0;
             akvr_projvr_diag(pvRatio, pvHits, pvFov);
             fprintf(f, "\npatches:\n");
-            fprintf(f, "   build: MENUDELAY " __DATE__ " " __TIME__ "\n");
+            fprintf(f, "   build: PARTTAG " __DATE__ " " __TIME__ "\n");
             fprintf(f, "   zoom vignette: %s\n", akvr_xr_vig_diag());
             fprintf(f, "   native capture timing: %s Present (comparison test)\n", g_nativeAfterPresent ? "AFTER" : "BEFORE");
             {

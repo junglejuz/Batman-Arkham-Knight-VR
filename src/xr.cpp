@@ -1293,8 +1293,8 @@ bool hud_layer_build(XrCompositionLayerQuad &q, const XrFovf &fov) {
 // 5 m square (+-68 deg, past the headset's view), black with an alpha ramp: clear inside g_vigClearDeg, full
 // strength g_vigRampDeg further out. On while the game's own FOV is below g_vigBelowDeg in gameplay (the zoom),
 // or while previewing. The image is rewritten only when its look changes (a fade steps through 8 levels).
-float g_vigStrength = 0.9f;    // 0 = off
-float g_vigClearDeg = 22.0f;   // clear centre, half-angle
+float g_vigStrength = 1.0f;    // 0 = off (JJ: match the game's own overlay)
+float g_vigClearDeg = 18.0f;   // clear centre, half-angle
 float g_vigRampDeg = 18.0f;    // from clear to full strength
 float g_vigBelowDeg = 45.0f;   // zoom = the game's own FOV narrower than this (to be measured)
 bool g_vigPreview = false;

@@ -110,6 +110,14 @@ hide its HUD part (not yet identified). MENUONE2: phase 0 (start screen) counts 
 JJ's HUD part map: C0.0.0 = gameplay tips; C1.0.0.0.1.0.0.0 reticle, .1 target distance, .2 compass. Menu 3D (Batman)
 jiggles on menus only, not in gameplay - asked JJ to try pose delay 2 / 4 on the menu.
 
+**Build PARTTAG (2026-09-30, installed, untested):** per-PART HUD sorting. Panel HUD parts list: new box "hang in the
+room" per part (saved as 5th field in `hudlayers`). The mod writes add blue = -1/512 into the part's Scaleform colour
+transform (GetWritableData 0x1411c96f0 change 2, data+0x68) every frame; fix step 1g makes the 7 colour HUD shaders
+drop the scene-depth decision for marked pieces -> flat, whole part on the room-fixed layer. JJ ticks the compass first,
+then tips etc. Also: MENUDELAY (menu pose delay 2, JJ confirmed the value), vignette default 1.0 / clear 18.
+Still open: first-menu Batman flicker for a while; loading screens look vertically stretched (need F2 captures);
+the game's zoom overlay = part C0.0.0.0.0.2 per JJ (tick hide).
+
 ## Open issues, in priority order
 
 1. **The fresh-install test above.**
