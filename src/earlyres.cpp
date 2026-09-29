@@ -3496,6 +3496,8 @@ namespace
         for (LONG i = 0; i < n; ++i) if (g_tagNodes[i] == node) return true;
         return false;
     }
+    // PARTTAG4: the mark goes into add red, green and blue (+0x60/+0x64/+0x68), so a tinted child keeps some of it.
+    void mark_rgb(uint8_t* data, float v) { *(float*)(data + 0x60) = v; *(float*)(data + 0x64) = v; *(float*)(data + 0x68) = v; }
     void hkObjSetCxform(void* obj, const float* cx)
     {
         g_origObjCx(obj, cx);
@@ -3503,7 +3505,7 @@ namespace
         {
             const uintptr_t node = *(const uintptr_t*)((const uint8_t*)obj + 0x48);
             if (node && g_treeWritable && tag_node(node))
-                if (uint8_t* w = (uint8_t*)g_treeWritable((void*)node, 2)) { *(float*)(w + 0x68) = kPartTag; ++g_tagRewrites; }
+                if (uint8_t* w = (uint8_t*)g_treeWritable((void*)node, 2)) { mark_rgb(w, kPartTag); ++g_tagRewrites; }
         }
         __except (EXCEPTION_EXECUTE_HANDLER) {}
     }
@@ -3579,11 +3581,11 @@ namespace
                         { g_tagNodes[g_tagNodeN] = L.node; InterlockedIncrement(&g_tagNodeN); }
                         if (L.room && b != kPartTag)
                         {
-                            if (uint8_t* w = (uint8_t*)g_treeWritable((void*)L.node, 2)) { *(float*)(w + 0x68) = kPartTag; ++g_tagSets; }
+                            if (uint8_t* w = (uint8_t*)g_treeWritable((void*)L.node, 2)) { mark_rgb(w, kPartTag); ++g_tagSets; }
                         }
                         else if (!L.room && b == kPartTag)
                         {
-                            if (uint8_t* w = (uint8_t*)g_treeWritable((void*)L.node, 2)) *(float*)(w + 0x68) = 0.0f;
+                            if (uint8_t* w = (uint8_t*)g_treeWritable((void*)L.node, 2)) mark_rgb(w, 0.0f);
                         }
                         L.taggedByUs = L.room;
                         if (!L.room)   // PARTTAG2: off the guard's list, so the game's own colour stays

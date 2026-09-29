@@ -2031,7 +2031,9 @@ void akvr_xr_frame_submit(IDXGISwapChain *swapChain, float gameFovDeg,
     // before the main menu is confirmed - is splash / start screen too, so it counts as menu from the start.
     const bool menuLive = g_menu3d && g_autoMainMenu && g_menuPhase <= 1 && effGameplay;
     g_hudMenuNow = menuLive;   // MENUSIZE
-    akvr_hudsplit_layer_gate(g_eyeWantGameplay && !menuLive, menuLive);
+    // HUDNOW 2026-09-30 — JJ: entering the game "the HUD elements are attached to your face and then it takes a couple
+    // of seconds before they lock onto the world". The 1.5 s wait is the eye view's (EVGAME); the layer starts at once.
+    akvr_hudsplit_layer_gate(gp && !menuLive, menuLive);
   }
   if (effGameplay) {
     g_wasGameplay = true;

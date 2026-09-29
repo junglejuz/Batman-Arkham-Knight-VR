@@ -148,6 +148,13 @@ drawn ONCE into the layer with cb13 = 0 (third buffer g_cbAll). hudmarks.csv now
 pieces are still missing, read where the mark sits in the PS cb from JJ's F2. Insert/Delete menu-size keys REMOVED
 (GetAsyncKeyState is system-wide; saved `screen` drifted by x1.1 as JJ typed elsewhere); JJ's screen set to 0.75.
 
+**PARTTAG4 + HUDNOW (2026-09-30 ~01:00, installed, untested):** PSMARK found no marked no-colour draws; the pieces
+over the compass are most likely TINTED children whose multiply scales the blue-only mark away. Mark now in r/g/b,
+shaders accept any channel in -0.003..-0.0002. HUDNOW: the layer gate no longer waits EVGAME's 1.5 s. JJ asked to
+untick hide on K1/0.0.0.0.2 (his 'zoom overlay' part sits in the tips branch - tips vanished).
+Compass subparts JJ HID as duplicated: K2/...2.0.4, .0.5, .0.8 - unexplained (a piece in both = unsplit draw);
+re-test after PARTTAG4 with them unhidden.
+
 ## Open issues, in priority order
 
 1. **The fresh-install test above.**

@@ -293,6 +293,13 @@ run 0). **Driver test:** 13/13 assembled (cmd_Decompiler 0.6.90 `-a`) and loaded
 
 ## 1g. ShaderFixesDM: HUD parts marked "hang in the room" never follow scene depth (AKVR, PARTTAG, 2026-09-30)
 
+**PARTTAG4 2026-09-30 (current, applied to JJ's game):** the mark is written to add red, green and blue, and a piece
+counts as marked when ANY of add .x/.y/.z is in -0.003..-0.0002 (a tinted child scales the parent's add by its own
+multiply, so a green icon lost a blue-only mark; JJ: pieces over the compass stayed head-locked). Two new temps
+(`dcl_temps` +2): `lt rT.xyz, ADD.xyzx, l(-0.0002 x3, 0)`, `lt rU.xyz, l(-0.003 x3, 0), ADD.xyzx`, `and`, two `or`, `not`.
+Applied from each file's pre-1g state (`before-PARTTAG-20260930` for 7, `before-PARTTAG3-20260930` for 4b432a87 /
+91e2b222); 9/9 driver-tested, declared temps checked. Previous state: `diagnostics/before-PARTTAG4-20260930/`.
+
 **CORRECTED 2026-09-30 (PARTTAG3, applied to JJ's game):** the first version read the SECOND row of each colour pair and
 never saw the mark (JJ: compass still doubled). MARKREC (F2 `hudmarks.csv`) showed the mark arriving exactly (-0.001953)
 in the FIRST row - the game uploads add before multiply. The step now reads the first row of a `mov/mov` pair (cb0[12],
@@ -508,3 +515,4 @@ baseline versions). Needs JJ: where the 2026-09-26 update came from, or an in-ga
 | 2026-09-29 | EDGEBAND undone | 13 HUD vertex shaders restored to the 1e state (doubled elements) | 1f |
 | 2026-09-30 | PARTTAG | 7 HUD vertex shaders: marked parts never at scene depth | 1g |
 | 2026-09-30 | PARTTAG3 | 1g corrected: first colour row (add), + mad layout; 9 shaders | 1g |
+| 2026-09-30 | PARTTAG4 | 1g: mark in r/g/b, any channel -0.003..-0.0002 (tinted children) | 1g |

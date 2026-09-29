@@ -361,8 +361,12 @@ function Patch-DepthAll([string]$hash) {
 #   A. "mov oA.xyzw, cb0[ADD].xyzw" + "mov oB.xyzw, cb0[MUL].xyzw" at the end (7 shaders): read cb0[ADD] at the
 #      decision point (a looked-up row's index register is checked unchanged in between);
 #   B. "mad oN.xyzw, vK.xyzw, cb0[MUL], cb0[ADD]" early (4b432a87): read right there into the new temp.
-# A marked piece (add .z in -0.003..-0.001) has the fix's decision turned off before it is used: no depth search,
-# flat, and AKVR's split sends it only to the layer. No mark = unchanged.
+# A marked piece has the fix's decision turned off before it is used: no depth search, flat, and AKVR's split sends
+# it only to the layer. No mark = unchanged.
+# PARTTAG4 2026-09-30 (JJ: pieces over the compass stayed head-locked): the game combines a child's colour with its
+# parent's, so a tinted child scales the parent's add by its own multiply - a green icon (blue x 0) loses a blue-only
+# mark. AKVR now marks red, green and blue (-1/512 each) and a piece counts as marked when ANY of add .x/.y/.z lies in
+# -0.003..-0.0002 (the mark scaled by a tint down to ~0.1). Two new temps.
 $tagMarker = '// AKVR PARTTAG'
 function Patch-PartTag([string]$hash) {
     $txt = Join-Path $dm "$hash-vs.txt"
@@ -401,15 +405,17 @@ function Patch-PartTag([string]$hash) {
     }
     $temps = [regex]::Match($s, '(?m)^dcl_temps (\d+)\s*$')
     if (-not $temps.Success) { Say "  $hash : no dcl_temps - part mark NOT patched" 'Red'; return }
-    $n = [int]$temps.Groups[1].Value; $t = "r$n"; $i = $m.Groups['i'].Value
+    $n = [int]$temps.Groups[1].Value; $t = "r$n"; $u = "r$($n + 1)"; $i = $m.Groups['i'].Value
     $test = @(
-        "lt $t.x, $add.z, l(-0.001000)",
-        "lt $t.y, l(-0.003000), $add.z",
-        "and $t.x, $t.x, $t.y",
+        "lt $t.xyz, $add.xyzx, l(-0.000200, -0.000200, -0.000200, 0.000000)",
+        "lt $u.xyz, l(-0.003000, -0.003000, -0.003000, 0.000000), $add.xyzx",
+        "and $t.xyz, $t.xyzx, $u.xyzx",
+        "or $t.x, $t.y, $t.x",
+        "or $t.x, $t.z, $t.x",
         "not $t.x, $t.x"
     )
     $apply = @(
-        "$tagMarker 2026-09-30: a piece of a HUD part AKVR marked 'hang in the room' (colour add .z in -0.003..-0.001)",
+        "$tagMarker 2026-09-30: a piece of a HUD part AKVR marked 'hang in the room' (colour add .x/.y/.z in -0.003..-0.0002)",
         "// never follows scene depth: flat, and AKVR's split sends it whole to the layer."
     )
     if ($early) { $apply += @("and $dec, $dec, $t.x") } else { $apply += $test + @("and $dec, $dec, $t.x") }
@@ -420,7 +426,7 @@ function Patch-PartTag([string]$hash) {
         $s = $s.Substring(0, $at) + $nl + "$tagMarker read: the part mark in this piece's colour add row" + $nl + ($test -join $nl) + $s.Substring($at)
     }
     $temps = [regex]::Match($s, '(?m)^dcl_temps (\d+)\s*$')
-    $s = $s.Substring(0, $temps.Index) + "dcl_temps $($n + 1)" + $s.Substring($temps.Index + $temps.Length)
+    $s = $s.Substring(0, $temps.Index) + "dcl_temps $($n + 2)" + $s.Substring($temps.Index + $temps.Length)
     Backup-Once $txt $bakDm
     Backup-Once $bin $bakDm
     [System.IO.File]::WriteAllText($txt, $s, $utf8)
