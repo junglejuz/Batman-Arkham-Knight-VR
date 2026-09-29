@@ -88,7 +88,17 @@ game's own FOV (camera.cpp `g_gameFov`) is below `vigbelow` 45. JJ's settings: s
 game's 2D zoom overlay is the same part as the gameplay tips (`K1/0.0.0.0.2`): it is set to "hide while zoomed"
 (ZOOMHIDE, 7th field), and it is also "hang in the room".
 
-## ROOTKIDS + KEEPGLOW3 (2026-09-30, deployed, untested) — supersede KEEPGLOW/KEEPGLOW2
+## RELEASED 2026-09-30: build ROOTKIDS packaged (JJ: "really happy with this, package it up")
+
+GitHub release v0.1.0 now holds the ROOTKIDS package (zip sha256 FE507AFE…FC75, downloaded back and matched).
+`install/files/akvr_settings.ini` = JJ's live file byte for byte, INCLUDING `hudcontainers=` this time (PACKAGING_GUIDE
+said drop it, but the world ticks and JJ's moves are keyed to those ids). NOT tested: that the fingerprints match on a
+fresh install; if a player's reticle floats in the room, that is the first suspect. d3dxdm.ini and the game graphics
+values matched the shipped ones; fix-patch status on JJ's game: all 13 shaders patched + split. README updated (HUD in
+the room, zoom vignette, screen sliders). The mod's code defaults still lag the settings file (upgrade installs keep
+their old file, so new keys fall back to code defaults: loadscreen 0.6, loadup 0, screen 0.5).
+
+## ROOTKIDS + KEEPGLOW3 (2026-09-30, JJ confirmed: objective in the room, compass glows) — supersede KEEPGLOW/KEEPGLOW2
 
 JJ on KEEPGLOW2: the launch objective is STILL on the head. Code-read finding: in a movie with no world part the
 ROOMALL rule marked only the ROOT (autoRoom for p < 0), and apply_layers skips depth 0, so NOTHING in such a movie

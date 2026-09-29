@@ -36,8 +36,11 @@ correct depth.
 - Menus shown at a comfortable size
 - The game's graphics menu no longer undoes the VR picture size
 - HUD distance you can change live, and no stutter after leaving the pause menu or map
-- A steady HUD on its own layer, with the grapple reticle and objective marker at the depth
-  of what they point at
+- A steady HUD on its own layer that hangs still in the room, while the grapple reticle and
+  target distance stay at the depth of what they point at
+- Zooming (right stick click) darkens the edges of your view instead of showing the game's
+  flat zoom overlay
+- Start-up logos, loading screens, pause and map shown at their own comfortable sizes
 
 ## Installing
 
@@ -169,9 +172,19 @@ pictures and a recording, for troubleshooting.
 | HUD distance | How far away the HUD looks, in metres. 0 or **far away** puts it at the distance of far-off scenery. |
 | HUD on its own layer (steady HUD) | Draws the HUD separately, placed by the headset itself, so it stays steady instead of jumping with the game's frame rate. |
 | Attach UI to head movement | Off (normal): the HUD hangs still in front of you, and you can look around it; **F12** hangs it in front of you again. On: the HUD moves with your head. Needs the HUD on its own layer. |
-| Keep the reticle at the depth it points at | With the HUD layer on: reticles and markers that point at things (grapple reticle, objective marker) stay at the depth of what they point at, while the rest of the HUD stays on the steady layer. |
+| Keep the reticle at the depth it points at | With the HUD layer on: reticles and markers that point at things stay at the depth of what they point at, while the rest of the HUD stays on the steady layer. |
+| Whole HUD hangs in the room | On (normal): every HUD part hangs in the room except parts ticked **stays on its target**. The grapple reticle and target distance come ticked. |
 | Menus and map use the full height | Lets menus and the map fill the view from top to bottom. |
-| Move / resize single HUD parts | Adjust the radar, compass and other parts one by one. With the HUD on screen, press **find the HUD parts**. Tick **hide** on a part to see which one it is, then open it to change its size and position. **Reset** undoes a part. Your layout is remembered. |
+| Move / resize single HUD parts | Adjust the radar, compass and other parts one by one. With the HUD on screen, press **find the HUD parts**. Tick **hide** on a part to see which one it is, then open it to change its size and position. Each part also has **stays on its target** (keeps it at the depth it points at), **hang in the room** and **hide while zoomed**. **Reset** undoes a part. Your layout is remembered. |
+
+### Zoom vignette
+
+| Setting | What it does |
+|---|---|
+| Strength | How dark the edges get while you zoom. 0 turns it off. |
+| Clear centre | How much of the middle stays clear, in degrees. |
+| Zoom when the game's view is narrower than | When the vignette comes on. Leave it at 45. |
+| Preview the vignette now | Shows it without zooming, to try the settings. |
 
 ### Menus and screens
 
@@ -180,7 +193,11 @@ pictures and a recording, for troubleshooting.
 | Float as a screen now (Pause key) | Shows the game on a flat floating screen, for example for cutscenes. **With head tracking** keeps head tracking on while it floats. |
 | Floating screen shape / size | The shape (the picture's own, 16:9 or 21:9) and size of that screen. |
 | Main menu size | How big the main menu looks. |
-| Pause / map / loading size and shape | How big the pause menu, map and loading screens look, and their shape (1.78 = 16:9). |
+| Pause / map size | How big the pause menu and map look. |
+| Start-up screens size | How big the logos and notices at the start of the game look. |
+| Loading screens size | How big the loading screens look. |
+| Loading screens up / down | Moves the loading screens up or down, in degrees. |
+| Pause / map / loading shape | The shape of the pause menu and map (1.78 = 16:9). |
 | Main menu: live 3D, follows your head | Shows the main menu as live 3D instead of a still picture. |
 | Floating screens show a flat picture | Shows floating screens in 2D instead of 3D. |
 
