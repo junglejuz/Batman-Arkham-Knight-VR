@@ -293,6 +293,14 @@ run 0). **Driver test:** 13/13 assembled (cmd_Decompiler 0.6.90 `-a`) and loaded
 
 ## 1g. ShaderFixesDM: HUD parts marked "hang in the room" never follow scene depth (AKVR, PARTTAG, 2026-09-30)
 
+**CORRECTED 2026-09-30 (PARTTAG3, applied to JJ's game):** the first version read the SECOND row of each colour pair and
+never saw the mark (JJ: compass still doubled). MARKREC (F2 `hudmarks.csv`) showed the mark arriving exactly (-0.001953)
+in the FIRST row - the game uploads add before multiply. The step now reads the first row of a `mov/mov` pair (cb0[12],
+cb0[6], cb0[r0.x + 0]) and also handles `mad oN, vK, cb0[MUL], cb0[ADD]` (4b432a87: cb0[r0.y + 0]; 91e2b222: cb0[8]),
+where it reads right after the mad into the new temp. 9 shaders patched, 4 have no colour transform. 9/9 driver-tested.
+The 7 first-version texts were restored from `diagnostics/before-PARTTAG-20260930/` before re-applying; the first-version
+state is in `diagnostics/before-PARTTAG3-20260930/`. The text below describes the first version.
+
 **Files:** the 7 HUD `-vs.txt` that pass a colour transform (`9938094a`, `05154232`, `fd60f2d7`, `c9b47e60`, `54cd897e`,
 `ef1c1604`, `9689d605`; after 1-1e); `-vs.bin` deleted. The other 6 have no colour transform and are left alone.
 
@@ -499,3 +507,4 @@ baseline versions). Needs JJ: where the 2026-09-26 update came from, or an in-ga
 | 2026-09-29 | EDGEBAND | 13 HUD vertex shaders: top + bottom strips stay on the layer (CB13[2]) | 1f |
 | 2026-09-29 | EDGEBAND undone | 13 HUD vertex shaders restored to the 1e state (doubled elements) | 1f |
 | 2026-09-30 | PARTTAG | 7 HUD vertex shaders: marked parts never at scene depth | 1g |
+| 2026-09-30 | PARTTAG3 | 1g corrected: first colour row (add), + mad layout; 9 shaders | 1g |
