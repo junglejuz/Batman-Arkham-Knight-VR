@@ -88,6 +88,21 @@ game's own FOV (camera.cpp `g_gameFov`) is below `vigbelow` 45. JJ's settings: s
 game's 2D zoom overlay is the same part as the gameplay tips (`K1/0.0.0.0.2`): it is set to "hide while zoomed"
 (ZOOMHIDE, 7th field), and it is also "hang in the room".
 
+## WORLDKIDS + LOADALL + LOADUP (2026-09-30, deployed, untested) — supersedes the MARKCARRY diagnosis below
+
+JJ on MARKCARRY: reticle + distance still hang in space at first; on the first grapple the reticle "split in half"
+(half on target, half in space), then fixed itself. **Real cause (code-read, fits the split):** the ROOMALL rule
+marks every branch with no world part whose parent holds one, so every CHILD of a world part was auto-marked. The
+reticle part `K2/0.0.0.0.1.0.0.0` has 4 children (two rotated halves). WORLDKIDS: nothing inside a world part is
+marked. MARKCARRY (kept) makes the old marks come off after the next tree read. The startup log stops recording long
+before gameplay (log_add caps at 120 hits), so the per-part check moved to F2 `hudlayers.txt`: each line now ends with
+ON-TARGET / ROOM / MARK / MARK(not ours) as read from the node.
+
+LOADALL: an in-game screen (menu phase 2) that runs FLAT is latched as a loading screen: `loadscreen` size and the
+whole frame, not the pause size and 16:9 slice. Pause/map stay 3D in the mode log. If the map turns out flat, it will
+take the loading size too. LOADUP: `loadup=` degrees (+ up), panel "loading screens up / down", an off-axis shift of
+the frustum in tangent space. Panel labels: "pause / map size %", "loading screens size %".
+
 ## MARKCARRY (2026-09-30, deployed, untested)
 
 JJ on LOADSIZE: the reticle and target distance sit at HUD depth "until you actually hit R1 (grapple)", then sit on

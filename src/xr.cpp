@@ -273,6 +273,9 @@ float g_splashFovScale = 0.55f;
 // LOADSIZE 2026-09-30 — JJ: "reduce the size of the loading screens a bit too", without touching gameplay. The loading
 // screen into the game (after the main menu, before gameplay) gets its own size; gameplay is always full size.
 float g_loadFovScale = 0.6f;
+// LOADUP 2026-09-30 — JJ: "a slider to move the loading screen up and down". Degrees, + = up; an off-axis shift of
+// the loading screen's frustum (tangent space), so the picture moves without changing shape.
+float g_loadUpDeg = 0.0f;
 // The main menu runs a live 3D camera exactly like gameplay, so the detector calls it
 // GAMEPLAY. But its place in the sequence is fixed: boot/splash (screen) -> main
 // menu (camera live) -> loading screen -> game. So the FIRST camera-live stretch after
@@ -2336,6 +2339,12 @@ void akvr_xr_frame_submit(IDXGISwapChain *swapChain, float gameFovDeg,
     s_latchedLoad = !g_forceScreen && g_autoMainMenu && g_menuPhase == 1 && !akvr_xr_screen_mode();
   }
   if (akvr_xr_screen_mode()) s_latchedMenuSize = true;   // F6 / menu mid-screen: menu size
+  // LOADALL 2026-09-30 — JJ: the loading screens "aren't any smaller". In-game loads (fast travel, death, quit to
+  // menu) had the pause size. The mode log tells them apart: a loading screen runs FLAT (no 3D camera), pause and map
+  // keep the frozen 3D picture. Once a screen after the main menu goes flat it is a loading screen until gameplay.
+  if (!effGameplay && !g_forceScreen && !s_latchedMenuSize && !g_anamorphic &&
+      (!g_autoMainMenu || g_menuPhase >= 2))
+    s_latchedLoad = true;
   s_wasEff = effGameplay;
   const bool splash = s_latchedSplash && !g_forceScreen;   // SPLASHSIZE
   const bool loadIn = s_latchedLoad && !g_forceScreen;     // LOADSIZE
@@ -2387,6 +2396,11 @@ void akvr_xr_frame_submit(IDXGISwapChain *swapChain, float gameFovDeg,
   if (vFrac < 0.999f) {
     fov.angleUp = atanf(tanf(halfV) * vFrac * kTan);
     fov.angleDown = -fov.angleUp;
+  }
+  if (loadIn && !effGameplay && g_loadUpDeg != 0.0f) {   // LOADUP
+    const float t = tanf(g_loadUpDeg * (3.14159265f / 180.0f));
+    fov.angleUp = atanf(tanf(fov.angleUp) + t);
+    fov.angleDown = atanf(tanf(fov.angleDown) + t);
   }
   int fallback =
       g_swapInit[0] ? 0
@@ -2703,6 +2717,8 @@ float akvr_xr_pause_zoom() { return g_pauseFovScale; }
 float akvr_xr_splash_zoom() { return g_splashFovScale; }
 float akvr_xr_load_zoom() { return g_loadFovScale; }
 void  akvr_xr_load_zoom_set(float v) { g_loadFovScale = v < 0.1f ? 0.1f : (v > 1.0f ? 1.0f : v); }
+float akvr_xr_load_up() { return g_loadUpDeg; }
+void  akvr_xr_load_up_set(float v) { g_loadUpDeg = v < -30.0f ? -30.0f : (v > 30.0f ? 30.0f : v); }
 void  akvr_xr_splash_zoom_set(float v) { g_splashFovScale = v < 0.1f ? 0.1f : (v > 1.0f ? 1.0f : v); }
 void akvr_xr_pause_zoom_set(float v) {
   g_pauseFovScale = v < 0.1f ? 0.1f : (v > 1.0f ? 1.0f : v);

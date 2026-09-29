@@ -167,6 +167,8 @@ float       akvr_xr_splash_zoom();      // SPLASHSIZE: size of the screens befor
 void        akvr_xr_splash_zoom_set(float v);
 float       akvr_xr_load_zoom();        // LOADSIZE: the loading screen into the game (after the main menu)
 void        akvr_xr_load_zoom_set(float v);
+float       akvr_xr_load_up();          // LOADUP: loading screens up (+) / down (-), degrees
+void        akvr_xr_load_up_set(float v);
 void        akvr_xr_menu_pose_delay_set(int frames);
 // ZOOMVIG: our own peripheral vignette while the game's zoom narrows its FOV (or while previewing)
 float       akvr_xr_vig_strength();     // 0 = off

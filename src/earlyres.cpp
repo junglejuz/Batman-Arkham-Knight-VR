@@ -3536,9 +3536,8 @@ namespace
         return false;
     }
     // MARKCARRY 2026-09-30 (called by discover_layers, layer lock held): the guard list keeps only nodes the new
-    // tree still holds with our mark, so a node that left the tree is never written again. Then, for every saved
-    // "stays on its target" part, log whether the part exists and which part above it (or itself) carries a mark:
-    // the evidence for "the reticle sits at HUD depth" - a mark anywhere on that chain flattens it.
+    // tree still holds with our mark, so a node that left the tree is never written again. (The per-part mark state
+    // is in the F2 hudlayers.txt: the startup log stops recording long before gameplay.)
     void tag_after_discover()
     {
         LONG kept = 0;
@@ -3550,27 +3549,6 @@ namespace
             if (keep) g_tagNodes[kept++] = g_tagNodes[k];
         }
         InterlockedExchange(&g_tagNodeN, kept);
-        for (int i = 0; i < g_nLayers; ++i)
-        {
-            if (!g_layers[i].world) continue;
-            char chain[320] = "";
-            for (int j = i; j >= 0; j = g_layers[j].parent)
-            {
-                uintptr_t d = 0; float b = 0.0f;
-                if (!node_data(g_layers[j].node, d)) continue;
-                __try { b = *(const float*)(d + 0x68); } __except (EXCEPTION_EXECUTE_HANDLER) { continue; }
-                if (b < -0.0002f && b > -0.02f)
-                {
-                    char one[128];
-                    _snprintf_s(one, sizeof(one), _TRUNCATE, " %s%s%s", g_layers[j].key, g_layers[j].taggedByUs ? "(ours)" : "(NOT ours)",
-                                j == i ? "[itself]" : "");
-                    strncat_s(chain, one, _TRUNCATE);
-                }
-                if (g_layers[j].parent >= j) break;
-            }
-            log_add("hud-layers: world part %s: %s", g_layers[i].key, chain[0] ? chain : "no mark above it");
-        }
-        log_add("hud-layers: colour guard keeps %ld of %ld nodes after the search", (long)kept, (long)n);
     }
     // PARTTAG4/5: the mark goes into add red, green, blue AND alpha (+0x60..+0x6C). CBDUMP showed pieces coloured by
     // their own add (multiply 0), where only the alpha add (0 for such a child) still shows the mark.
@@ -3662,10 +3640,16 @@ namespace
             }
             for (int i = g_nLayers - 1; i > 0; --i)
                 if (s_holds[i] && g_layers[i].parent >= 0 && g_layers[i].parent < i) s_holds[g_layers[i].parent] = true;
+            // WORLDKIDS 2026-09-30 — JJ: the reticle hung in space, and on the first grapple it "split in half: half at
+            // the depth of the object and half hanging in space". The reticle part has 4 children (two rotated halves
+            // among them), and each held no world part while its parent did, so the rule above marked EVERY piece
+            // inside the world part. Nothing inside a "stays on its target" part is ever marked now.
+            static bool s_inWorld[2048];
             for (int i = 0; i < g_nLayers; ++i)
             {
                 const int p = g_layers[i].parent;
-                g_layers[i].autoRoom = !s_holds[i] && (p < 0 || (p < i && s_holds[p]));
+                s_inWorld[i] = g_layers[i].world || (p >= 0 && p < i && s_inWorld[p]);
+                g_layers[i].autoRoom = !s_holds[i] && !s_inWorld[i] && (p < 0 || (p < i && s_holds[p]));
             }
             g_autoDirty = false;
         }
@@ -3924,10 +3908,17 @@ void  akvr_hud_layers_dump(const wchar_t* path)
     for (int i = 0; i < g_nLayers; ++i)
     {
         const Layer& L = g_layers[i];
-        fprintf(f, "%4d %*sd%d p%-3d kids %-3d %s %-40s | %.3f %.3f %.0f / %.3f %.3f %.0f | s %.2f x %.3f y %.3f %s\n",
+        // WORLDKIDS: the colour mark as it sits in the node now (MARK = flat, in the layer; "not ours" = no part of
+        // the mod put it there), and the part's own ticks.
+        const char* mark = "";
+        uintptr_t d = 0;
+        if (node_data(L.node, d))
+            __try { if (*(const float*)(d + 0x68) == kPartTag) mark = L.taggedByUs ? " MARK" : " MARK(not ours)"; }
+            __except (EXCEPTION_EXECUTE_HANDLER) {}
+        fprintf(f, "%4d %*sd%d p%-3d kids %-3d %s %-40s | %.3f %.3f %.0f / %.3f %.3f %.0f | s %.2f x %.3f y %.3f %s%s%s%s\n",
                 i, L.depth * 2, "", L.depth, L.parent, L.kids, (L.flags & 0x200) ? "3D" : "  ", L.key,
                 L.base[0], L.base[1], L.base[3], L.base[4], L.base[5], L.base[7],
-                L.s, L.dx, L.dy, L.hide ? "HIDDEN" : "");
+                L.s, L.dx, L.dy, L.hide ? "HIDDEN" : "", L.world ? " ON-TARGET" : "", L.room ? " ROOM" : "", mark);
     }
     ReleaseSRWLockShared(&g_layerLock);
     fclose(f);
