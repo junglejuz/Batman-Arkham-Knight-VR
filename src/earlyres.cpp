@@ -3480,6 +3480,33 @@ namespace
     TreeWritableFn g_treeWritable = nullptr;
     constexpr float kPartTag = -1.0f / 512.0f;   // add blue: below one 8-bit step; shaders look for -0.003..-0.001
     long g_tagSets = 0;
+    // PARTTAG2 2026-09-30 — JJ: ticking "hang in the room" changed nothing and "marks set" kept rising: the game
+    // rewrote the part's colour every frame after our mark. DisplayObjectBase::SetCxform 0x1411eedf0 (obj, cx)
+    // copies the object's own colour transform (all 8 floats) onto its render node [obj+0x48]; the alpha setter
+    // 0x1411efe60 keeps the node's add row, so only SetCxform wipes the mark. Hooked: after the game's write to a
+    // marked node, the mark goes straight back, before the frame is captured.
+    typedef void (*ObjSetCxformFn)(void* obj, const float* cx);
+    ObjSetCxformFn g_origObjCx = nullptr;
+    uintptr_t volatile g_tagNodes[64] = {};
+    volatile LONG g_tagNodeN = 0;
+    long g_tagRewrites = 0, g_tagReadOk = 0, g_tagReadBad = 0;
+    bool tag_node(uintptr_t node)
+    {
+        const LONG n = g_tagNodeN;
+        for (LONG i = 0; i < n; ++i) if (g_tagNodes[i] == node) return true;
+        return false;
+    }
+    void hkObjSetCxform(void* obj, const float* cx)
+    {
+        g_origObjCx(obj, cx);
+        __try
+        {
+            const uintptr_t node = *(const uintptr_t*)((const uint8_t*)obj + 0x48);
+            if (node && g_treeWritable && tag_node(node))
+                if (uint8_t* w = (uint8_t*)g_treeWritable((void*)node, 2)) { *(float*)(w + 0x68) = kPartTag; ++g_tagRewrites; }
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER) {}
+    }
     TreeSetVisibleFn g_treeSetVisible = nullptr;
     TreeSetMatrix3Fn g_treeSetMatrix3 = nullptr;
     bool layer_fns_ready()
@@ -3503,10 +3530,19 @@ namespace
             { g_treeSetVisible = (TreeSetVisibleFn)vis; g_treeSetMatrix3 = (TreeSetMatrix3Fn)m3; state = 1; }
             else state = -1;
             if (memcmp(gwd, gwdPro, sizeof(gwdPro)) == 0) g_treeWritable = (TreeWritableFn)gwd;
+            // PARTTAG2: the game's SetCxform (40 53 48 83 EC 20 48 8B DA E8 = push rbx; sub rsp,20; mov rbx,rdx; call)
+            const uint8_t* scx = (const uint8_t*)(base + (0x1411eedf0 - 0x140000000));
+            static const uint8_t scxPro[] = { 0x40,0x53, 0x48,0x83,0xEC,0x20, 0x48,0x8B,0xDA, 0xE8 };
+            if (g_treeWritable && memcmp(scx, scxPro, sizeof(scxPro)) == 0)
+            {
+                MH_Initialize();
+                if (MH_CreateHook((void*)scx, (void*)&hkObjSetCxform, (void**)&g_origObjCx) != MH_OK ||
+                    MH_EnableHook((void*)scx) != MH_OK) g_origObjCx = nullptr;
+            }
         }
         __except (EXCEPTION_EXECUTE_HANDLER) { state = -1; }
-        log_add("hud-layers: visible/3D setters %s; colour mark %s", state > 0 ? "found" : "NOT matched (hide/3D moves off)",
-                g_treeWritable ? "found" : "NOT matched (hang in the room off)");
+        log_add("hud-layers: visible/3D setters %s; colour mark %s; colour guard %s", state > 0 ? "found" : "NOT matched (hide/3D moves off)",
+                g_treeWritable ? "found" : "NOT matched (hang in the room off)", g_origObjCx ? "hooked" : "NOT hooked");
         return state > 0;
     }
     bool layer_moved(const Layer& L)
@@ -3538,6 +3574,9 @@ namespace
                     if (node_data(L.node, d))
                     {
                         const float b = *(const float*)(d + 0x68);
+                        if (L.room && b == kPartTag) ++g_tagReadOk; else if (L.room) ++g_tagReadBad;   // PARTTAG2 diag
+                        if (L.room && !tag_node(L.node) && g_tagNodeN < 64)
+                        { g_tagNodes[g_tagNodeN] = L.node; InterlockedIncrement(&g_tagNodeN); }
                         if (L.room && b != kPartTag)
                         {
                             if (uint8_t* w = (uint8_t*)g_treeWritable((void*)L.node, 2)) { *(float*)(w + 0x68) = kPartTag; ++g_tagSets; }
@@ -3547,6 +3586,9 @@ namespace
                             if (uint8_t* w = (uint8_t*)g_treeWritable((void*)L.node, 2)) *(float*)(w + 0x68) = 0.0f;
                         }
                         L.taggedByUs = L.room;
+                        if (!L.room)   // PARTTAG2: off the guard's list, so the game's own colour stays
+                            for (LONG k = 0; k < g_tagNodeN; ++k)
+                                if (g_tagNodes[k] == L.node) { g_tagNodes[k] = g_tagNodes[g_tagNodeN - 1]; InterlockedDecrement(&g_tagNodeN); break; }
                     }
                 }
                 // --- hide / show through the node's own visible bit
@@ -3683,6 +3725,13 @@ void  akvr_hud_layer_room_set(int i, bool on)
     ReleaseSRWLockExclusive(&g_layerLock);
 }
 long  akvr_hud_layer_tag_sets() { return g_tagSets; }
+const char* akvr_hud_layer_tag_diag()
+{
+    static char d[160];
+    _snprintf_s(d, sizeof(d), _TRUNCATE, "marks set %ld, kept after the game's own colour writes %ld, found in place %ld / missing %ld, guard %s",
+                g_tagSets, g_tagRewrites, g_tagReadOk, g_tagReadBad, g_origObjCx ? "on" : "OFF");
+    return d;
+}
 void  akvr_hud_layer_set(int i, float s, float x, float y, bool hide)
 {
     AcquireSRWLockExclusive(&g_layerLock);

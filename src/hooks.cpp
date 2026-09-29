@@ -124,6 +124,7 @@ void        akvr_hud_layer_set(int i, float s, float x, float y, bool hide);
 bool        akvr_hud_layer_room(int i);              // PARTTAG: part marked "hang in the room"
 void        akvr_hud_layer_room_set(int i, bool on);
 long        akvr_hud_layer_tag_sets();
+const char* akvr_hud_layer_tag_diag();      // PARTTAG2
 const char* akvr_hud_layer_xf_list();
 void        akvr_hud_layer_xf_list_set(const char* list);
 const char* akvr_hud_containers_list();                  // CONTAINERFP
@@ -1979,7 +1980,8 @@ namespace
                 if (ImGui::Button("find the HUD parts  (with the HUD on screen)")) akvr_hud_layers_discover();
                 ImGui::TextDisabled("%s", akvr_hud_layers_diag());
                 ImGui::TextDisabled("tick 'hide' on a part to see which one it is, then open it to move or resize it.");
-                ImGui::TextDisabled("'hang in the room': the whole part joins the room-fixed HUD (for parts that do not point at the world).  marks set %ld", akvr_hud_layer_tag_sets());
+                ImGui::TextDisabled("'hang in the room': the whole part joins the room-fixed HUD (for parts that do not point at the world).");
+                ImGui::TextDisabled("   %s", akvr_hud_layer_tag_diag());
                 for (int i = 0; i < akvr_hud_layer_count(); ++i)
                 {
                     int d, par, kids; const char* lab; float ls, lx, ly; bool lh, l3;
@@ -2446,7 +2448,7 @@ namespace
             float pvRatio = 0.0f, pvFov = 0.0f; int pvHits = 0;
             akvr_projvr_diag(pvRatio, pvHits, pvFov);
             fprintf(f, "\npatches:\n");
-            fprintf(f, "   build: PARTTAG " __DATE__ " " __TIME__ "\n");
+            fprintf(f, "   build: PARTTAG2 " __DATE__ " " __TIME__ "\n");
             fprintf(f, "   zoom vignette: %s\n", akvr_xr_vig_diag());
             fprintf(f, "   native capture timing: %s Present (comparison test)\n", g_nativeAfterPresent ? "AFTER" : "BEFORE");
             {

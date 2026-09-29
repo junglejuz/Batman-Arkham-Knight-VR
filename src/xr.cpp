@@ -1025,6 +1025,7 @@ XrQuaternionf hud_qmul(const XrQuaternionf &a, const XrQuaternionf &b) {
 // at the last recenter (F12, the Meta button, head tracking on) - the same heading camera.cpp takes as the
 // game's straight ahead - and left there. Turning the head looks around it; the compositor keeps it put.
 int g_hudSpace = 2;          // 0 LOCAL (re-placed per frame), 1 VIEW (attached to the head), 2 fixed in the room
+bool g_hudMenuNow = false;   // MENUSIZE: the layer carries the live main menu (xr.cpp's menuLive)
 bool g_hudWorldOk = false;   // mode 2: anchor taken since the last recenter
 XrPosef g_hudWorldAnchor{};  // mode 2: level head pose at the recenter, LOCAL space
 // HUDLAYER5 — JJ on HUDLAYER4: the HUD distance slider still changes nothing, though the log shows the
@@ -1273,14 +1274,17 @@ bool hud_layer_build(XrCompositionLayerQuad &q, const XrFovf &fov) {
   const XrQuaternionf ident{0.0f, 0.0f, 0.0f, 1.0f};
   const XrQuaternionf ori = g_tiltUsed != 0.0f ? pitch_postmul(ident, -g_tiltUsed) : ident;
   g_hudViewPose.orientation = ori;
-  g_hudViewPose.position = quat_rotate(ori, XrVector3f{D * (tr + tl) * 0.5f, D * (tu + td) * 0.5f, -D});
+  // MENUSIZE 2026-09-30 — JJ: with the whole main menu on the layer "the menu text elements are too big". On the
+  // menu the quad follows the panel's "main menu size" (the floating menu screen's own size), about its centre.
+  const float ms = g_hudMenuNow ? (g_screenFovScale < 0.1f ? 0.1f : (g_screenFovScale > 1.0f ? 1.0f : g_screenFovScale)) : 1.0f;
+  g_hudViewPose.position = quat_rotate(ori, XrVector3f{ms * D * (tr + tl) * 0.5f, ms * D * (tu + td) * 0.5f, -D});
   q.layerFlags = XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT;   // premultiplied (HUD-004)
   q.eyeVisibility = XR_EYE_VISIBILITY_BOTH;
   q.subImage.swapchain = g_hudSwap;
   q.subImage.imageArrayIndex = 0;
   q.subImage.imageRect.offset = {0, 0};
   q.subImage.imageRect.extent = {(int32_t)w, (int32_t)h};
-  q.size = {D * (tr - tl), D * (tu - td)};
+  q.size = {ms * D * (tr - tl), ms * D * (tu - td)};
   if (!hud_place(q, g_predicted)) return false;
   g_hudDistUsed = D; g_hudSizeW = q.size.width; g_hudSizeH = q.size.height;
   ++g_hudSubmits;
@@ -2026,6 +2030,7 @@ void akvr_xr_frame_submit(IDXGISwapChain *swapChain, float gameFovDeg,
     // MENUONE2 (JJ: the start screen's text "came in doubled, then the duplicate disappeared"): phase 0 -
     // before the main menu is confirmed - is splash / start screen too, so it counts as menu from the start.
     const bool menuLive = g_menu3d && g_autoMainMenu && g_menuPhase <= 1 && effGameplay;
+    g_hudMenuNow = menuLive;   // MENUSIZE
     akvr_hudsplit_layer_gate(g_eyeWantGameplay && !menuLive, menuLive);
   }
   if (effGameplay) {
