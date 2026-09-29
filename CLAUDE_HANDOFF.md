@@ -140,6 +140,14 @@ the picture from EDGEBAND on (JJ's doubles; also why PARTTAG seemed to do nothin
 after a scripted edit, READ the edited lines back; F2 layer + picture captures showing the SAME piece in both = split dead.
 PARTOPEN: the parts list opens the branch of every hidden/moved/room part once per session.
 
+**PSMARK (2026-09-30, installed, untested):** with SWITCHFIX the compass works (JJ: "nearly there"); 4 compass children
+(JJ's C2.0.0.0.0.1.0.0.2.0.2.0 / .0.6 / .0.7 / .0.7.0) stayed only in the head-locked picture = marked pieces drawn by the
+4 no-colour HUD shaders (3b819a7e, 599bd060, e12863b9, 7d8fcdc2), whose VS never sees the colour. PSMARK hooks
+PSSetConstantBuffers (slot 16) and, for those 4, looks for the exact mark in the first 2 rows of PS cb0; a marked draw is
+drawn ONCE into the layer with cb13 = 0 (third buffer g_cbAll). hudmarks.csv now has ps_* columns + layer_only; if the
+pieces are still missing, read where the mark sits in the PS cb from JJ's F2. Insert/Delete menu-size keys REMOVED
+(GetAsyncKeyState is system-wide; saved `screen` drifted by x1.1 as JJ typed elsewhere); JJ's screen set to 0.75.
+
 ## Open issues, in priority order
 
 1. **The fresh-install test above.**
