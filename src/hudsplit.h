@@ -41,6 +41,15 @@ bool        akvr_probe_group_hidden(unsigned long long vs);
 void        akvr_probe_group_hide(unsigned long long vs, bool on);
 bool        akvr_probe_all_but_rain();
 void        akvr_probe_all_but_rain_set(bool on);
+// DRAWPROBE4: every game draw off except the world rain (and the HUD); compute shaders listed and hideable;
+// tag 64 = an indirect draw (the GPU supplies the count)
+bool        akvr_probe_every_draw();
+void        akvr_probe_every_draw_set(bool on);
+bool        akvr_probe_all_cs();
+void        akvr_probe_all_cs_set(bool on);
+int         akvr_probe_cs_count();
+bool        akvr_probe_cs(int i, unsigned long long& h, long& perFrame, bool& seenNow, bool& hide);
+void        akvr_probe_cs_hide(int i, bool on);
 const char* akvr_probe_diag();
 const char* akvr_hudsplit_vs_diag();
 void        akvr_hudsplit_hook_game_device();   // VSID4: see the game-facing device at D3D11CreateDevice

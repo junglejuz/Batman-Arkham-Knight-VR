@@ -2115,6 +2115,32 @@ namespace
                                "in one of the groups: untick the top box and hide one group at a time.");
             bool all = akvr_probe_all_but_rain();
             if (ImGui::Checkbox("hide everything below except the world rain", &all)) akvr_probe_all_but_rain_set(all);
+            // DRAWPROBE4 (JJ: with all see-through draws hidden the stuck rain stays): the wider tests
+            bool every = akvr_probe_every_draw();
+            if (ImGui::Checkbox("hide EVERY draw except the world rain  (the picture goes dark)", &every)) akvr_probe_every_draw_set(every);
+            bool allCs = akvr_probe_all_cs();
+            if (ImGui::Checkbox("hide all compute work  (effects the game calculates instead of drawing)", &allCs)) akvr_probe_all_cs_set(allCs);
+            const int ncs = akvr_probe_cs_count();
+            char csLabel[96];
+            _snprintf_s(csLabel, sizeof(csLabel), _TRUNCATE, "compute shaders (%d)###cslist", ncs);
+            if (ImGui::TreeNode(csLabel))
+            {
+                for (int i = 0; i < ncs; ++i)
+                {
+                    unsigned long long h = 0; long pf = 0; bool seen = false, hide = false;
+                    if (!akvr_probe_cs(i, h, pf, seen, hide)) continue;
+                    const char* name = h == 0xa96594b16ceb399bull ? "the fix's 'rain haloing'"
+                                     : (h == 0xbc5c6aebf60c9308ull ? "the fix's 'rain haloing 2 (splash)'" : "");
+                    ImGui::PushID(1000 + i);
+                    if (ImGui::Checkbox("hide", &hide)) akvr_probe_cs_hide(i, hide);
+                    ImGui::SameLine();
+                    ImGui::Text("%2d  %s%s", i + 1, name, seen ? "" : "  (not running now)");
+                    ImGui::SameLine();
+                    ImGui::TextDisabled("  %016llx  %ld a frame", h, pf);
+                    ImGui::PopID();
+                }
+                ImGui::TreePop();
+            }
             const int nk = akvr_probe_kind_count();
             if (nk == 0) ImGui::TextDisabled("   no rain drawn yet");
             // groups: one per vertex shader, in order of first appearance
@@ -2155,7 +2181,8 @@ namespace
                         ImGui::PushID(i);
                         if (ImGui::Checkbox("hide", &hide)) akvr_probe_kind_hide(i, hide);
                         ImGui::SameLine();
-                        ImGui::Text("%s%s", (tags & 2) ? "uses the rain's picture" : ((tags & 12) ? "next to the rain" : "see-through"),
+                        ImGui::Text("%s%s", (tags & 64) ? "drawn by a count the GPU supplies"
+                                            : ((tags & 2) ? "uses the rain's picture" : ((tags & 12) ? "next to the rain" : "see-through")),
                                     seen ? "" : "  (not on screen now)");
                         ImGui::SameLine();
                         ImGui::TextDisabled("  %016llx  %ld x %u x %u", ps, draws, cnt, inst);
@@ -2617,19 +2644,27 @@ namespace
             float pvRatio = 0.0f, pvFov = 0.0f; int pvHits = 0;
             akvr_projvr_diag(pvRatio, pvHits, pvFov);
             fprintf(f, "\npatches:\n");
-            fprintf(f, "   build: DRAWPROBE3 " __DATE__ " " __TIME__ "\n");
+            fprintf(f, "   build: DRAWPROBE4 " __DATE__ " " __TIME__ "\n");
             fprintf(f, "   zoom vignette: %s\n", akvr_xr_vig_diag());
             fprintf(f, "   pause look: %s, %s now, main view through the player camera: %s, head writes into the paused camera: %ld, darken %.0f%%\n",
                     akvr_xr_pause_look() ? "ON" : "off", akvr_xr_pause_live() ? "LIVE" : "not live",
                     akvr_camera_main_view_live() ? "yes" : "no", akvr_camera_pause_writes(), akvr_xr_pause_dim() * 100.0f);
-            fprintf(f, "   rain probe: %s\n", akvr_probe_diag());   // DRAWPROBE
+            fprintf(f, "   rain probe: %s | every draw off %d, all compute off %d, see-through off %d\n", akvr_probe_diag(),
+                    akvr_probe_every_draw() ? 1 : 0, akvr_probe_all_cs() ? 1 : 0, akvr_probe_all_but_rain() ? 1 : 0);   // DRAWPROBE
+            for (int i = 0; i < akvr_probe_cs_count(); ++i)   // DRAWPROBE4
+            {
+                unsigned long long h = 0; long pf = 0; bool seen = false, hide = false;
+                if (akvr_probe_cs(i, h, pf, seen, hide))
+                    fprintf(f, "      CS %2d: %016llx, %ld a frame, %s%s\n", i + 1, h, pf, seen ? "running" : "not running", hide ? ", HIDDEN" : "");
+            }
             for (int i = 0; i < akvr_probe_kind_count(); ++i)
             {
                 unsigned long long ps = 0, vs = 0; int tags = 0; long draws = 0; unsigned cnt = 0, inst = 0;
                 bool seen = false, hide = false;
                 if (akvr_probe_kind(i, ps, vs, tags, draws, cnt, inst, seen, hide))
-                    fprintf(f, "      %2d: PS %016llx VS %016llx tags %s%s%s%s%s, %ld draws/frame, %u points x %u, %s%s\n",
+                    fprintf(f, "      %2d: PS %016llx VS %016llx tags %s%s%s%s%s%s, %ld draws/frame, %u points x %u, %s%s\n",
                             i + 1, ps, vs, (tags & 1) ? "R" : "", (tags & 2) ? "T" : "", (tags & 4) ? "B" : "", (tags & 8) ? "A" : "", (tags & 16) ? "S" : "",
+                            (tags & 64) ? "I" : "",
                             draws, cnt, inst, seen ? "seen now" : "not seen now", hide ? ", HIDDEN" : "");
             }
             fprintf(f, "   native capture timing: %s Present (comparison test)\n", g_nativeAfterPresent ? "AFTER" : "BEFORE");

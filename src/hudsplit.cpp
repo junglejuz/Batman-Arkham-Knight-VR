@@ -507,10 +507,13 @@ namespace {
         }
         ReleaseSRWLockExclusive(&g_kindLock);
     }
-    bool probe_skip(ID3D11DeviceContext* c, UINT count, UINT inst = 1)
+    volatile bool g_hideEveryDraw = false;   // DRAWPROBE4: every game draw except the world rain and the HUD
+    bool probe_skip(ID3D11DeviceContext* c, UINT count, UINT inst = 1, int extraTag = 0)
     {
         if (!g_probePs) return false;
         CtxSh* s = ctx_sh(c, false);
+        if (g_hideEveryDraw && g_scopeTid != GetCurrentThreadId() && !(s && s->ps && sh_get(s->ps) == g_probePs))
+        { InterlockedIncrement(&g_probeDropped); return true; }
         if (!s || !s->ps) return false;
         const uint64_t ph = sh_get(s->ps), vh = sh_get(s->vs);
         bool hide = hid_pair(ph, vh);
@@ -531,11 +534,68 @@ namespace {
                 if (s->srv[j] && (s->srv[j] == g_rainTex[0] || s->srv[j] == g_rainTex[1])) tag |= 2;   // rain texture
             if (s->sinceRain > 0 && s->sinceRain <= 12) { tag |= 8; ++s->sinceRain; }               // after the rain
             if (s->blendOn) tag |= 16;                                                               // see-through
+            tag |= extraTag;                                                                         // 64: indirect
             if (tag) { kind_note(ph, vh, tag, count, inst); if (g_hideAllButRain) hide = true; }
         }
         s->ringPs[s->ringAt] = ph; s->ringVs[s->ringAt] = vh; s->ringAt = (s->ringAt + 1) % 12;
         if (hide) InterlockedIncrement(&g_probeDropped);
         return hide;
+    }
+
+    // DRAWPROBE4 2026-10-01 — JJ: with every see-through draw hidden, the stuck rain is STILL there. Two blind spots:
+    // (1) the indirect draws (slots 39/40: the GPU supplies the count - how GPU-simulated effects are usually drawn)
+    // were never hooked; (2) compute shaders (the fix names two rain ones: a96594b16ceb399b "Rain haloing CS",
+    // bc5c6aebf60c9308 "Rain haloing CS 2 (splash)"). Both are listed and can be hidden now.
+    typedef void (__stdcall* DrawIndFn)(ID3D11DeviceContext*, ID3D11Buffer*, UINT);
+    DrawIndFn oDrawIIIG = nullptr, oDrawIIG = nullptr;
+    void __stdcall hkDrawIIIG(ID3D11DeviceContext* c, ID3D11Buffer* b, UINT o) { if (probe_skip(c, 0, 0, 64)) return; oDrawIIIG(c, b, o); }
+    void __stdcall hkDrawIIG(ID3D11DeviceContext* c, ID3D11Buffer* b, UINT o) { if (probe_skip(c, 0, 0, 64)) return; oDrawIIG(c, b, o); }
+    struct CsKind { uint64_t h; long frame, now, last; bool hide; };
+    CsKind  g_csKinds[96] = {};
+    int     g_csN = 0;
+    SRWLOCK g_csLock = SRWLOCK_INIT;
+    volatile bool g_hideAllCs = false;
+    void* g_ctxCs[32] = {};   // compute shader bound, by g_ctxSh index
+    bool cs_skip(ID3D11DeviceContext* c)
+    {
+        CtxSh* s = ctx_sh(c, true);
+        const uint64_t h = s ? sh_get(g_ctxCs[s - g_ctxSh]) : 0;
+        const long f = g_frameNow();
+        bool hide = false;
+        AcquireSRWLockExclusive(&g_csLock);
+        int k = 0;
+        for (; k < g_csN; ++k) if (g_csKinds[k].h == h) break;
+        if (k == g_csN && g_csN < 96) g_csKinds[g_csN++] = { h, f, 0, 0, false };
+        if (k < 96)
+        {
+            CsKind& d = g_csKinds[k];
+            if (d.frame != f) { d.last = d.now; d.now = 0; d.frame = f; }
+            ++d.now; hide = d.hide;
+        }
+        ReleaseSRWLockExclusive(&g_csLock);
+        return hide || g_hideAllCs;
+    }
+    typedef void (__stdcall* CSSetFn)(ID3D11DeviceContext*, ID3D11ComputeShader*, ID3D11ClassInstance* const*, UINT);
+    CSSetFn oCSSetG = nullptr;
+    void __stdcall hkCSSetG(ID3D11DeviceContext* c, ID3D11ComputeShader* cs, ID3D11ClassInstance* const* ci, UINT n)
+    {
+        if (CtxSh* s = ctx_sh(c, true)) g_ctxCs[s - g_ctxSh] = cs;
+        oCSSetG(c, cs, ci, n);
+    }
+    typedef void (__stdcall* DispatchFn)(ID3D11DeviceContext*, UINT, UINT, UINT);
+    DispatchFn oDispatchG = nullptr;
+    void __stdcall hkDispatchG(ID3D11DeviceContext* c, UINT x, UINT y, UINT z) { if (cs_skip(c)) return; oDispatchG(c, x, y, z); }
+    DrawIndFn oDispatchIndG = nullptr;
+    void __stdcall hkDispatchIndG(ID3D11DeviceContext* c, ID3D11Buffer* b, UINT o) { if (cs_skip(c)) return; oDispatchIndG(c, b, o); }
+    typedef HRESULT (__stdcall* CreateCSFn)(ID3D11Device*, const void*, SIZE_T, ID3D11ClassLinkage*, ID3D11ComputeShader**);
+    CreateCSFn oCreateCS[3] = {};
+    void* g_createCsTarget[3] = {};
+    int   g_csHooks = 0;
+    template <int K> HRESULT __stdcall hkCreateCS(ID3D11Device* d, const void* code, SIZE_T len, ID3D11ClassLinkage* cl, ID3D11ComputeShader** out)
+    {
+        HRESULT hr = oCreateCS[K](d, code, len, cl, out);
+        if (SUCCEEDED(hr) && out && *out) sh_note(code, len, *out);
+        return hr;
     }
 
     Scope* cur_scope() { return g_curN > 0 ? &g_cur[g_curN - 1] : nullptr; }
@@ -1322,6 +1382,11 @@ namespace {
         hook_slot(gvt, nullptr, 16, (void*)&hkPSSetCB, (void**)&oPSSetCB);   // PSMARK
         hook_slot(gvt, nullptr, 9, (void*)&hkPSSetG, (void**)&oPSSetG);      // DRAWPROBE: PSSetShader
         hook_slot(gvt, nullptr, 8, (void*)&hkPSSetSRVG, (void**)&oPSSetSRVG);   // DRAWPROBE2: PSSetShaderResources
+        hook_slot(gvt, nullptr, 39, (void*)&hkDrawIIIG, (void**)&oDrawIIIG);    // DRAWPROBE4: DrawIndexedInstancedIndirect
+        hook_slot(gvt, nullptr, 40, (void*)&hkDrawIIG, (void**)&oDrawIIG);      // DRAWPROBE4: DrawInstancedIndirect
+        hook_slot(gvt, nullptr, 41, (void*)&hkDispatchG, (void**)&oDispatchG);  // DRAWPROBE4: Dispatch
+        hook_slot(gvt, nullptr, 42, (void*)&hkDispatchIndG, (void**)&oDispatchIndG);   // DRAWPROBE4: DispatchIndirect
+        hook_slot(gvt, nullptr, 69, (void*)&hkCSSetG, (void**)&oCSSetG);        // DRAWPROBE4: CSSetShader
         hook_slot(gvt, nullptr, 14, (void*)&hkMapG, (void**)&oMapG);
         hook_slot(gvt, nullptr, 15, (void*)&hkUnmapG, (void**)&oUnmapG);
         hook_slot(gvt, nullptr, 48, (void*)&hkUpdSubG, (void**)&oUpdSubG);
@@ -1680,6 +1745,28 @@ void akvr_probe_group_hide(unsigned long long vs, bool on)
 }
 bool akvr_probe_all_but_rain() { return g_hideAllButRain; }
 void akvr_probe_all_but_rain_set(bool on) { g_hideAllButRain = on; }
+bool akvr_probe_every_draw() { return g_hideEveryDraw; }                 // DRAWPROBE4
+void akvr_probe_every_draw_set(bool on) { g_hideEveryDraw = on; }
+bool akvr_probe_all_cs() { return g_hideAllCs; }
+void akvr_probe_all_cs_set(bool on) { g_hideAllCs = on; }
+int  akvr_probe_cs_count() { return g_csN; }
+bool akvr_probe_cs(int i, unsigned long long& h, long& perFrame, bool& seenNow, bool& hide)
+{
+    if (i < 0 || i >= g_csN) return false;
+    AcquireSRWLockShared(&g_csLock);
+    const CsKind d = g_csKinds[i];
+    ReleaseSRWLockShared(&g_csLock);
+    h = d.h; hide = d.hide;
+    seenNow = (long)g_frame - d.frame < 90;
+    perFrame = d.frame == (long)g_frame ? d.now : d.last;
+    return true;
+}
+void akvr_probe_cs_hide(int i, bool on)
+{
+    AcquireSRWLockExclusive(&g_csLock);
+    if (i >= 0 && i < g_csN) g_csKinds[i].hide = on;
+    ReleaseSRWLockExclusive(&g_csLock);
+}
 const char* akvr_probe_diag()
 {
     static char d[200];
@@ -1697,7 +1784,19 @@ void akvr_hudsplit_watch_device(IUnknown* devUnk)
     if (FAILED(devUnk->QueryInterface(__uuidof(ID3D11Device), (void**)&dev)) || !dev) return;
     void* fn = (*(void***)dev)[12];
     void* fnPs = (*(void***)dev)[15];   // DRAWPROBE: CreatePixelShader
+    void* fnCs = (*(void***)dev)[18];   // DRAWPROBE4: CreateComputeShader
     dev->Release();
+    {
+        bool seen = false;
+        for (int i = 0; i < g_csHooks; ++i) seen = seen || g_createCsTarget[i] == fnCs;
+        if (!seen && g_csHooks < 3)
+        {
+            MH_Initialize();
+            void* det = g_csHooks == 0 ? (void*)&hkCreateCS<0> : (g_csHooks == 1 ? (void*)&hkCreateCS<1> : (void*)&hkCreateCS<2>);
+            if (MH_CreateHook(fnCs, det, (void**)&oCreateCS[g_csHooks]) == MH_OK && MH_EnableHook(fnCs) == MH_OK)
+                g_createCsTarget[g_csHooks++] = fnCs;
+        }
+    }
     {
         bool seen = false;
         for (int i = 0; i < g_psHooks; ++i) seen = seen || g_createPsTarget[i] == fnPs;
