@@ -132,6 +132,14 @@ world rain goes)? SHADERDUMP (deployed): writes the ORIGINAL bytecode of those 3
 `Binaries\Win64\akvr_shader_<hash>.bin` at creation; disassemble with
 `E:\Games\# MODS\Geo-11\geo-11+v0.6.90\cmd_Decompiler\cmd_Decompiler.exe -d` and read how row 11 places its streaks.
 
+**DRAWPROBE3 (2026-10-01, deployed, untested):** JJ confirmed the hide tick WORKS (row 1 removed the world rain), so
+rows 2-14 are not the stuck layer. SHADERDUMP read (asm in the scratchpad `shd/`): row 11's VS 2aafb19df6567d30 places
+streaks at structured-buffer positions minus cb0[10] (camera position) through the ordinary view-projection =
+world-fixed. The probe now also takes every see-through draw (blend enabled on RT0, tracked per context via the Blend
+hook) as tag 16/"S"; 256 kinds. Panel RAIN LAYERS: "hide everything below except the world rain" (drops every tagged
+non-rain draw), then groups by vertex shader with a hide each (hidden-VS list) and a tree of kinds. Next if the top box
+does NOT remove the stuck layer: it is opaque or not drawn through the game-side context hooks.
+
 ## PAUSELOOK + PAUSEDIM (2026-09-30, deployed to JJ's game only; JJ: "a good start")
 
 JJ: pause as in Sekiro — "the whole 360 world to freeze, darken, and then add the pause screen menus over the top",

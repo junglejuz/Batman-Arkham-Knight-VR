@@ -36,6 +36,11 @@ int         akvr_probe_kind_count();
 bool        akvr_probe_kind(int i, unsigned long long& ps, unsigned long long& vs, int& tags, long& draws, unsigned& count,
                             unsigned& inst, bool& seenNow, bool& hide);
 void        akvr_probe_kind_hide(int i, bool on);
+// DRAWPROBE3: tag 16 = a see-through (blended) draw anywhere in the frame; hides by vertex-shader group, or all
+bool        akvr_probe_group_hidden(unsigned long long vs);
+void        akvr_probe_group_hide(unsigned long long vs, bool on);
+bool        akvr_probe_all_but_rain();
+void        akvr_probe_all_but_rain_set(bool on);
 const char* akvr_probe_diag();
 const char* akvr_hudsplit_vs_diag();
 void        akvr_hudsplit_hook_game_device();   // VSID4: see the game-facing device at D3D11CreateDevice

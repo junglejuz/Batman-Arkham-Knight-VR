@@ -2109,24 +2109,62 @@ namespace
         // are not something JJ will use - removed). The world rain particles and the draws around them, by shader pair.
         ImGui::SetNextItemOpen(false, ImGuiCond_Once); if (ImGui::CollapsingHeader("RAIN LAYERS"))
         {
-            ImGui::TextWrapped("Everything drawn with or next to the rain. Tick 'hide' on one row at a time, in the "
-                               "rain, until the layer stuck to your head disappears.");
+            // DRAWPROBE3 (JJ: none of the rows around the rain; hiding the world rain works; the stuck rain is 3D):
+            // every see-through draw of the frame, grouped by the shader that places it.
+            ImGui::TextWrapped("In the rain: first tick the top box. If the layer stuck to your head disappears, it is "
+                               "in one of the groups: untick the top box and hide one group at a time.");
+            bool all = akvr_probe_all_but_rain();
+            if (ImGui::Checkbox("hide everything below except the world rain", &all)) akvr_probe_all_but_rain_set(all);
             const int nk = akvr_probe_kind_count();
             if (nk == 0) ImGui::TextDisabled("   no rain drawn yet");
+            // groups: one per vertex shader, in order of first appearance
+            unsigned long long gvs[256]; int gn = 0;
             for (int i = 0; i < nk; ++i)
             {
                 unsigned long long ps = 0, vs = 0; int tags = 0; long draws = 0; unsigned cnt = 0, inst = 0;
                 bool seen = false, hide = false;
-                if (!akvr_probe_kind(i, ps, vs, tags, draws, cnt, inst, seen, hide)) continue;
-                const char* what = (tags & 1) ? "the world rain"
-                                 : (tags & 2) ? "uses the rain's picture"
-                                 : (tags & 4) ? "drawn just before the rain" : "drawn just after the rain";
-                ImGui::PushID(i);
-                if (ImGui::Checkbox("hide", &hide)) akvr_probe_kind_hide(i, hide);
+                if (!akvr_probe_kind(i, ps, vs, tags, draws, cnt, inst, seen, hide) || (tags & 1)) continue;
+                bool dup = false;
+                for (int g = 0; g < gn && !dup; ++g) dup = gvs[g] == vs;
+                if (!dup && gn < 256) gvs[gn++] = vs;
+            }
+            for (int g = 0; g < gn; ++g)
+            {
+                int kinds = 0, onScreen = 0; long drawsNow = 0;
+                for (int i = 0; i < nk; ++i)
+                {
+                    unsigned long long ps = 0, vs = 0; int tags = 0; long draws = 0; unsigned cnt = 0, inst = 0;
+                    bool seen = false, hide = false;
+                    if (!akvr_probe_kind(i, ps, vs, tags, draws, cnt, inst, seen, hide) || vs != gvs[g] || (tags & 1)) continue;
+                    ++kinds; if (seen) { ++onScreen; drawsNow += draws; }
+                }
+                ImGui::PushID(g);
+                bool gh = akvr_probe_group_hidden(gvs[g]);
+                if (ImGui::Checkbox("hide", &gh)) akvr_probe_group_hide(gvs[g], gh);
                 ImGui::SameLine();
-                ImGui::Text("%2d  %-28s %s", i + 1, what, seen ? "" : "(not on screen now)");
+                char label[160];
+                _snprintf_s(label, sizeof(label), _TRUNCATE, "group %d: %d kinds, %d on screen now (%ld draws a frame)###grp",
+                            g + 1, kinds, onScreen, drawsNow);
+                if (ImGui::TreeNode(label))
+                {
+                    for (int i = 0; i < nk; ++i)
+                    {
+                        unsigned long long ps = 0, vs = 0; int tags = 0; long draws = 0; unsigned cnt = 0, inst = 0;
+                        bool seen = false, hide = false;
+                        if (!akvr_probe_kind(i, ps, vs, tags, draws, cnt, inst, seen, hide) || vs != gvs[g] || (tags & 1)) continue;
+                        ImGui::PushID(i);
+                        if (ImGui::Checkbox("hide", &hide)) akvr_probe_kind_hide(i, hide);
+                        ImGui::SameLine();
+                        ImGui::Text("%s%s", (tags & 2) ? "uses the rain's picture" : ((tags & 12) ? "next to the rain" : "see-through"),
+                                    seen ? "" : "  (not on screen now)");
+                        ImGui::SameLine();
+                        ImGui::TextDisabled("  %016llx  %ld x %u x %u", ps, draws, cnt, inst);
+                        ImGui::PopID();
+                    }
+                    ImGui::TreePop();
+                }
                 ImGui::SameLine();
-                ImGui::TextDisabled("  %016llx / %016llx  %ld x %u x %u", ps, vs, draws, cnt, inst);
+                ImGui::TextDisabled("  %016llx", gvs[g]);
                 ImGui::PopID();
             }
             ImGui::TextDisabled("   %s", akvr_probe_diag());
@@ -2579,7 +2617,7 @@ namespace
             float pvRatio = 0.0f, pvFov = 0.0f; int pvHits = 0;
             akvr_projvr_diag(pvRatio, pvHits, pvFov);
             fprintf(f, "\npatches:\n");
-            fprintf(f, "   build: SHADERDUMP " __DATE__ " " __TIME__ "\n");
+            fprintf(f, "   build: DRAWPROBE3 " __DATE__ " " __TIME__ "\n");
             fprintf(f, "   zoom vignette: %s\n", akvr_xr_vig_diag());
             fprintf(f, "   pause look: %s, %s now, main view through the player camera: %s, head writes into the paused camera: %ld, darken %.0f%%\n",
                     akvr_xr_pause_look() ? "ON" : "off", akvr_xr_pause_live() ? "LIVE" : "not live",
@@ -2590,8 +2628,8 @@ namespace
                 unsigned long long ps = 0, vs = 0; int tags = 0; long draws = 0; unsigned cnt = 0, inst = 0;
                 bool seen = false, hide = false;
                 if (akvr_probe_kind(i, ps, vs, tags, draws, cnt, inst, seen, hide))
-                    fprintf(f, "      %2d: PS %016llx VS %016llx tags %s%s%s%s, %ld draws/frame, %u points x %u, %s%s\n",
-                            i + 1, ps, vs, (tags & 1) ? "R" : "", (tags & 2) ? "T" : "", (tags & 4) ? "B" : "", (tags & 8) ? "A" : "",
+                    fprintf(f, "      %2d: PS %016llx VS %016llx tags %s%s%s%s%s, %ld draws/frame, %u points x %u, %s%s\n",
+                            i + 1, ps, vs, (tags & 1) ? "R" : "", (tags & 2) ? "T" : "", (tags & 4) ? "B" : "", (tags & 8) ? "A" : "", (tags & 16) ? "S" : "",
                             draws, cnt, inst, seen ? "seen now" : "not seen now", hide ? ", HIDDEN" : "");
             }
             fprintf(f, "   native capture timing: %s Present (comparison test)\n", g_nativeAfterPresent ? "AFTER" : "BEFORE");

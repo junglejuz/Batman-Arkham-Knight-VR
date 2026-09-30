@@ -390,9 +390,9 @@ namespace {
         if (SUCCEEDED(hr) && out && *out) sh_note(code, len, *out);
         return hr;
     }
-    // shaders (and PS textures 0-7) bound on each game-side context (immediate + the game's deferred ones)
+    // shaders (and PS textures 0-7, blend) bound on each game-side context (immediate + the game's deferred ones)
     // DRAWPROBE2: plus the last 12 draws' shader pairs and how many draws since the rain, for the neighbour search
-    struct CtxSh { void* ctx; void* vs; void* ps; void* srv[8]; uint64_t ringPs[12], ringVs[12]; int ringAt; int sinceRain; };
+    struct CtxSh { void* ctx; void* vs; void* ps; void* srv[8]; uint64_t ringPs[12], ringVs[12]; int ringAt; int sinceRain; bool blendOn; };
     CtxSh g_ctxSh[32] = {};
     CtxSh* ctx_sh(void* c, bool claim)
     {
@@ -424,20 +424,72 @@ namespace {
             for (UINT i = 0; i < num && start + i < 8; ++i) s->srv[start + i] = v ? v[i] : nullptr;
         oPSSetSRVG(c, start, num, v);
     }
+    // DRAWPROBE3: blend state -> blending on (see-through draws: particles, glass, fog), looked up once per bind
+    struct BlendOn { void* bs; bool on; };
+    BlendOn g_blendOn[512] = {};
+    int     g_blendOnN = 0;
+    SRWLOCK g_blendLock = SRWLOCK_INIT;
+    bool blend_on(ID3D11BlendState* bs)
+    {
+        if (!bs) return false;
+        AcquireSRWLockShared(&g_blendLock);
+        for (int i = 0; i < g_blendOnN; ++i)
+            if (g_blendOn[i].bs == bs) { const bool on = g_blendOn[i].on; ReleaseSRWLockShared(&g_blendLock); return on; }
+        ReleaseSRWLockShared(&g_blendLock);
+        D3D11_BLEND_DESC d{};
+        bs->GetDesc(&d);
+        const bool on = d.RenderTarget[0].BlendEnable != FALSE;
+        AcquireSRWLockExclusive(&g_blendLock);
+        if (g_blendOnN < 512) g_blendOn[g_blendOnN++] = { bs, on };
+        ReleaseSRWLockExclusive(&g_blendLock);
+        return on;
+    }
     // DRAWPROBE2 2026-10-01 — JJ's panel showed ONE rain draw: pixel shader 5d787946eda54077 with the fix's
     // f50d1365e929b3a0 VS is the GPU rain particles (instanced from a structured buffer, placed through the view-
     // projection) = the WORLD rain. The layer stuck to the head is another draw (likely a camera-attached rain
-    // mesh). Candidates listed now: the rain particles (tag R), draws that bind one of the rain's textures (T), and
-    // the 12 draws before (B) / after (A) the rain particles on the same context, by pixel+vertex shader pair.
+    // mesh). Candidates: the rain particles (tag 1), draws that bind one of the rain's textures (2), and the 12 draws
+    // before (4) / after (8) the rain particles on the same context, by pixel+vertex shader pair.
+    // DRAWPROBE3 — JJ hid rows 2-14: no change, though hiding the world rain works; the stuck rain has parallax (3D).
+    // SHADERDUMP read: row 11 (VS 2aafb19df6567d30) places its streaks at world positions minus the camera position,
+    // turned by the ordinary view-projection = world-fixed, not the stuck layer. So: every see-through draw of the
+    // frame joins (tag 16), grouped by vertex shader in the panel, with "hide everything but the world rain" and a
+    // hide per group, so the search is a few ticks instead of hundreds of rows.
     uint64_t g_probePs = 0x5d787946eda54077ull;
     struct DrawKind { uint64_t ps, vs; int tags; long frame, drawsNow, drawsLast; unsigned count, inst; bool hide; };
-    DrawKind g_kinds[48] = {};
+    constexpr int kKinds = 256;
+    DrawKind g_kinds[kKinds] = {};
     int      g_kindN = 0;
     SRWLOCK  g_kindLock = SRWLOCK_INIT;
     volatile LONG g_probeHits = 0, g_probeDropped = 0;
     void* volatile g_rainTex[2] = {};
-    uint64_t volatile g_hiddenPs[16] = {}, g_hiddenVs[16] = {};   // lock-free check on every draw
-    volatile LONG g_hiddenN = 0;
+    // hidden pairs (open addressing, rebuilt under g_kindLock on every change; read lock-free by the draw hooks),
+    // hidden vertex-shader groups, and the "everything but the world rain" switch
+    constexpr int kHid = 1024;
+    uint64_t volatile g_hidPs[kHid] = {}, g_hidVs[kHid] = {};
+    uint64_t volatile g_hidGroup[32] = {};
+    volatile LONG g_hidGroupN = 0;
+    volatile bool g_hideAllButRain = false;
+    uint32_t hid_slot(uint64_t ps, uint64_t vs) { return (uint32_t)((ps ^ (vs * 0x9E3779B97F4A7C15ull)) >> 54) & (kHid - 1); }
+    bool hid_pair(uint64_t ps, uint64_t vs)
+    {
+        for (uint32_t i = hid_slot(ps, vs), n = 0; n < 64; ++n, i = (i + 1) & (kHid - 1))
+        {
+            const uint64_t p = g_hidPs[i];
+            if (!p) return false;
+            if (p == ps && g_hidVs[i] == vs) return true;
+        }
+        return false;
+    }
+    void hid_rebuild()   // g_kindLock held
+    {
+        for (int i = 0; i < kHid; ++i) { g_hidPs[i] = 0; g_hidVs[i] = 0; }
+        for (int k = 0; k < g_kindN; ++k)
+        {
+            if (!g_kinds[k].hide || !g_kinds[k].ps) continue;
+            for (uint32_t i = hid_slot(g_kinds[k].ps, g_kinds[k].vs), n = 0; n < 64; ++n, i = (i + 1) & (kHid - 1))
+                if (!g_hidPs[i]) { g_hidVs[i] = g_kinds[k].vs; g_hidPs[i] = g_kinds[k].ps; break; }
+        }
+    }
     long g_frameNow() { return (long)g_frame; }
     void kind_note(uint64_t ph, uint64_t vh, int tag, UINT count, UINT inst)
     {
@@ -445,8 +497,8 @@ namespace {
         AcquireSRWLockExclusive(&g_kindLock);
         int k = 0;
         for (; k < g_kindN; ++k) if (g_kinds[k].ps == ph && g_kinds[k].vs == vh) break;
-        if (k == g_kindN && g_kindN < 48) g_kinds[g_kindN++] = { ph, vh, 0, f, 0, 0, 0, 0, false };
-        if (k < 48)
+        if (k == g_kindN && g_kindN < kKinds) g_kinds[g_kindN++] = { ph, vh, 0, f, 0, 0, 0, 0, false };
+        if (k < kKinds)
         {
             DrawKind& d = g_kinds[k];
             d.tags |= tag;
@@ -461,14 +513,14 @@ namespace {
         CtxSh* s = ctx_sh(c, false);
         if (!s || !s->ps) return false;
         const uint64_t ph = sh_get(s->ps), vh = sh_get(s->vs);
-        bool hide = false;
-        for (LONG i = 0; i < g_hiddenN && !hide; ++i) hide = g_hiddenPs[i] == ph && g_hiddenVs[i] == vh;
+        bool hide = hid_pair(ph, vh);
+        for (LONG i = 0; i < g_hidGroupN && !hide; ++i) hide = g_hidGroup[i] == vh;
         if (ph == g_probePs)
         {
             InterlockedIncrement(&g_probeHits);
             g_rainTex[0] = s->srv[0]; g_rainTex[1] = s->srv[1];
-            kind_note(ph, vh, 1, count, inst);                           // R
-            for (int j = 0; j < 12; ++j)                                 // B: the 12 before it
+            kind_note(ph, vh, 1, count, inst);                           // the world rain
+            for (int j = 0; j < 12; ++j)                                 // the 12 before it
                 if (s->ringPs[j] && s->ringPs[j] != ph) kind_note(s->ringPs[j], s->ringVs[j], 4, 0, 0);
             s->sinceRain = 1;                                            // 0 = no rain yet on this context
         }
@@ -476,9 +528,10 @@ namespace {
         {
             int tag = 0;
             for (int j = 0; j < 8; ++j)
-                if (s->srv[j] && (s->srv[j] == g_rainTex[0] || s->srv[j] == g_rainTex[1])) tag |= 2;   // T
-            if (s->sinceRain > 0 && s->sinceRain <= 12) { tag |= 8; ++s->sinceRain; }   // A
-            if (tag) kind_note(ph, vh, tag, count, inst);
+                if (s->srv[j] && (s->srv[j] == g_rainTex[0] || s->srv[j] == g_rainTex[1])) tag |= 2;   // rain texture
+            if (s->sinceRain > 0 && s->sinceRain <= 12) { tag |= 8; ++s->sinceRain; }               // after the rain
+            if (s->blendOn) tag |= 16;                                                               // see-through
+            if (tag) { kind_note(ph, vh, tag, count, inst); if (g_hideAllButRain) hide = true; }
         }
         s->ringPs[s->ringAt] = ph; s->ringVs[s->ringAt] = vh; s->ringAt = (s->ringAt + 1) % 12;
         if (hide) InterlockedIncrement(&g_probeDropped);
@@ -809,6 +862,7 @@ namespace {
         }
         static void __stdcall Blend(ID3D11DeviceContext* c, ID3D11BlendState* bs, const FLOAT f[4], UINT m)
         {
+            if (L == 0) if (CtxSh* sh = ctx_sh(c, true)) sh->blendOn = blend_on(bs);   // DRAWPROBE3
             if (L == 0 && layer_blend(c, bs, f, m)) return;
             oBlend(c, bs, f, m);
         }
@@ -1607,13 +1661,25 @@ void akvr_probe_kind_hide(int i, bool on)
 {
     AcquireSRWLockExclusive(&g_kindLock);
     if (i >= 0 && i < g_kindN) g_kinds[i].hide = on;
-    // rebuild the lock-free hidden list the draw hooks read
-    LONG n = 0;
-    for (int k = 0; k < g_kindN && n < 16; ++k)
-        if (g_kinds[k].hide) { g_hiddenPs[n] = g_kinds[k].ps; g_hiddenVs[n] = g_kinds[k].vs; ++n; }
-    InterlockedExchange(&g_hiddenN, n);
+    hid_rebuild();
     ReleaseSRWLockExclusive(&g_kindLock);
 }
+bool akvr_probe_group_hidden(unsigned long long vs)
+{
+    for (LONG i = 0; i < g_hidGroupN; ++i) if (g_hidGroup[i] == vs) return true;
+    return false;
+}
+void akvr_probe_group_hide(unsigned long long vs, bool on)
+{
+    AcquireSRWLockExclusive(&g_kindLock);
+    LONG n = g_hidGroupN, at = -1;
+    for (LONG i = 0; i < n; ++i) if (g_hidGroup[i] == vs) at = i;
+    if (on && at < 0 && n < 32) { g_hidGroup[n] = vs; InterlockedExchange(&g_hidGroupN, n + 1); }
+    if (!on && at >= 0) { g_hidGroup[at] = g_hidGroup[n - 1]; InterlockedExchange(&g_hidGroupN, n - 1); }
+    ReleaseSRWLockExclusive(&g_kindLock);
+}
+bool akvr_probe_all_but_rain() { return g_hideAllButRain; }
+void akvr_probe_all_but_rain_set(bool on) { g_hideAllButRain = on; }
 const char* akvr_probe_diag()
 {
     static char d[200];
