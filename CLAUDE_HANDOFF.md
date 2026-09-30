@@ -186,6 +186,12 @@ UpdateSubresource hooks), keeps every CS's bytecode from creation and saves the 
 `Binaries\Win64\akvr_shader_<hash>.bin`; F2 status "rain writer:" lists it all with the camera position/axes for
 matching. Next: disassemble the writer, find the wrap region (box centre/size, from camera position + view direction?)
 and make it use the game camera (not the head) - via cb from the mod around that dispatch, like cb12 for the draw.
+**NEARRAIN3 (2026-10-01 late, deployed + applied, JJ tests tomorrow):** JJ: originally the block followed head
+POSITION only; mode 1 added rotation ("mostly hanging in space" otherwise). Mode 3 "follow the game camera" (default,
+set in JJ's ini with `nearrainlag=1`): the shader subtracts the head's camera position offset (stub dPos, recorded per
+Present in the camera ring) from the first 2048 streaks, no rotation. If lean still drags the block, try frames back
+0/2/3; if it swims only while moving the stick, that is the game's own look. RAINWRITER stays in the build (an F2 in
+the rain still records the buffer writer, if a deeper fix is needed).
 HUNTRAIN d3dx.ini lines (hunting=2 etc.) are still on JJ's game: restore `diagnostics/before-HUNTRAIN-20261001/d3dx.ini`
 once the rain is settled; the finder-mark dumps (5d78...-ps) were deleted.
 

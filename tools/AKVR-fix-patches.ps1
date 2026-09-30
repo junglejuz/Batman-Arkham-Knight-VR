@@ -458,9 +458,12 @@ function Patch-PartTag([string]$hash) {
 # cb12[3].w = 1 the shader uses the drawn camera's axes AKVR sends in cb12[3..5].xyz (from N frames back, with the game
 # camera of the same frame in cb12[0..2]) instead of the ones from its own view-projection. A NEARRAIN (v1) file is
 # first restored from akvr_fix_backup, then patched fresh.
+# NEARRAIN3 2026-10-01 (JJ: "previously the rain was attached to head position translation, and now it's attached
+# somehow to head rotation while staying mostly hanging in space"): the block follows the camera's POSITION only.
+# Mode 3: the streak position minus cb12[0].xyz (the position offset AKVR adds to the camera for the head), no turn.
 $rainVs = 'f50d1365e929b3a0'
 $rainMarker = '// AKVR NEARRAIN'
-$rainMarker2 = '// AKVR NEARRAIN2'
+$rainMarker2 = '// AKVR NEARRAIN3'
 function Patch-NearRain {
     $txt = Join-Path $dm "$rainVs-vs.txt"
     $bin = Join-Path $dm "$rainVs-vs.bin"
@@ -503,6 +506,8 @@ function Patch-NearRain {
         "and $t0.w, $t0.w, $t0.y",
         "eq $t0.z, cb12[0].w, l(2.000000)",
         "and $t0.z, $t0.z, $t0.y",
+        "eq $t6.w, cb12[0].w, l(3.000000)",
+        "and $t6.w, $t6.w, $t0.y",
         "mov $t1.x, cb0[6].x",
         "mov $t1.y, cb0[7].x",
         "mov $t1.z, cb0[8].x",
@@ -548,7 +553,10 @@ function Patch-NearRain {
         "mad $t5.xyz, cb12[0].xyzx, $t6.zzzz, $t4.xyzx",
         "mad $t5.xyz, cb12[1].xyzx, $t6.xxxx, $t5.xyzx",
         "mad $t5.xyz, cb12[2].xyzx, $t6.yyyy, $t5.xyzx",
-        "movc $P.xyz, $t0.wwww, $t5.xyzx, $P.xyzx"
+        "movc $P.xyz, $t0.wwww, $t5.xyzx, $P.xyzx",
+        "// NEARRAIN3 (mode 3): the head's position offset (cb12[0].xyz) taken back off, no turn",
+        "add $t5.xyz, $P.xyzx, -cb12[0].xyzx",
+        "movc $P.xyz, $t6.wwww, $t5.xyzx, $P.xyzx"
     ) -join $nl
     $hide = @(
         "$rainMarker hide (mode 2): off screen. Original line: mov $o.xyzw, $r.xyzw",

@@ -1616,7 +1616,7 @@ namespace {
     }
     // NEARRAIN2: the game camera (base) and the drawn camera (base + head, the fields after the finalize) per Present,
     // so the rain correction can use the pair from k Presents ago (the game may place the block with an older camera).
-    struct CamRec { int32_t by, bp, br, fy, fp, fr; bool ok; };
+    struct CamRec { int32_t by, bp, br, fy, fp, fr; float dx, dy, dz; bool ok; };   // NEARRAIN3: + the head's position offset
     CamRec   g_camRing[16] = {};
     volatile LONG g_camHead = 0;
 }
@@ -1630,6 +1630,7 @@ void akvr_camera_record_rotators()   // once per Present, after the head update 
         {
             rec.fy = *(int32_t*)(b + OFF_YAW); rec.fp = *(int32_t*)(b + OFF_PITCH); rec.fr = *(int32_t*)(b + OFF_ROLL);
             rec.by = *g_bYaw; rec.bp = *g_bPitch; rec.br = *g_bRoll; rec.ok = true;
+            rec.dx = *g_dPosX; rec.dy = *g_dPosY; rec.dz = *g_dPosZ;   // NEARRAIN3
         }
         __except (EXCEPTION_EXECUTE_HANDLER) { rec.ok = false; }
     }
@@ -1641,6 +1642,18 @@ bool akvr_camera_base_axes(float fwd[3], float right[3], float up[3])
 {
     if (!g_htOn || !g_dYaw || !g_bYaw) return false;
     ue3_axes(*g_bYaw, *g_bPitch, *g_bRoll, fwd, right, up);
+    return true;
+}
+// NEARRAIN3 2026-10-01 — JJ: "previously the rain was attached to head position translation, and now it's attached
+// somehow to head rotation while staying mostly hanging in space". The block follows the camera's POSITION, never
+// its rotation: undo only the position offset AKVR adds to the camera (lean, eye height, stick lift, shoulder), as
+// recorded k Presents ago. World units, the same ones the stub adds to the camera fields.
+bool akvr_camera_pos_delta_ago(int k, float d[3])
+{
+    if (k < 0 || k > 12) return false;
+    const CamRec rec = g_camRing[(g_camHead - k) & 15];
+    if (!rec.ok) return false;
+    d[0] = rec.dx; d[1] = rec.dy; d[2] = rec.dz;
     return true;
 }
 bool akvr_camera_axes_ago(int k, float bf[3], float br[3], float bu[3], float ff[3], float fr[3], float fu[3])

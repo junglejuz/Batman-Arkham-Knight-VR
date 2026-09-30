@@ -568,8 +568,10 @@ namespace {
     ID3D11Buffer* g_rainCb = nullptr;
     // NEARHIDE 2026-10-01 — JJ on NEARRAIN2 (every "frames back" value): the block still turns "as if there's another
     // camera orbiting it" - the game does not place it by a plain rotation about the camera, so it cannot simply be
-    // turned back. Default now: hidden (2). "Hang in the room" stays as an experiment.
-    volatile LONG g_nearMode = 2;
+    // turned back. "Hang in the room" (1) stays as an experiment.
+    // NEARRAIN3 — JJ: originally the block followed the head's POSITION only; mode 1 added rotation. Mode 3 takes the
+    // head's position offset back off (no rotation) and is the default.
+    volatile LONG g_nearMode = 3;
     volatile LONG g_nearLag = 0;   // NEARRAIN2: Presents back for the camera pair (0 = the draw's own view-projection)
     volatile LONG g_nearCount = 2048;
     volatile LONG g_nearBinds = 0, g_nearNoAxes = 0;
@@ -598,7 +600,9 @@ namespace {
         float d[24] = {};
         float* fwd = d; float* right = d + 4; float* up = d + 8;
         bool axes = false;
-        if (g_nearLag > 0)
+        if (g_nearMode == 3)   // NEARRAIN3: cb12[0].xyz = the head's position offset to take back off (mode 3)
+            axes = akvr_camera_pos_delta_ago((int)g_nearLag, d);
+        else if (g_nearLag > 0)
         {
             axes = akvr_camera_axes_ago((int)g_nearLag, fwd, right, up, d + 12, d + 16, d + 20);
             if (axes) d[15] = 1.0f;
@@ -2055,7 +2059,7 @@ void akvr_rainwriter_dump(FILE* f)
 int  akvr_near_rain_lag() { return (int)g_nearLag; }                    // NEARRAIN2
 void akvr_near_rain_lag_set(int k) { InterlockedExchange(&g_nearLag, k < 0 ? 0 : (k > 12 ? 12 : k)); }
 int  akvr_near_rain_mode() { return (int)g_nearMode; }                  // NEARRAIN
-void akvr_near_rain_mode_set(int m) { InterlockedExchange(&g_nearMode, m < 0 ? 0 : (m > 2 ? 2 : m)); }
+void akvr_near_rain_mode_set(int m) { InterlockedExchange(&g_nearMode, m < 0 ? 0 : (m > 3 ? 3 : m)); }
 const char* akvr_near_rain_diag()
 {
     static char d[160];

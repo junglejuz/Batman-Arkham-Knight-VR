@@ -375,7 +375,15 @@ cb12[3..5].xyz instead (AKVR sends the pair from N Presents back: panel "camera 
 Tested on a practice copy both ways (v1 upgrade and a fresh original -> identical text), assembled and driver-loaded OK;
 applied to JJ's game with the real script (text identical to the tested copy, sha256 0C3B2F75...).
 
-**Detect:** `// AKVR NEARRAIN2` (v1: `// AKVR NEARRAIN` only). **Reference:** `Patch-NearRain` in `tools/AKVR-fix-patches.ps1`.
+**NEARRAIN3 (same day, replaces v2):** JJ: "previously the rain was attached to head position translation, and now
+it's attached somehow to head rotation while staying mostly hanging in space" - the block follows the camera's
+POSITION, never its rotation. Mode 3 (new default): 2 lines after the flags (`eq r15.w, cb12[0].w, l(3)` / `and`) and
+3 after the mode-1 `movc` (`add r14.xyz, r2.xyzx, -cb12[0].xyzx` / `movc r2.xyz, r15.wwww, ...`): the streak position
+minus the position offset AKVR adds to the camera for the head (cb12[0].xyz, from the stub's dPos slots, N Presents
+back). Tested on copies both ways (v2 upgrade and a fresh original -> identical, sha256 1CD8B360...), assembled and
+driver-loaded OK; applied to JJ's game with the real script (identical text).
+
+**Detect:** `// AKVR NEARRAIN3` (older: `NEARRAIN2` / `NEARRAIN`). **Reference:** `Patch-NearRain` in `tools/AKVR-fix-patches.ps1`.
 **Driver test:** assembled (cmd_Decompiler 0.6.90 `-a`) and loaded OK in vstest.exe. **Applied** 2026-10-01 to JJ's
 game with the real script (text byte-identical to the tested copy, `.bin` removed, original in `akvr_fix_backup\`).
 Untested in the headset.
