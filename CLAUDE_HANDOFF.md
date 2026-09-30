@@ -147,6 +147,15 @@ DispatchIndirect 42 / CSSetShader 69, plus CreateComputeShader (device slot 18) 
 except the world rain" (drops every non-rain draw outside the HUD call), "hide all compute work", and a list of compute
 shaders (the fix's rain CS a96594b16ceb399b / bc5c6aebf60c9308 labelled). F2 status lists the CS too.
 
+**RAINPARTS (2026-10-01, deployed, untested):** DRAWPROBE4 results (JJ): hiding CS 92fb168506dc721a removed ALL rain —
+it is a 2x2 downsample (8 a frame; the rain needs one of its images), not the simulation. "hide the world rain" removes
+the stuck layer too, and with every OTHER draw hidden the stuck layer stays => the stuck streaks are INSTANCES of the
+world rain draw (PS 5d787946eda54077 / VS f50d1365e929b3a0, 6 x 20480, positions from structured buffer t0 by
+SV_InstanceID; VS offsets w>0 streak heads by cb0[12]). Test now: panel slider "world rain: eighths drawn" cuts the
+instance count (only the tail can be cut: SV_InstanceID ignores StartInstanceLocation). If the stuck layer vanishes at
+some step, it is an instance block: then cull that range in the fix VS (ShaderFixesDM edit + FIX_CHANGES + driver
+test) or by count. If it thins evenly, the stuck streaks are interleaved: look at the buffer writer (a CS from the list).
+
 ## PAUSELOOK + PAUSEDIM (2026-09-30, deployed to JJ's game only; JJ: "a good start")
 
 JJ: pause as in Sekiro — "the whole 360 world to freeze, darken, and then add the pause screen menus over the top",

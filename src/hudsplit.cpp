@@ -542,6 +542,19 @@ namespace {
         return hide;
     }
 
+    // RAINPARTS 2026-10-01 — JJ: hiding the world rain draw removes the stuck layer too, and with every OTHER draw
+    // hidden the stuck layer stays: the stuck streaks are INSTANCES of the world rain draw (6 x 20480, VS
+    // f50d1365e929b3a0 reads each streak from a structured buffer by SV_InstanceID). Test: draw only the first
+    // g_rainParts/8 of the instances (SV_InstanceID ignores StartInstanceLocation, so only the tail can be cut).
+    volatile LONG g_rainParts = 8;
+    UINT rain_inst(ID3D11DeviceContext* c, UINT inst)
+    {
+        if (g_rainParts >= 8) return inst;
+        CtxSh* s = ctx_sh(c, false);
+        if (!s || !s->ps || sh_get(s->ps) != g_probePs) return inst;
+        return (UINT)(((unsigned long long)inst * (unsigned long long)g_rainParts) / 8ull);
+    }
+
     // DRAWPROBE4 2026-10-01 — JJ: with every see-through draw hidden, the stuck rain is STILL there. Two blind spots:
     // (1) the indirect draws (slots 39/40: the GPU supplies the count - how GPU-simulated effects are usually drawn)
     // were never hooked; (2) compute shaders (the fix names two rain ones: a96594b16ceb399b "Rain haloing CS",
@@ -874,6 +887,7 @@ namespace {
         {
             note_draw(c, L);
             if (L == 0 && probe_skip(c, a, i)) return;   // DRAWPROBE
+            if (L == 0) i = rain_inst(c, i);   // RAINPARTS
             if (L == 0 && snoop_ctx(c)) mark_record(c, split_now(c), a, i);   // MARKREC
             if (L == 0 && split_now(c) && layer_only_now()) { layer_only_pre(c); oDrawIdxInst(c, a, i, s, b, si); layer_only_post(c); return; }   // PSMARK
             if (L == 0 && split_now(c)) { split_pre(c); oDrawIdxInst(c, a, i, s, b, si); split_mid(c); oDrawIdxInst(c, a, i, s, b, si); split_post(c); return; }
@@ -890,6 +904,7 @@ namespace {
         {
             note_draw(c, L);
             if (L == 0 && probe_skip(c, a, i)) return;   // DRAWPROBE
+            if (L == 0) i = rain_inst(c, i);   // RAINPARTS
             if (L == 0 && snoop_ctx(c)) mark_record(c, split_now(c), a, i);   // MARKREC
             if (L == 0 && split_now(c) && layer_only_now()) { layer_only_pre(c); oDrawInst(c, a, i, s, si); layer_only_post(c); return; }   // PSMARK
             if (L == 0 && split_now(c)) { split_pre(c); oDrawInst(c, a, i, s, si); split_mid(c); oDrawInst(c, a, i, s, si); split_post(c); return; }
@@ -1745,6 +1760,8 @@ void akvr_probe_group_hide(unsigned long long vs, bool on)
 }
 bool akvr_probe_all_but_rain() { return g_hideAllButRain; }
 void akvr_probe_all_but_rain_set(bool on) { g_hideAllButRain = on; }
+int  akvr_probe_rain_parts() { return (int)g_rainParts; }               // RAINPARTS
+void akvr_probe_rain_parts_set(int v) { InterlockedExchange(&g_rainParts, v < 0 ? 0 : (v > 8 ? 8 : v)); }
 bool akvr_probe_every_draw() { return g_hideEveryDraw; }                 // DRAWPROBE4
 void akvr_probe_every_draw_set(bool on) { g_hideEveryDraw = on; }
 bool akvr_probe_all_cs() { return g_hideAllCs; }
