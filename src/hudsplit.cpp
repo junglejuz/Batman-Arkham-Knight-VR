@@ -367,8 +367,9 @@ namespace {
         if (SUCCEEDED(hr) && out && *out) sh_note(code, len, *out);
         return hr;
     }
-    // shaders bound on each game-side context (immediate + the game's deferred ones)
-    struct CtxSh { void* ctx; void* vs; void* ps; };
+    // shaders (and PS textures 0-7) bound on each game-side context (immediate + the game's deferred ones)
+    // DRAWPROBE2: plus the last 12 draws' shader pairs and how many draws since the rain, for the neighbour search
+    struct CtxSh { void* ctx; void* vs; void* ps; void* srv[8]; uint64_t ringPs[12], ringVs[12]; int ringAt; int sinceRain; };
     CtxSh g_ctxSh[32] = {};
     CtxSh* ctx_sh(void* c, bool claim)
     {
@@ -392,38 +393,71 @@ namespace {
         if (CtxSh* s = ctx_sh(c, true)) s->ps = ps;
         oPSSetG(c, ps, ci, n);
     }
+    typedef void (__stdcall* PSSetSRVFn)(ID3D11DeviceContext*, UINT, UINT, ID3D11ShaderResourceView* const*);
+    PSSetSRVFn oPSSetSRVG = nullptr;
+    void __stdcall hkPSSetSRVG(ID3D11DeviceContext* c, UINT start, UINT num, ID3D11ShaderResourceView* const* v)
+    {
+        if (CtxSh* s = ctx_sh(c, true))
+            for (UINT i = 0; i < num && start + i < 8; ++i) s->srv[start + i] = v ? v[i] : nullptr;
+        oPSSetSRVG(c, start, num, v);
+    }
+    // DRAWPROBE2 2026-10-01 — JJ's panel showed ONE rain draw: pixel shader 5d787946eda54077 with the fix's
+    // f50d1365e929b3a0 VS is the GPU rain particles (instanced from a structured buffer, placed through the view-
+    // projection) = the WORLD rain. The layer stuck to the head is another draw (likely a camera-attached rain
+    // mesh). Candidates listed now: the rain particles (tag R), draws that bind one of the rain's textures (T), and
+    // the 12 draws before (B) / after (A) the rain particles on the same context, by pixel+vertex shader pair.
     uint64_t g_probePs = 0x5d787946eda54077ull;
-    struct DrawKind { uint64_t vs; void* t0; void* t1; long frame, drawsNow, drawsLast; unsigned count; bool hide; };
-    DrawKind g_kinds[32] = {};
+    struct DrawKind { uint64_t ps, vs; int tags; long frame, drawsNow, drawsLast; unsigned count, inst; bool hide; };
+    DrawKind g_kinds[48] = {};
     int      g_kindN = 0;
     SRWLOCK  g_kindLock = SRWLOCK_INIT;
     volatile LONG g_probeHits = 0, g_probeDropped = 0;
+    void* volatile g_rainTex[2] = {};
+    uint64_t volatile g_hiddenPs[16] = {}, g_hiddenVs[16] = {};   // lock-free check on every draw
+    volatile LONG g_hiddenN = 0;
     long g_frameNow() { return (long)g_frame; }
-    bool probe_skip(ID3D11DeviceContext* c, UINT count)
+    void kind_note(uint64_t ph, uint64_t vh, int tag, UINT count, UINT inst)
+    {
+        const long f = g_frameNow();
+        AcquireSRWLockExclusive(&g_kindLock);
+        int k = 0;
+        for (; k < g_kindN; ++k) if (g_kinds[k].ps == ph && g_kinds[k].vs == vh) break;
+        if (k == g_kindN && g_kindN < 48) g_kinds[g_kindN++] = { ph, vh, 0, f, 0, 0, 0, 0, false };
+        if (k < 48)
+        {
+            DrawKind& d = g_kinds[k];
+            d.tags |= tag;
+            if (d.frame != f) { d.drawsLast = d.drawsNow; d.drawsNow = 0; d.frame = f; }
+            if (tag) { ++d.drawsNow; d.count = count; d.inst = inst; }
+        }
+        ReleaseSRWLockExclusive(&g_kindLock);
+    }
+    bool probe_skip(ID3D11DeviceContext* c, UINT count, UINT inst = 1)
     {
         if (!g_probePs) return false;
         CtxSh* s = ctx_sh(c, false);
-        if (!s || !s->ps || sh_get(s->ps) != g_probePs) return false;
-        InterlockedIncrement(&g_probeHits);
-        ID3D11ShaderResourceView* srv[2] = {};
-        c->PSGetShaderResources(0, 2, srv);
-        void* t0 = srv[0]; void* t1 = srv[1];
-        if (srv[0]) srv[0]->Release();
-        if (srv[1]) srv[1]->Release();
-        const uint64_t vh = sh_get(s->vs);
-        const long f = g_frameNow();
+        if (!s || !s->ps) return false;
+        const uint64_t ph = sh_get(s->ps), vh = sh_get(s->vs);
         bool hide = false;
-        AcquireSRWLockExclusive(&g_kindLock);
-        int k = 0;
-        for (; k < g_kindN; ++k) if (g_kinds[k].vs == vh && g_kinds[k].t0 == t0 && g_kinds[k].t1 == t1) break;
-        if (k == g_kindN && g_kindN < 32) g_kinds[g_kindN++] = { vh, t0, t1, f, 0, 0, 0, false };
-        if (k < 32)
+        for (LONG i = 0; i < g_hiddenN && !hide; ++i) hide = g_hiddenPs[i] == ph && g_hiddenVs[i] == vh;
+        if (ph == g_probePs)
         {
-            DrawKind& d = g_kinds[k];
-            if (d.frame != f) { d.drawsLast = d.drawsNow; d.drawsNow = 0; d.frame = f; }
-            ++d.drawsNow; d.count = count; hide = d.hide;
+            InterlockedIncrement(&g_probeHits);
+            g_rainTex[0] = s->srv[0]; g_rainTex[1] = s->srv[1];
+            kind_note(ph, vh, 1, count, inst);                           // R
+            for (int j = 0; j < 12; ++j)                                 // B: the 12 before it
+                if (s->ringPs[j] && s->ringPs[j] != ph) kind_note(s->ringPs[j], s->ringVs[j], 4, 0, 0);
+            s->sinceRain = 1;                                            // 0 = no rain yet on this context
         }
-        ReleaseSRWLockExclusive(&g_kindLock);
+        else
+        {
+            int tag = 0;
+            for (int j = 0; j < 8; ++j)
+                if (s->srv[j] && (s->srv[j] == g_rainTex[0] || s->srv[j] == g_rainTex[1])) tag |= 2;   // T
+            if (s->sinceRain > 0 && s->sinceRain <= 12) { tag |= 8; ++s->sinceRain; }   // A
+            if (tag) kind_note(ph, vh, tag, count, inst);
+        }
+        s->ringPs[s->ringAt] = ph; s->ringVs[s->ringAt] = vh; s->ringAt = (s->ringAt + 1) % 12;
         if (hide) InterlockedIncrement(&g_probeDropped);
         return hide;
     }
@@ -703,7 +737,7 @@ namespace {
         static void __stdcall DrawIdxInst(ID3D11DeviceContext* c, UINT a, UINT i, UINT s, INT b, UINT si)
         {
             note_draw(c, L);
-            if (L == 0 && probe_skip(c, a)) return;   // DRAWPROBE
+            if (L == 0 && probe_skip(c, a, i)) return;   // DRAWPROBE
             if (L == 0 && snoop_ctx(c)) mark_record(c, split_now(c), a, i);   // MARKREC
             if (L == 0 && split_now(c) && layer_only_now()) { layer_only_pre(c); oDrawIdxInst(c, a, i, s, b, si); layer_only_post(c); return; }   // PSMARK
             if (L == 0 && split_now(c)) { split_pre(c); oDrawIdxInst(c, a, i, s, b, si); split_mid(c); oDrawIdxInst(c, a, i, s, b, si); split_post(c); return; }
@@ -719,7 +753,7 @@ namespace {
         static void __stdcall DrawInst(ID3D11DeviceContext* c, UINT a, UINT i, UINT s, UINT si)
         {
             note_draw(c, L);
-            if (L == 0 && probe_skip(c, a)) return;   // DRAWPROBE
+            if (L == 0 && probe_skip(c, a, i)) return;   // DRAWPROBE
             if (L == 0 && snoop_ctx(c)) mark_record(c, split_now(c), a, i);   // MARKREC
             if (L == 0 && split_now(c) && layer_only_now()) { layer_only_pre(c); oDrawInst(c, a, i, s, si); layer_only_post(c); return; }   // PSMARK
             if (L == 0 && split_now(c)) { split_pre(c); oDrawInst(c, a, i, s, si); split_mid(c); oDrawInst(c, a, i, s, si); split_post(c); return; }
@@ -1210,6 +1244,7 @@ namespace {
         hook_slot(gvt, nullptr, 7, (void*)&hkVSSetCB, (void**)&oVSSetCB);
         hook_slot(gvt, nullptr, 16, (void*)&hkPSSetCB, (void**)&oPSSetCB);   // PSMARK
         hook_slot(gvt, nullptr, 9, (void*)&hkPSSetG, (void**)&oPSSetG);      // DRAWPROBE: PSSetShader
+        hook_slot(gvt, nullptr, 8, (void*)&hkPSSetSRVG, (void**)&oPSSetSRVG);   // DRAWPROBE2: PSSetShaderResources
         hook_slot(gvt, nullptr, 14, (void*)&hkMapG, (void**)&oMapG);
         hook_slot(gvt, nullptr, 15, (void*)&hkUnmapG, (void**)&oUnmapG);
         hook_slot(gvt, nullptr, 48, (void*)&hkUpdSubG, (void**)&oUpdSubG);
@@ -1533,23 +1568,14 @@ float akvr_hudsplit_bottom() { return g_bottomPct; }
 
 // DRAWPROBE: the kinds of draw that use the probed pixel shader, for the panel.
 int akvr_probe_kind_count() { return g_kindN; }
-bool akvr_probe_kind(int i, unsigned long long& vs, int& tex0, int& tex1, long& draws, unsigned& count, bool& seenNow, bool& hide)
+bool akvr_probe_kind(int i, unsigned long long& ps, unsigned long long& vs, int& tags, long& draws, unsigned& count,
+                     unsigned& inst, bool& seenNow, bool& hide)
 {
     if (i < 0 || i >= g_kindN) return false;
     AcquireSRWLockShared(&g_kindLock);
     const DrawKind d = g_kinds[i];
-    // textures as small numbers, in order of first appearance across the kinds
-    void* seen[64]; int ns = 0;
-    auto id = [&](void* p) -> int {
-        if (!p) return 0;
-        for (int k = 0; k < ns; ++k) if (seen[k] == p) return k + 1;
-        if (ns < 64) seen[ns++] = p;
-        return ns;
-    };
-    for (int k = 0; k <= i; ++k) { id(g_kinds[k].t0); id(g_kinds[k].t1); }
-    tex0 = id(d.t0); tex1 = id(d.t1);
     ReleaseSRWLockShared(&g_kindLock);
-    vs = d.vs; count = d.count; hide = d.hide;
+    ps = d.ps; vs = d.vs; tags = d.tags; count = d.count; inst = d.inst; hide = d.hide;
     seenNow = (long)g_frame - d.frame < 90;
     draws = d.frame == (long)g_frame ? d.drawsNow : d.drawsLast;
     return true;
@@ -1558,6 +1584,11 @@ void akvr_probe_kind_hide(int i, bool on)
 {
     AcquireSRWLockExclusive(&g_kindLock);
     if (i >= 0 && i < g_kindN) g_kinds[i].hide = on;
+    // rebuild the lock-free hidden list the draw hooks read
+    LONG n = 0;
+    for (int k = 0; k < g_kindN && n < 16; ++k)
+        if (g_kinds[k].hide) { g_hiddenPs[n] = g_kinds[k].ps; g_hiddenVs[n] = g_kinds[k].vs; ++n; }
+    InterlockedExchange(&g_hiddenN, n);
     ReleaseSRWLockExclusive(&g_kindLock);
 }
 const char* akvr_probe_diag()

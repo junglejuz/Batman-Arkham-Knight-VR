@@ -30,9 +30,11 @@ void        akvr_hudsplit_layer_shot(const wchar_t* path);
 void        akvr_hudsplit_marks_dump(const wchar_t* path);    // MARKREC: F2, what the HUD shaders get   // LAYERSHOT: save the HUD layer image (next readback)
 struct IUnknown;
 void        akvr_hudsplit_watch_device(IUnknown* dev);   // VSID: recognise the 13 patched HUD vertex shaders
-// DRAWPROBE: the kinds of draw (vertex shader + PS textures 0/1) that use the watched pixel shader (the rain)
+// DRAWPROBE2: draw kinds (pixel + vertex shader pair) around the rain particles. tags: 1 the rain particles,
+// 2 uses a rain texture, 4 drawn just before the rain, 8 drawn just after it
 int         akvr_probe_kind_count();
-bool        akvr_probe_kind(int i, unsigned long long& vs, int& tex0, int& tex1, long& draws, unsigned& count, bool& seenNow, bool& hide);
+bool        akvr_probe_kind(int i, unsigned long long& ps, unsigned long long& vs, int& tags, long& draws, unsigned& count,
+                            unsigned& inst, bool& seenNow, bool& hide);
 void        akvr_probe_kind_hide(int i, bool on);
 const char* akvr_probe_diag();
 const char* akvr_hudsplit_vs_diag();

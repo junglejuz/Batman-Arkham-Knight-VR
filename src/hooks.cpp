@@ -1858,7 +1858,7 @@ namespace
         // default". Each section is a closed collapsing header; the status line and the two buttons
         // above stay visible.
         ImGui::Separator();
-        if (ImGui::CollapsingHeader("VIEW"))
+        ImGui::SetNextItemOpen(false, ImGuiCond_Once); if (ImGui::CollapsingHeader("VIEW"))
         {
             if (akvr_xr_native())
             {
@@ -1989,6 +1989,7 @@ namespace
         }
 
         // ---- HUD ----------------------------------------------------------------
+        ImGui::SetNextItemOpen(false, ImGuiCond_Once);   // closed at each launch
         if (part_hint_any()) ImGui::SetNextItemOpen(true, ImGuiCond_Once);   // PARTOPEN
         if (ImGui::CollapsingHeader("HUD"))
         {
@@ -2085,7 +2086,7 @@ namespace
         // ---- ZOOM VIGNETTE (ZOOMVIG 2026-09-29, JJ) --------------------------------------
         // The right-stick-click zoom: our lock keeps the view 1:1, so only the game's 2D overlay was left.
         // Our own dark edge instead, while the game's own view is narrower than the threshold.
-        if (ImGui::CollapsingHeader("ZOOM VIGNETTE"))
+        ImGui::SetNextItemOpen(false, ImGuiCond_Once); if (ImGui::CollapsingHeader("ZOOM VIGNETTE"))
         {
             static bool s_vigDirty = false;
             float vs = akvr_xr_vig_strength();
@@ -2104,55 +2105,35 @@ namespace
         // ---- FIND A SHADER (SHADERFINDER 2026-10-01) ----------------------------------------------
         // JJ: "Is there a way I can do this without being at the actual physical keyboard?" geo-11's shader finder
         // (hunting=2 in the fix's d3dx.ini, FIX_CHANGES 3c) listens for numpad keys; these buttons press them.
-        if (ImGui::CollapsingHeader("FIND A SHADER (geo-11)"))
+        // DRAWPROBE2 (JJ 2026-10-01: one rain row only, "there must be other rain shaders"; the step-through rows
+        // are not something JJ will use - removed). The world rain particles and the draws around them, by shader pair.
+        ImGui::SetNextItemOpen(false, ImGuiCond_Once); if (ImGui::CollapsingHeader("RAIN LAYERS"))
         {
-            ImGui::TextWrapped("Turn the finder on, then in one row press 'hide the next one' until the thing you are "
-                               "after disappears, and 'record it'. Turn the finder off when done.");
-            if (ImGui::Button("finder on / off")) finder_press(VK_NUMPAD0);
-            // JJ 2026-10-01: the rain pixel shader (5d787946eda54077) draws BOTH the world rain and the layer stuck to
-            // the head, so the next things to step through are what places it: vertex shaders, then its buffers.
-            struct Row { const char* what; WORD prev, next, mark; };
-            static const Row rows[] = {
-                { "colour (pixel shaders)",      VK_NUMPAD1, VK_NUMPAD2, VK_NUMPAD3 },
-                { "position (vertex shaders)",   VK_NUMPAD4, VK_NUMPAD5, VK_NUMPAD6 },
-                { "shapes (index buffers)",      VK_NUMPAD7, VK_NUMPAD8, VK_NUMPAD9 },
-                { "points (vertex buffers)",     VK_DIVIDE,  VK_MULTIPLY, VK_SUBTRACT },
-            };
-            for (const Row& r : rows)
-            {
-                ImGui::PushID(r.what);
-                ImGui::TextUnformatted(r.what);
-                ImGui::SameLine(260.0f);
-                if (ImGui::Button("previous")) finder_press(r.prev);
-                ImGui::SameLine();
-                if (ImGui::Button("hide the next one")) finder_press(r.next);
-                ImGui::SameLine();
-                if (ImGui::Button("record it")) finder_press(r.mark);
-                ImGui::PopID();
-            }
-            ImGui::TextDisabled("   key presses sent: %ld", g_fkPresses);
-            // DRAWPROBE (JJ: the finder "took a lot of button presses"): the rain draws, listed directly
-            ImGui::Separator();
-            ImGui::TextWrapped("Rain draws: tick 'hide' on one row at a time until the layer stuck to your head "
-                               "disappears (the finder does not need to be on).");
+            ImGui::TextWrapped("Everything drawn with or next to the rain. Tick 'hide' on one row at a time, in the "
+                               "rain, until the layer stuck to your head disappears.");
             const int nk = akvr_probe_kind_count();
             if (nk == 0) ImGui::TextDisabled("   no rain drawn yet");
             for (int i = 0; i < nk; ++i)
             {
-                unsigned long long vs = 0; int t0 = 0, t1 = 0; long draws = 0; unsigned cnt = 0; bool seen = false, hide = false;
-                if (!akvr_probe_kind(i, vs, t0, t1, draws, cnt, seen, hide)) continue;
+                unsigned long long ps = 0, vs = 0; int tags = 0; long draws = 0; unsigned cnt = 0, inst = 0;
+                bool seen = false, hide = false;
+                if (!akvr_probe_kind(i, ps, vs, tags, draws, cnt, inst, seen, hide)) continue;
+                const char* what = (tags & 1) ? "the world rain"
+                                 : (tags & 2) ? "uses the rain's picture"
+                                 : (tags & 4) ? "drawn just before the rain" : "drawn just after the rain";
                 ImGui::PushID(i);
                 if (ImGui::Checkbox("hide", &hide)) akvr_probe_kind_hide(i, hide);
                 ImGui::SameLine();
-                ImGui::Text("rain %d: position shader %016llx, textures %d/%d, %ld draws a frame, %u points%s",
-                            i + 1, vs, t0, t1, draws, cnt, seen ? "" : "  (not seen now)");
+                ImGui::Text("%2d  %-28s %s", i + 1, what, seen ? "" : "(not on screen now)");
+                ImGui::SameLine();
+                ImGui::TextDisabled("  %016llx / %016llx  %ld x %u x %u", ps, vs, draws, cnt, inst);
                 ImGui::PopID();
             }
             ImGui::TextDisabled("   %s", akvr_probe_diag());
         }
 
         // ---- MENUS AND SCREENS ------------------------------------------------------
-        if (ImGui::CollapsingHeader("MENUS AND SCREENS"))
+        ImGui::SetNextItemOpen(false, ImGuiCond_Once); if (ImGui::CollapsingHeader("MENUS AND SCREENS"))
         {
             bool scrMode = akvr_xr_screen_mode();
             if (ImGui::Checkbox("float as a screen now  (Pause key)", &scrMode))
@@ -2208,7 +2189,7 @@ namespace
         }
 
         // ---- FRAME RATE (geo-11 only) -------------------------------------------------
-        if (akvr_xr_native() && ImGui::CollapsingHeader("FRAME RATE"))
+        ImGui::SetNextItemOpen(false, ImGuiCond_Once); if (akvr_xr_native() && ImGui::CollapsingHeader("FRAME RATE"))
         {
             // FPSLOCK (xr.cpp): every game frame held for the same number of refreshes.
             {
@@ -2271,7 +2252,7 @@ namespace
         // TIDY3 2026-09-27 (JJ): experiments and settled switches off the panel. Shown only
         // with advancedpanel=1 in akvr_settings.ini (not written back, so it stays opt-in).
         if (g_showAdvanced) ImGui::Separator();
-        if (g_showAdvanced && ImGui::CollapsingHeader("Advanced  (tests - leave alone)"))
+        ImGui::SetNextItemOpen(false, ImGuiCond_Once); if (g_showAdvanced && ImGui::CollapsingHeader("Advanced  (tests - leave alone)"))
         {
             uint32_t bbw = 0, bbh = 0; akvr_xr_backbuffer_size(bbw, bbh);
 
@@ -2432,7 +2413,7 @@ namespace
         }
 
         // ---- DIAGNOSTICS (folded) ------------------------------------------------
-        if (ImGui::CollapsingHeader("Diagnostics"))
+        ImGui::SetNextItemOpen(false, ImGuiCond_Once); if (ImGui::CollapsingHeader("Diagnostics"))
         {
             float hz = akvr_xr_headset_hz();
             ImGui::TextDisabled("%.0f fps   headset %.0f Hz   VR: %s", io.Framerate, hz,
@@ -2498,7 +2479,7 @@ namespace
         }
 
         // ---- KEYBOARD SHORTCUTS (folded) -----------------------------------------
-        if (ImGui::CollapsingHeader("Keyboard shortcuts"))
+        ImGui::SetNextItemOpen(false, ImGuiCond_Once); if (ImGui::CollapsingHeader("Keyboard shortcuts"))
         {
             ImGui::TextDisabled("F8 show/hide this panel   |   hold both stick clicks = use it with the controller");
             ImGui::TextDisabled("F12 recenter   |   F11 head tracking on/off   |   Pause/Break float as a screen");
@@ -2598,7 +2579,7 @@ namespace
             float pvRatio = 0.0f, pvFov = 0.0f; int pvHits = 0;
             akvr_projvr_diag(pvRatio, pvHits, pvFov);
             fprintf(f, "\npatches:\n");
-            fprintf(f, "   build: DRAWPROBE " __DATE__ " " __TIME__ "\n");
+            fprintf(f, "   build: DRAWPROBE2 " __DATE__ " " __TIME__ "\n");
             fprintf(f, "   zoom vignette: %s\n", akvr_xr_vig_diag());
             fprintf(f, "   pause look: %s, %s now, main view through the player camera: %s, head writes into the paused camera: %ld, darken %.0f%%\n",
                     akvr_xr_pause_look() ? "ON" : "off", akvr_xr_pause_live() ? "LIVE" : "not live",
@@ -2606,10 +2587,12 @@ namespace
             fprintf(f, "   rain probe: %s\n", akvr_probe_diag());   // DRAWPROBE
             for (int i = 0; i < akvr_probe_kind_count(); ++i)
             {
-                unsigned long long vs = 0; int t0 = 0, t1 = 0; long draws = 0; unsigned cnt = 0; bool seen = false, hide = false;
-                if (akvr_probe_kind(i, vs, t0, t1, draws, cnt, seen, hide))
-                    fprintf(f, "      rain %d: VS %016llx, textures %d/%d, %ld draws/frame, %u points, %s%s\n",
-                            i + 1, vs, t0, t1, draws, cnt, seen ? "seen now" : "not seen now", hide ? ", HIDDEN" : "");
+                unsigned long long ps = 0, vs = 0; int tags = 0; long draws = 0; unsigned cnt = 0, inst = 0;
+                bool seen = false, hide = false;
+                if (akvr_probe_kind(i, ps, vs, tags, draws, cnt, inst, seen, hide))
+                    fprintf(f, "      %2d: PS %016llx VS %016llx tags %s%s%s%s, %ld draws/frame, %u points x %u, %s%s\n",
+                            i + 1, ps, vs, (tags & 1) ? "R" : "", (tags & 2) ? "T" : "", (tags & 4) ? "B" : "", (tags & 8) ? "A" : "",
+                            draws, cnt, inst, seen ? "seen now" : "not seen now", hide ? ", HIDDEN" : "");
             }
             fprintf(f, "   native capture timing: %s Present (comparison test)\n", g_nativeAfterPresent ? "AFTER" : "BEFORE");
             {

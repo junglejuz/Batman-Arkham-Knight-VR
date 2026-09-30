@@ -114,6 +114,15 @@ the VS/PS bound per game-side context (PSSetShader slot 9 hook + Det<0>::VSSet),
 one "hide" tick per kind (the draw is dropped); F2 status lists the kinds ("rain probe"). Session-only; once JJ finds
 the head-locked kind, make it a fixed rule (by VS hash if that separates it; texture pointers do not persist).
 
+**DRAWPROBE2 (2026-10-01, deployed, untested):** JJ's DRAWPROBE screenshot: ONE kind, VS f50d1365e929b3a0 (the
+fix's ShaderFixesDM copy: instanced GPU particles from a structured buffer, placed through the view-projection), 6
+indices = the WORLD rain. So PS 5d787946eda54077 is the world rain; the head-locked layer is a different draw (likely
+a camera-attached rain mesh). Panel section is now "RAIN LAYERS" (the numpad step rows are gone; JJ won't use them):
+kinds by PS+VS pair, tagged R (rain particles), T (binds one of the rain's PS textures, tracked by a new
+PSSetShaderResources slot-8 hook), B/A (12 draws before/after the rain on the same context); a hide tick drops that
+pair everywhere. F2 status lists them with hashes. All panel sections now start closed each launch (JJ: "close all
+the HUD drawers").
+
 ## PAUSELOOK + PAUSEDIM (2026-09-30, deployed to JJ's game only; JJ: "a good start")
 
 JJ: pause as in Sekiro — "the whole 360 world to freeze, darken, and then add the pause screen menus over the top",
