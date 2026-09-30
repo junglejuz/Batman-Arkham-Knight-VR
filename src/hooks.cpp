@@ -2124,12 +2124,17 @@ namespace
                 ImGui::PopID();
             }
             // RAINPARTS (JJ: the stuck streaks are part of the world rain draw)
-            int parts = akvr_probe_rain_parts();
-            if (ImGui::SliderInt("world rain: eighths drawn (8 = all)", &parts, 0, 8)) akvr_probe_rain_parts_set(parts);
+            // RAINPARTS2: a streak count in steps of 256 (the stuck streaks are at the start of the list)
+            const int parts = akvr_probe_rain_parts();
+            if (parts < 0) ImGui::Text("world rain: all streaks drawn");
+            else ImGui::Text("world rain: only the first %d streaks drawn", parts);
+            if (ImGui::Button("start at 2560##rp")) akvr_probe_rain_parts_set(2560);
             ImGui::SameLine();
-            if (ImGui::Button("-##rp")) akvr_probe_rain_parts_set(akvr_probe_rain_parts() - 1);
+            if (ImGui::Button("256 fewer##rp")) akvr_probe_rain_parts_set(parts < 0 ? 2560 : (parts >= 256 ? parts - 256 : 0));
             ImGui::SameLine();
-            if (ImGui::Button("+##rp")) akvr_probe_rain_parts_set(akvr_probe_rain_parts() + 1);
+            if (ImGui::Button("256 more##rp")) akvr_probe_rain_parts_set(parts < 0 ? -1 : parts + 256);
+            ImGui::SameLine();
+            if (ImGui::Button("draw all##rp")) akvr_probe_rain_parts_set(-1);
             bool all = akvr_probe_all_but_rain();
             if (ImGui::Checkbox("hide everything below except the world rain", &all)) akvr_probe_all_but_rain_set(all);
             // DRAWPROBE4 (JJ: with all see-through draws hidden the stuck rain stays): the wider tests
@@ -2661,12 +2666,12 @@ namespace
             float pvRatio = 0.0f, pvFov = 0.0f; int pvHits = 0;
             akvr_projvr_diag(pvRatio, pvHits, pvFov);
             fprintf(f, "\npatches:\n");
-            fprintf(f, "   build: RAINPARTS " __DATE__ " " __TIME__ "\n");
+            fprintf(f, "   build: RAINPARTS2 " __DATE__ " " __TIME__ "\n");
             fprintf(f, "   zoom vignette: %s\n", akvr_xr_vig_diag());
             fprintf(f, "   pause look: %s, %s now, main view through the player camera: %s, head writes into the paused camera: %ld, darken %.0f%%\n",
                     akvr_xr_pause_look() ? "ON" : "off", akvr_xr_pause_live() ? "LIVE" : "not live",
                     akvr_camera_main_view_live() ? "yes" : "no", akvr_camera_pause_writes(), akvr_xr_pause_dim() * 100.0f);
-            fprintf(f, "   rain probe: %s | every draw off %d, all compute off %d, see-through off %d, world rain eighths %d\n",
+            fprintf(f, "   rain probe: %s | every draw off %d, all compute off %d, see-through off %d, world rain streak cut %d\n",
                     akvr_probe_diag(), akvr_probe_every_draw() ? 1 : 0, akvr_probe_all_cs() ? 1 : 0, akvr_probe_all_but_rain() ? 1 : 0,
                     akvr_probe_rain_parts());   // DRAWPROBE, RAINPARTS
             for (int i = 0; i < akvr_probe_cs_count(); ++i)   // DRAWPROBE4

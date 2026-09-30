@@ -546,13 +546,15 @@ namespace {
     // hidden the stuck layer stays: the stuck streaks are INSTANCES of the world rain draw (6 x 20480, VS
     // f50d1365e929b3a0 reads each streak from a structured buffer by SV_InstanceID). Test: draw only the first
     // g_rainParts/8 of the instances (SV_InstanceID ignores StartInstanceLocation, so only the tail can be cut).
-    volatile LONG g_rainParts = 8;
+    // RAINPARTS2 (JJ: at 1/8 the stuck layer is still there with only a few world drops; gone at 0): the stuck
+    // streaks are at the START of the instance list. The cut is now a streak count (-1 = all) to find where they end.
+    volatile LONG g_rainParts = -1;
     UINT rain_inst(ID3D11DeviceContext* c, UINT inst)
     {
-        if (g_rainParts >= 8) return inst;
+        if (g_rainParts < 0) return inst;
         CtxSh* s = ctx_sh(c, false);
         if (!s || !s->ps || sh_get(s->ps) != g_probePs) return inst;
-        return (UINT)(((unsigned long long)inst * (unsigned long long)g_rainParts) / 8ull);
+        return inst < (UINT)g_rainParts ? inst : (UINT)g_rainParts;
     }
 
     // DRAWPROBE4 2026-10-01 — JJ: with every see-through draw hidden, the stuck rain is STILL there. Two blind spots:
@@ -1761,7 +1763,7 @@ void akvr_probe_group_hide(unsigned long long vs, bool on)
 bool akvr_probe_all_but_rain() { return g_hideAllButRain; }
 void akvr_probe_all_but_rain_set(bool on) { g_hideAllButRain = on; }
 int  akvr_probe_rain_parts() { return (int)g_rainParts; }               // RAINPARTS
-void akvr_probe_rain_parts_set(int v) { InterlockedExchange(&g_rainParts, v < 0 ? 0 : (v > 8 ? 8 : v)); }
+void akvr_probe_rain_parts_set(int v) { InterlockedExchange(&g_rainParts, v < 0 ? -1 : (v > 20480 ? 20480 : v)); }
 bool akvr_probe_every_draw() { return g_hideEveryDraw; }                 // DRAWPROBE4
 void akvr_probe_every_draw_set(bool on) { g_hideEveryDraw = on; }
 bool akvr_probe_all_cs() { return g_hideAllCs; }
