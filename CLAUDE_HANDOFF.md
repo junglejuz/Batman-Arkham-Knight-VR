@@ -166,6 +166,12 @@ stub's saved base rotator, UE3 FRotationMatrix convention); mode 2 hides them. T
 limit: the base rotator is the latest finalize's, so during STICK turns it may lead the drawn frame by one frame
 (slight swim of the near rain); head turns use the draw's own matrix, exact. If the block still follows the head in
 mode 1, check the F2 "near rain:" line (binds / without axes) and the sign conventions first.
+**NEARRAIN2 (deployed + applied, untested):** JJ on v1: head TRANSLATION fixed, but head ROTATION still turns the
+block. Suspect: the game places the block with an older camera than the draw's. The mod now records (base, drawn)
+rotators every Present (camera.cpp `akvr_camera_record_rotators`, ring of 16) and, with "camera frames back" N > 0
+(setting `nearrainlag`), sends that frame's pair in cb12[0..5]; the shader (step 1h v2) uses it instead of its own
+view-projection. JJ to find the N where the block stops turning; if none does, the block is not a rigid camera
+rotation (e.g. wrapped in a camera-aligned box) -> recommend "hidden".
 HUNTRAIN d3dx.ini lines (hunting=2 etc.) are still on JJ's game: restore `diagnostics/before-HUNTRAIN-20261001/d3dx.ini`
 once the rain is settled; the finder-mark dumps (5d78...-ps) were deleted.
 
