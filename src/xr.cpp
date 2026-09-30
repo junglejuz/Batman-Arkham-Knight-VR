@@ -1035,6 +1035,9 @@ XrQuaternionf hud_qmul(const XrQuaternionf &a, const XrQuaternionf &b) {
 // game's straight ahead - and left there. Turning the head looks around it; the compositor keeps it put.
 int g_hudSpace = 2;          // 0 LOCAL (re-placed per frame), 1 VIEW (attached to the head), 2 fixed in the room
 bool g_hudMenuNow = false;   // MENUSIZE: the layer carries the live main menu (xr.cpp's menuLive)
+bool g_pauseLook = true;     // PAUSELOOK setting: the pause in full view (off: the old floating window)
+bool g_pauseLive = false;    // PAUSELOOK: live now
+float g_pauseDim = 0.5f;     // PAUSEDIM: 0 = no darkening, 1 = black (JJ: "just darker")
 bool g_hudWorldOk = false;   // mode 2: anchor taken since the last recenter
 XrPosef g_hudWorldAnchor{};  // mode 2: level head pose at the recenter, LOCAL space
 // HUDLAYER5 — JJ on HUDLAYER4: the HUD distance slider still changes nothing, though the log shows the
@@ -1110,6 +1113,19 @@ bool hud_place(XrCompositionLayerQuad &q, XrTime t) {
   q.pose.orientation = hud_qmul(head, g_hudViewPose.orientation);
   q.pose.position = {loc.pose.position.x + o.x, loc.pose.position.y + o.y, loc.pose.position.z + o.z};
   return true;
+}
+
+// PAUSELOOK: the pause menu hangs in the room straight ahead of where you look when the pause starts (a new anchor
+// from the next placement); the recentre anchor comes back when it ends (SKVR MENUAIM).
+bool g_pauseAnchorSaved = false, g_savedWorldOk = false;
+XrPosef g_savedWorldAnchor{};
+void hud_pause_anchor(bool on) {
+  if (on) {
+    g_savedWorldAnchor = g_hudWorldAnchor; g_savedWorldOk = g_hudWorldOk; g_pauseAnchorSaved = true;
+    g_hudWorldOk = false;
+  } else if (g_pauseAnchorSaved) {
+    g_hudWorldAnchor = g_savedWorldAnchor; g_hudWorldOk = g_savedWorldOk; g_pauseAnchorSaved = false;
+  }
 }
 
 // HUDLAYER5: the placed quad as a left/right pair, each moved along the quad's own right axis.
@@ -1285,7 +1301,8 @@ bool hud_layer_build(XrCompositionLayerQuad &q, const XrFovf &fov) {
   g_hudViewPose.orientation = ori;
   // MENUSIZE 2026-09-30 — JJ: with the whole main menu on the layer "the menu text elements are too big". On the
   // menu the quad follows the panel's "main menu size" (the floating menu screen's own size), about its centre.
-  const float ms = g_hudMenuNow ? (g_screenFovScale < 0.1f ? 0.1f : (g_screenFovScale > 1.0f ? 1.0f : g_screenFovScale)) : 1.0f;
+  const float msz = g_pauseLive ? g_pauseFovScale : g_screenFovScale;   // PAUSELOOK: the pause menu at the pause size
+  const float ms = g_hudMenuNow ? (msz < 0.1f ? 0.1f : (msz > 1.0f ? 1.0f : msz)) : 1.0f;
   g_hudViewPose.position = quat_rotate(ori, XrVector3f{ms * D * (tr + tl) * 0.5f, ms * D * (tu + td) * 0.5f, -D});
   q.layerFlags = XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT;   // premultiplied (HUD-004)
   q.eyeVisibility = XR_EYE_VISIBILITY_BOTH;
@@ -1411,6 +1428,88 @@ bool vig_layer(XrCompositionLayerQuad &q, bool gameplay) {
 }
 XrCompositionLayerQuad g_vigQuad{XR_TYPE_COMPOSITION_LAYER_QUAD};
 bool g_vigHas = false;
+
+// PAUSEDIM 2026-09-30 — JJ: in the pause "the whole 360 world to freeze, darken, and then add the pause screen menus
+// over the top", "not fully darken to black. just darker". A plain see-through black VIEW-space quad (1 m ahead,
+// 5 m square = past the lenses) between the world and the HUD layer while the pause look runs; fades in and out.
+float g_pauseDimAmt = 0.0f;   // 0..1 fade
+XrSwapchain g_dimSwap = XR_NULL_HANDLE;
+std::vector<ID3D11Texture2D *> g_dimImages;
+float g_dimDrawn = -1.0f;
+int g_dimErr = 0;
+constexpr int kDimPx = 16;
+bool dim_fill(float a) {
+  if (!g_ctx) return false;
+  if (g_dimSwap == XR_NULL_HANDLE) {
+    if (g_dimErr) return false;
+    uint32_t n = 0;
+    xrEnumerateSwapchainFormats(g_session, 0, &n, nullptr);
+    std::vector<int64_t> formats(n);
+    xrEnumerateSwapchainFormats(g_session, n, &n, formats.data());
+    int64_t chosen = 0;   // black: only the alpha byte matters
+    for (int64_t f : formats)
+      if (f == DXGI_FORMAT_R8G8B8A8_UNORM || f == DXGI_FORMAT_B8G8R8A8_UNORM ||
+          f == DXGI_FORMAT_R8G8B8A8_UNORM_SRGB || f == DXGI_FORMAT_B8G8R8A8_UNORM_SRGB) { chosen = f; break; }
+    if (!chosen) { g_dimErr = 1; return false; }
+    XrSwapchainCreateInfo sci{XR_TYPE_SWAPCHAIN_CREATE_INFO};
+    sci.usageFlags = XR_SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT | XR_SWAPCHAIN_USAGE_TRANSFER_DST_BIT;
+    sci.format = chosen;
+    sci.sampleCount = 1;
+    sci.width = kDimPx;
+    sci.height = kDimPx;
+    sci.faceCount = 1;
+    sci.arraySize = 1;
+    sci.mipCount = 1;
+    if (XR_FAILED(xrCreateSwapchain(g_session, &sci, &g_dimSwap))) { g_dimSwap = XR_NULL_HANDLE; g_dimErr = 2; return false; }
+    uint32_t imgCount = 0;
+    xrEnumerateSwapchainImages(g_dimSwap, 0, &imgCount, nullptr);
+    std::vector<XrSwapchainImageD3D11KHR> imgs(imgCount, {XR_TYPE_SWAPCHAIN_IMAGE_D3D11_KHR});
+    xrEnumerateSwapchainImages(g_dimSwap, imgCount, &imgCount, (XrSwapchainImageBaseHeader *)imgs.data());
+    for (auto &i : imgs) g_dimImages.push_back(i.texture);
+  }
+  if (g_dimDrawn == a) return true;
+  uint32_t idx = 0;
+  XrSwapchainImageAcquireInfo ai{XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO};
+  if (XR_FAILED(xrAcquireSwapchainImage(g_dimSwap, &ai, &idx))) return false;
+  XrSwapchainImageWaitInfo wi{XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO};
+  wi.timeout = XR_INFINITE_DURATION;
+  const bool ok = XR_SUCCEEDED(xrWaitSwapchainImage(g_dimSwap, &wi)) && idx < g_dimImages.size();
+  if (ok) {
+    uint32_t px[kDimPx * kDimPx];
+    const uint32_t v = (uint32_t)(a * 255.0f + 0.5f) << 24;   // black, premultiplied
+    for (uint32_t &p : px) p = v;
+    g_ctx->UpdateSubresource(g_dimImages[idx], 0, nullptr, px, kDimPx * 4, 0);
+  }
+  XrSwapchainImageReleaseInfo ri{XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};
+  xrReleaseSwapchainImage(g_dimSwap, &ri);
+  if (!ok) return false;
+  g_dimDrawn = a;
+  return true;
+}
+bool dim_layer(XrCompositionLayerQuad &q) {
+  const float step = 1.0f / 12.0f;
+  const bool want = g_pauseLive && g_pauseDim > 0.0f;
+  g_pauseDimAmt = want ? (g_pauseDimAmt + step > 1.0f ? 1.0f : g_pauseDimAmt + step)
+                       : (g_pauseDimAmt - step < 0.0f ? 0.0f : g_pauseDimAmt - step);
+  if (g_pauseDimAmt <= 0.0f || g_viewSpace == XR_NULL_HANDLE) return false;
+  // 16 levels, so a fade rewrites the image a handful of times only
+  const float a = floorf(g_pauseDim * g_pauseDimAmt * 16.0f + 0.5f) / 16.0f;
+  if (a <= 0.0f || !dim_fill(a)) return false;
+  q = XrCompositionLayerQuad{XR_TYPE_COMPOSITION_LAYER_QUAD};
+  q.layerFlags = XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT;
+  q.space = g_viewSpace;
+  q.eyeVisibility = XR_EYE_VISIBILITY_BOTH;
+  q.subImage.swapchain = g_dimSwap;
+  q.subImage.imageArrayIndex = 0;
+  q.subImage.imageRect.offset = {0, 0};
+  q.subImage.imageRect.extent = {kDimPx, kDimPx};
+  q.pose.orientation = {0.0f, 0.0f, 0.0f, 1.0f};
+  q.pose.position = {0.0f, 0.0f, -kVigDist};
+  q.size = {kVigSize, kVigSize};
+  return true;
+}
+XrCompositionLayerQuad g_dimQuad{XR_TYPE_COMPOSITION_LAYER_QUAD};
+bool g_dimHas = false;
 } // namespace
 
 void  akvr_xr_set_projvr(bool on) { g_projvrOn = on; }
@@ -1699,9 +1798,10 @@ void akvr_xr_frame_begin() {
       XrFrameBeginInfo rb{XR_TYPE_FRAME_BEGIN_INFO};
       if (XR_FAILED(xrBeginFrame(g_session, &rb)))
         break;
-      const XrCompositionLayerBaseHeader *rl[6];
+      const XrCompositionLayerBaseHeader *rl[8];
       uint32_t rn = 0;
       if (g_rpHasProj) rl[rn++] = (const XrCompositionLayerBaseHeader *)&g_rpLayer;
+      if (g_rpHasProj && g_dimHas) rl[rn++] = (const XrCompositionLayerBaseHeader *)&g_dimQuad;   // PAUSEDIM
       // HUDLAYER4: the HUD is re-placed for THIS frame's display time (head-locked at 90 Hz).
       if (g_rpHasProj && g_rpHasHud && hud_place(g_rpHud, fs.predictedDisplayTime)) {
         if (g_hudEyes) {   // HUDLAYER5
@@ -2025,7 +2125,27 @@ void akvr_xr_frame_submit(IDXGISwapChain *swapChain, float gameFovDeg,
     }
     g_menu3dWas = m3;
   }
-  bool effGameplay = gameplay && !akvr_xr_screen_mode();
+  // PAUSELOOK 2026-09-30 — JJ: the pause as in Sekiro, "the whole 360 world to freeze, darken, and then add the pause
+  // screen menus over the top", instead of "a scaled down window floating in black space". A pause starts straight
+  // out of gameplay, after the main menu, with the world still 3D and still drawn through the player camera
+  // (camera.cpp: the main view's FOV = the camera's; the map draws from its own camera and keeps the old window).
+  // Live: shown exactly like gameplay (full view, the head drives the paused camera, camera.cpp pause_look_write),
+  // darkened (PAUSEDIM), and the whole UI on the room layer, hung in front of where you look, at the pause size.
+  {
+    // It may start within 1 s of gameplay ending (the FOV check can lag the pause by a few frames), never later:
+    // once a screen has settled as a window, it stays one.
+    static ULONGLONG s_lastGame = 0;
+    const ULONGLONG nowMs = GetTickCount64();
+    const bool keep = g_pauseLook && !gameplay && g_anamorphic && !g_forceScreen && !akvr_xr_screen_mode() &&
+                      (!g_autoMainMenu || g_menuPhase >= 2) && akvr_camera_main_view_live();
+    if (!keep) {
+      if (g_pauseLive) { g_pauseLive = false; mode_log("pause look off"); hud_pause_anchor(false); s_lastGame = 0; }
+    } else if (!g_pauseLive && s_lastGame && nowMs - s_lastGame < 1000) {
+      g_pauseLive = true; mode_log("pause look on"); hud_pause_anchor(true);
+    }
+    if (gameplay && !akvr_xr_screen_mode()) s_lastGame = nowMs;
+  }
+  bool effGameplay = (gameplay || g_pauseLive) && !akvr_xr_screen_mode();
   // EVGAME: on only after 1.5 s of steady gameplay (JJ: the first menu "doubled up briefly, then
   // normal" - gameplay was reported for a moment before the main menu was recognised); off at once.
   {
@@ -2039,10 +2159,10 @@ void akvr_xr_frame_submit(IDXGISwapChain *swapChain, float gameFovDeg,
     // MENUONE2 (JJ: the start screen's text "came in doubled, then the duplicate disappeared"): phase 0 -
     // before the main menu is confirmed - is splash / start screen too, so it counts as menu from the start.
     const bool menuLive = g_menu3d && g_autoMainMenu && g_menuPhase <= 1 && effGameplay;
-    g_hudMenuNow = menuLive;   // MENUSIZE
+    g_hudMenuNow = menuLive || g_pauseLive;   // MENUSIZE; PAUSELOOK: the pause menu too (whole UI, pause size)
     // HUDNOW 2026-09-30 — JJ: entering the game "the HUD elements are attached to your face and then it takes a couple
     // of seconds before they lock onto the world". The 1.5 s wait is the eye view's (EVGAME); the layer starts at once.
-    akvr_hudsplit_layer_gate(gp && !menuLive, menuLive);
+    akvr_hudsplit_layer_gate(gp && !menuLive && !g_pauseLive, menuLive || g_pauseLive);
   }
   if (effGameplay) {
     g_wasGameplay = true;
@@ -2547,10 +2667,13 @@ void akvr_xr_frame_submit(IDXGISwapChain *swapChain, float gameFovDeg,
   // HUDLAYER: the HUD image (hudsplit.cpp), head-locked by the compositor at every refresh.
   XrCompositionLayerQuad hudq{XR_TYPE_COMPOSITION_LAYER_QUAD};
   const bool hasHud = submitted && hud_layer_build(hudq, fov);
-  const XrCompositionLayerBaseHeader *layers[6];
+  const XrCompositionLayerBaseHeader *layers[8];
   uint32_t nLayers = 0;
   if (submitted)
     layers[nLayers++] = (const XrCompositionLayerBaseHeader *)&layer;
+  g_dimHas = submitted && dim_layer(g_dimQuad);   // PAUSEDIM: over the world, under the menus
+  if (g_dimHas)
+    layers[nLayers++] = (const XrCompositionLayerBaseHeader *)&g_dimQuad;
   XrCompositionLayerQuad hudL{XR_TYPE_COMPOSITION_LAYER_QUAD}, hudR{XR_TYPE_COMPOSITION_LAYER_QUAD};
   if (hasHud && g_hudEyes) {   // HUDLAYER5: eye shift
     hud_eye_pair(hudq, hudL, hudR);
@@ -2674,6 +2797,11 @@ void  akvr_xr_pause_aspect_set(float a) { g_pauseAspect = (a > 0.5f && a < 4.0f)
 void akvr_xr_screen_aspect_set(float a) { g_screenAspect = (a > 0.5f && a < 4.0f) ? a : 0.0f; }
 bool akvr_xr_screen_track() { return g_screenTrack; }
 void akvr_xr_screen_track_set(bool on) { g_screenTrack = on; }
+bool akvr_xr_pause_live() { return g_pauseLive; }
+bool akvr_xr_pause_look() { return g_pauseLook; }
+void akvr_xr_pause_look_set(bool on) { g_pauseLook = on; }
+float akvr_xr_pause_dim() { return g_pauseDim; }
+void akvr_xr_pause_dim_set(float v) { g_pauseDim = v < 0.0f ? 0.0f : (v > 0.9f ? 0.9f : v); }
 bool akvr_xr_screen_frozen() {
   if (g_forceScreen && g_screenTrack) return false;
   return akvr_xr_screen_mode();

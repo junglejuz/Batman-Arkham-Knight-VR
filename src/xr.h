@@ -49,6 +49,11 @@ const char* akvr_xr_display_status();   // headset-display line for the overlay
 void        akvr_xr_screen_mode_toggle(); // F6: force the image to float world-fixed (menus)
 bool        akvr_xr_screen_mode();
 bool        akvr_xr_screen_frozen();               // screen mode AND the camera ignores the head
+bool        akvr_xr_pause_live();                  // PAUSELOOK: paused, shown in full view, head drives the camera
+bool        akvr_xr_pause_look();                  // PAUSELOOK: the setting
+void        akvr_xr_pause_look_set(bool on);
+float       akvr_xr_pause_dim();                   // PAUSEDIM: how much darker the paused world is (0..0.9)
+void        akvr_xr_pause_dim_set(float v);
 bool        akvr_xr_screen_track();                // SCREENTRACK: head tracking in the floating screen
 void        akvr_xr_screen_track_set(bool on);
 float       akvr_xr_screen_aspect();               // SCREENWIDE: 0 = picture shape, else width/height

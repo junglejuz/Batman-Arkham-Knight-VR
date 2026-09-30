@@ -819,6 +819,7 @@ namespace
         fprintf(f, "splashscreen=%.3f\n", akvr_xr_splash_zoom());   // SPLASHSIZE
         fprintf(f, "loadscreen=%.3f\n", akvr_xr_load_zoom());   // LOADSIZE
         fprintf(f, "loadup=%.1f\n", akvr_xr_load_up());   // LOADUP
+        fprintf(f, "pauselook=%d\npausedim=%.2f\n", akvr_xr_pause_look() ? 1 : 0, akvr_xr_pause_dim());   // PAUSELOOK / PAUSEDIM
         fprintf(f, "pauseaspect=%.3f\n", akvr_xr_pause_aspect());
         fprintf(f, "automainmenu=%d\n", akvr_xr_auto_main_menu() ? 1 : 0);
         fprintf(f, "fullview=%d\n", akvr_xr_full_view() ? 1 : 0);
@@ -931,6 +932,8 @@ namespace
             else if (sscanf(line, "splashscreen=%f", &v) == 1) akvr_xr_splash_zoom_set(v);   // SPLASHSIZE
             else if (sscanf(line, "loadscreen=%f", &v) == 1) akvr_xr_load_zoom_set(v);   // LOADSIZE
             else if (sscanf(line, "loadup=%f", &v) == 1) akvr_xr_load_up_set(v);   // LOADUP
+            else if (sscanf(line, "pauselook=%d", &iv) == 1) akvr_xr_pause_look_set(iv != 0);   // PAUSELOOK
+            else if (sscanf(line, "pausedim=%f", &v) == 1) akvr_xr_pause_dim_set(v);   // PAUSEDIM
             else if (sscanf(line, "pauseaspect=%f", &v) == 1) akvr_xr_pause_aspect_set(v);
             else if (sscanf(line, "automainmenu=%d", &iv) == 1) akvr_xr_auto_main_menu_set(iv != 0);
             else if (sscanf(line, "fullview=%d", &iv) == 1) akvr_xr_full_view_set(iv != 0);
@@ -2101,6 +2104,12 @@ namespace
             if (SliderStep("pause / map size %", &pscr, 10.0f, 100.0f, "%.0f"))
                 akvr_xr_pause_zoom_set(pscr / 100.0f);
             if (ImGui::IsItemDeactivatedAfterEdit()) settings_save();
+            bool pl = akvr_xr_pause_look();   // PAUSELOOK (JJ: the pause as in Sekiro)
+            if (ImGui::Checkbox("pause: world stays around you, menu on top  (off: a floating window)", &pl))
+            { akvr_xr_pause_look_set(pl); settings_save(); }
+            float pd = akvr_xr_pause_dim() * 100.0f;   // PAUSEDIM
+            if (SliderStep("pause: darken the world %", &pd, 0.0f, 90.0f, "%.0f"))
+            { akvr_xr_pause_dim_set(pd / 100.0f); settings_save(); }
             float sscr = akvr_xr_splash_zoom() * 100.0f;   // SPLASHSIZE (JJ: the start-up logos were a bit too big)
             if (SliderStep("start-up screens size %", &sscr, 10.0f, 100.0f, "%.0f"))
             { akvr_xr_splash_zoom_set(sscr / 100.0f); settings_save(); }
@@ -2515,8 +2524,11 @@ namespace
             float pvRatio = 0.0f, pvFov = 0.0f; int pvHits = 0;
             akvr_projvr_diag(pvRatio, pvHits, pvFov);
             fprintf(f, "\npatches:\n");
-            fprintf(f, "   build: ROOTKIDS " __DATE__ " " __TIME__ "\n");
+            fprintf(f, "   build: PAUSELOOK " __DATE__ " " __TIME__ "\n");
             fprintf(f, "   zoom vignette: %s\n", akvr_xr_vig_diag());
+            fprintf(f, "   pause look: %s, %s now, main view through the player camera: %s, head writes into the paused camera: %ld, darken %.0f%%\n",
+                    akvr_xr_pause_look() ? "ON" : "off", akvr_xr_pause_live() ? "LIVE" : "not live",
+                    akvr_camera_main_view_live() ? "yes" : "no", akvr_camera_pause_writes(), akvr_xr_pause_dim() * 100.0f);
             fprintf(f, "   native capture timing: %s Present (comparison test)\n", g_nativeAfterPresent ? "AFTER" : "BEFORE");
             {
                 int div = 1; double hz = 0.0; long late = 0, frames = 0;

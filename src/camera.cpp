@@ -763,6 +763,7 @@ namespace
     volatile float g_pvOrigVFov = 0.0f;  // game's ORIGINAL vertical FOV (deg)
     volatile float g_pvPostFov  = 0.0f;  // read back from the matrix after we wrote it
     volatile float g_pvPostVFov = 0.0f;
+    volatile ULONGLONG g_pvCamTick = 0, g_pvOtherTick = 0;   // PAUSELOOK: last main view at / not at the camera FOV
     volatile int   g_pvSkips    = 0;     // projections seen but NOT matched
     volatile float g_pvSkipFov  = 0.0f;  // HFOV of the widest one we skipped
     volatile float g_pvSkipRatio= 0.0f;
@@ -828,6 +829,14 @@ namespace
                     g_pvOrigVFov = 2.0f * atanf(1.0f / y) * (180.0f / 3.14159265f);
                     g_pvRatio = ratio;
                     g_projectionObservations.fetch_add(1, std::memory_order_relaxed);
+                    {   // PAUSELOOK: is the main view still drawn through the player camera (its FOV)? The map
+                        // draws from its own camera, so a different FOV means the pause look must not run.
+                        float camFov = 0.0f;
+                        const uintptr_t cb = cam_base();
+                        if (cb) __try { camFov = *(float*)(cb + OFF_FOV); } __except (EXCEPTION_EXECUTE_HANDLER) { camFov = 0.0f; }
+                        if (camFov > 1.0f && fabsf(fovDeg - camFov) < 1.0f) g_pvCamTick = GetTickCount64();
+                        else g_pvOtherTick = GetTickCount64();
+                    }
                     if (g_projVR)
                     {
                         float hH = 0.86f, hV = 0.86f;
@@ -882,6 +891,12 @@ bool akvr_projvr_install()
     return true;
 }
 bool akvr_projvr_ok()  { return g_projVRHooked; }
+// PAUSELOOK: the main view was built at the player camera's FOV in the last 0.3 s, and nothing else for 0.6 s.
+bool akvr_camera_main_view_live()
+{
+    const ULONGLONG now = GetTickCount64();
+    return g_projVRHooked && now - g_pvCamTick < 300 && now - g_pvOtherTick > 600;
+}
 // PROJTIGHT: "ratio@HFOVxcount" for every distinct projection the game built.
 const char* akvr_projection_seen()
 {
@@ -1214,15 +1229,58 @@ void akvr_head_toggle()
     }
 }
 
+namespace {
+    // PAUSELOOK 2026-09-30 — JJ: "the pause screen in Sekiro now stays in full 360 view and places the pause menu
+    // window on top. Can we do that with this one instead of cutting to a scaled down window floating in black
+    // space?" AK's pause stops the camera finalize (so the stub never adds the head), but the renderer keeps
+    // building the main view every frame (mode trace: proj_hits 2 per frame through the whole pause) from the
+    // camera's view fields - the fields freecam writes. While xr.cpp reports a live pause, write them here each
+    // Present exactly as the stub would: the game's last own rotator (saved by the stub) + the head delta, and the
+    // position the last finalize left minus the lean it carried, plus the lean now. SKVR's PAUSELOOK (run 91) is
+    // the same idea, confirmed there. Only after 2 Presents without a finalize, so it never races the game.
+    bool     g_pauseWriting = false;
+    float    g_pauseBase[3] = {};
+    uint64_t g_pauseFc = 0;
+    int      g_pauseStill = 0;
+    long     g_pauseWrites = 0;
+    void pause_look_write()
+    {
+        const uint64_t fc = akvr_camera_finalize_count();
+        g_pauseStill = fc == g_pauseFc ? g_pauseStill + 1 : 0;
+        g_pauseFc = fc;
+        const uintptr_t b = cam_base();
+        if (!akvr_xr_pause_live() || g_pauseStill < 2 || !b) { g_pauseWriting = false; return; }
+        __try
+        {
+            if (!g_pauseWriting)
+            {
+                g_pauseBase[0] = *(float*)(b + OFF_X) - *g_dPosX;
+                g_pauseBase[1] = *(float*)(b + OFF_Y) - *g_dPosY;
+                g_pauseBase[2] = *(float*)(b + OFF_Z) - *g_dPosZ;
+                g_pauseWriting = true;
+            }
+            *(int32_t*)(b + OFF_YAW)   = (int32_t)((uint32_t)*g_bYaw   + (uint32_t)*g_dYaw);
+            *(int32_t*)(b + OFF_PITCH) = (int32_t)((uint32_t)*g_bPitch + (uint32_t)*g_dPitch);
+            *(int32_t*)(b + OFF_ROLL)  = (int32_t)((uint32_t)*g_bRoll  + (uint32_t)*g_dRoll);
+            *(float*)(b + OFF_X) = g_pauseBase[0] + *g_dPosX;
+            *(float*)(b + OFF_Y) = g_pauseBase[1] + *g_dPosY;
+            *(float*)(b + OFF_Z) = g_pauseBase[2] + *g_dPosZ;
+            ++g_pauseWrites;
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER) { g_pauseWriting = false; }
+    }
+}
+long akvr_camera_pause_writes() { return g_pauseWrites; }
+
 void akvr_head_update()
 {
-    if (!g_htOn || !g_dYaw) return;
+    if (!g_htOn || !g_dYaw) { g_pauseWriting = false; return; }
     if (!akvr_xr_session_running())
     {   // pass base through unchanged (FULL rotator = base, so the overwrite is a
         // no-op) and drop the additive lean/fov — never write 0 rotation or the
         // stub would snap the camera to a zero orientation.
         *g_dYaw = *g_dPitch = *g_dRoll = 0;   // ORBITFIX: zero delta = the game's own angle
-        *g_dPosX = *g_dPosY = *g_dPosZ = 0.0f; *g_dFov = 0.0f; return; }
+        *g_dPosX = *g_dPosY = *g_dPosZ = 0.0f; *g_dFov = 0.0f; g_pauseWriting = false; return; }
 
     float y, p, r, px, py, pz; akvr_xr_head_pose(y, p, r, px, py, pz);
     float qx, qy, qz, qw; akvr_xr_head_quat(qx, qy, qz, qw);
@@ -1537,6 +1595,7 @@ void akvr_head_update()
     }
     else
         *g_dFov = 0.0f;
+    pause_look_write();   // PAUSELOOK
 }
 
 float akvr_camera_game_fov() { return g_gameFov; }   // ZOOMVIG: 0 until the FOV lock has run

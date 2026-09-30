@@ -88,6 +88,25 @@ game's own FOV (camera.cpp `g_gameFov`) is below `vigbelow` 45. JJ's settings: s
 game's 2D zoom overlay is the same part as the gameplay tips (`K1/0.0.0.0.2`): it is set to "hide while zoomed"
 (ZOOMHIDE, 7th field), and it is also "hang in the room".
 
+## PAUSELOOK + PAUSEDIM (2026-09-30, deployed to JJ's game only, untested; NOT in the release)
+
+JJ: pause as in Sekiro — "the whole 360 world to freeze, darken, and then add the pause screen menus over the top",
+"not fully darken to black. just darker". Evidence it can work: the mode trace through a pause (SCREENTAN capture,
+t 237-243 s) shows ms_since_finalize climbing (camera stopped) but proj_hits 2 per frame all along: the renderer
+keeps building the main view. Freecam already proves the renderer reads the camera view fields (+0x574..+0x58C).
+- xr.cpp: `g_pauseLive` starts within 1 s of gameplay ending if the frame stays 3D, menu phase >= 2, not F6, and
+  camera.cpp `akvr_camera_main_view_live()` (main-band projection at the camera's own FOV in the last 0.3 s, none
+  at another FOV for 0.6 s — the map's own camera should fail this and keep the old window). While live: shown as
+  gameplay (effGameplay), HUD layer in menu mode (whole UI, no split) at the PAUSE size, anchored ahead of the head
+  at pause start (anchor restored after), black view-space dim quad between world and HUD (`pausedim` 0.5).
+- camera.cpp `pause_look_write()` (end of akvr_head_update): after 2 Presents with no finalize, writes rotator =
+  stub-saved base + head delta, position = (fields at pause start - dPos then) + dPos now.
+- Panel: "pause: world stays around you, menu on top" (`pauselook`), "pause: darken the world %" (`pausedim`).
+  F2 status line "pause look: ..." (LIVE?, main view check, head writes count).
+- Unknowns for the headset: does the paused render follow our writes (if not: the frozen picture swims with the
+  head — untick and look for the renderer's own copy, as SKVR run 90); does the pause menu draw a full-screen
+  dimmer (SKVR MENUDIM); is the map correctly left as a window; pose delay during pause.
+
 ## RELEASED 2026-09-30: build ROOTKIDS packaged (JJ: "really happy with this, package it up")
 
 GitHub release v0.1.0 now holds the ROOTKIDS package (zip sha256 FE507AFE…FC75, downloaded back and matched).
