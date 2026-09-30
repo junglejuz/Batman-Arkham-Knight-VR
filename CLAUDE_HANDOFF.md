@@ -123,6 +123,15 @@ PSSetShaderResources slot-8 hook), B/A (12 draws before/after the rain on the sa
 pair everywhere. F2 status lists them with hashes. All panel sections now start closed each launch (JJ: "close all
 the HUD drawers").
 
+**DRAWPROBE2 result (JJ):** he hid rows 2-14 — "didn't affect anything"; the face-locked rain HAS parallax (3D, not
+screen depth). F2 status (akvr_20261001_*): two instanced rain systems, both 6 x 20480: row 1 PS 5d787946eda54077 /
+VS f50d1365e929b3a0 (world rain, fix-patched VS) and row 11 PS 37313d9770da1c5e / VS 2aafb19df6567d30 (uses the
+rain texture, drawn right after; NOT in the fix at all, only regex markers in ShaderCacheDM). Row 11 was among the
+hidden ones. Open: does the hide tick work at all (never confirmed by JJ: ask him to tick row 1 alone and see if the
+world rain goes)? SHADERDUMP (deployed): writes the ORIGINAL bytecode of those 3 shaders to
+`Binaries\Win64\akvr_shader_<hash>.bin` at creation; disassemble with
+`E:\Games\# MODS\Geo-11\geo-11+v0.6.90\cmd_Decompiler\cmd_Decompiler.exe -d` and read how row 11 places its streaks.
+
 ## PAUSELOOK + PAUSEDIM (2026-09-30, deployed to JJ's game only; JJ: "a good start")
 
 JJ: pause as in Sekiro — "the whole 360 world to freeze, darken, and then add the pause screen menus over the top",

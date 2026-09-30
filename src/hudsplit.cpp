@@ -350,12 +350,35 @@ namespace {
         ReleaseSRWLockShared(&g_shLock);
         return h;
     }
+    // SHADERDUMP 2026-10-01: the game's ORIGINAL bytecode of shaders the fix has no copy of, saved once each as
+    // akvr_shader_<hash>.bin next to the game exe, for cmd_Decompiler -d. JJ's DRAWPROBE2 capture: a second rain
+    // particle system (PS 37313d9770da1c5e / VS 2aafb19df6567d30, 6 x 20480, uses the rain texture, drawn right
+    // after the world rain) that the fix never patched; the world rain VS f50d1365e929b3a0 for comparison.
+    const uint64_t kDumpSh[] = { 0x2aafb19df6567d30ull, 0x37313d9770da1c5eull, 0xf50d1365e929b3a0ull };
+    volatile LONG g_dumped[3] = {};
+    void sh_dump(uint64_t h, const void* code, SIZE_T len)
+    {
+        for (int i = 0; i < 3; ++i)
+        {
+            if (h != kDumpSh[i] || InterlockedExchange(&g_dumped[i], 1)) continue;
+            wchar_t path[MAX_PATH];
+            const DWORD n = GetModuleFileNameW(nullptr, path, MAX_PATH);
+            wchar_t* slash = n ? wcsrchr(path, L'\\') : nullptr;
+            if (!slash) return;
+            _snwprintf_s(slash + 1, MAX_PATH - (slash + 1 - path), _TRUNCATE, L"akvr_shader_%016llx.bin", (unsigned long long)h);
+            HANDLE f = CreateFileW(path, GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+            if (f == INVALID_HANDLE_VALUE) return;
+            DWORD w = 0;
+            __try { WriteFile(f, code, (DWORD)len, &w, nullptr); } __except (EXCEPTION_EXECUTE_HANDLER) {}
+            CloseHandle(f);
+        }
+    }
     void sh_note(const void* code, SIZE_T len, void* obj)
     {
         if (!code || !obj) return;
         uint64_t h = 0;
         __try { h = fnv64(code, len); } __except (EXCEPTION_EXECUTE_HANDLER) { h = 0; }
-        if (h) sh_put(obj, h);
+        if (h) { sh_put(obj, h); sh_dump(h, code, len); }
     }
     typedef HRESULT (__stdcall* CreatePSFn)(ID3D11Device*, const void*, SIZE_T, ID3D11ClassLinkage*, ID3D11PixelShader**);
     CreatePSFn oCreatePS[3] = {};
