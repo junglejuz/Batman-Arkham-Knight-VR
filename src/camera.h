@@ -20,6 +20,7 @@ uint64_t     akvr_camera_finalize_count(); // # times the camera-finalize fn ran
 CameraView   akvr_camera_read();     // snapshot of the live camera fields
 float        akvr_camera_game_fov(); // ZOOMVIG: the game's own FOV this frame (deg, before the headset lock)
 bool         akvr_camera_main_view_live();   // PAUSELOOK: main view still drawn through the player camera
+bool         akvr_camera_base_axes(float fwd[3], float right[3], float up[3]);   // NEARRAIN: game camera without the head
 long         akvr_camera_pause_writes();     // PAUSELOOK: head writes into the paused camera so far
 void         akvr_camera_shutdown(); // restore all hand-assembled patches (DLL detach / exit)
 

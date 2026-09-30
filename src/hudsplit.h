@@ -43,7 +43,10 @@ bool        akvr_probe_all_but_rain();
 void        akvr_probe_all_but_rain_set(bool on);
 // DRAWPROBE4: every game draw off except the world rain (and the HUD); compute shaders listed and hideable;
 // tag 64 = an indirect draw (the GPU supplies the count)
-int         akvr_probe_rain_parts();               // RAINPARTS: draw only the first N/8 of the world rain's streaks
+int         akvr_near_rain_mode();                 // NEARRAIN: 0 as the game draws it, 1 hang in the room, 2 hidden
+void        akvr_near_rain_mode_set(int m);
+const char* akvr_near_rain_diag();
+int         akvr_probe_rain_parts();               // RAINPARTS: draw only the first N streaks of the world rain (-1 all)
 void        akvr_probe_rain_parts_set(int v);
 bool        akvr_probe_every_draw();
 void        akvr_probe_every_draw_set(bool on);

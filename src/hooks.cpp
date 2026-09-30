@@ -820,6 +820,7 @@ namespace
         fprintf(f, "loadscreen=%.3f\n", akvr_xr_load_zoom());   // LOADSIZE
         fprintf(f, "loadup=%.1f\n", akvr_xr_load_up());   // LOADUP
         fprintf(f, "pauselook=%d\npausedim=%.2f\n", akvr_xr_pause_look() ? 1 : 0, akvr_xr_pause_dim());   // PAUSELOOK / PAUSEDIM
+        fprintf(f, "nearrain=%d\n", akvr_near_rain_mode());   // NEARRAIN
         fprintf(f, "pauseaspect=%.3f\n", akvr_xr_pause_aspect());
         fprintf(f, "automainmenu=%d\n", akvr_xr_auto_main_menu() ? 1 : 0);
         fprintf(f, "fullview=%d\n", akvr_xr_full_view() ? 1 : 0);
@@ -934,6 +935,7 @@ namespace
             else if (sscanf(line, "loadup=%f", &v) == 1) akvr_xr_load_up_set(v);   // LOADUP
             else if (sscanf(line, "pauselook=%d", &iv) == 1) akvr_xr_pause_look_set(iv != 0);   // PAUSELOOK
             else if (sscanf(line, "pausedim=%f", &v) == 1) akvr_xr_pause_dim_set(v);   // PAUSEDIM
+            else if (sscanf(line, "nearrain=%d", &iv) == 1) akvr_near_rain_mode_set(iv);   // NEARRAIN
             else if (sscanf(line, "pauseaspect=%f", &v) == 1) akvr_xr_pause_aspect_set(v);
             else if (sscanf(line, "automainmenu=%d", &iv) == 1) akvr_xr_auto_main_menu_set(iv != 0);
             else if (sscanf(line, "fullview=%d", &iv) == 1) akvr_xr_full_view_set(iv != 0);
@@ -2113,6 +2115,20 @@ namespace
             // every see-through draw of the frame, grouped by the shader that places it.
             ImGui::TextWrapped("In the rain: first tick the top box. If the layer stuck to your head disappears, it is "
                                "in one of the groups: untick the top box and hide one group at a time.");
+            // NEARRAIN (JJ: "Can't we hang them in space like the rest of them?")
+            {
+                int nm = akvr_near_rain_mode();
+                ImGui::TextUnformatted("rain close to you:");
+                ImGui::SameLine();
+                bool ch = ImGui::RadioButton("hang in the room", &nm, 1);
+                ImGui::SameLine();
+                ch |= ImGui::RadioButton("as the game draws it", &nm, 0);
+                ImGui::SameLine();
+                ch |= ImGui::RadioButton("hidden", &nm, 2);
+                if (ch) { akvr_near_rain_mode_set(nm); settings_save(); }
+                ImGui::TextDisabled("   %s", akvr_near_rain_diag());
+                ImGui::Separator();
+            }
             // DRAWPROBE4b (JJ: "I don't have a checkbox called the world rain" - DRAWPROBE3's groups skip it)
             for (int i = 0; i < akvr_probe_kind_count(); ++i)
             {
@@ -2666,7 +2682,7 @@ namespace
             float pvRatio = 0.0f, pvFov = 0.0f; int pvHits = 0;
             akvr_projvr_diag(pvRatio, pvHits, pvFov);
             fprintf(f, "\npatches:\n");
-            fprintf(f, "   build: RAINPARTS2 " __DATE__ " " __TIME__ "\n");
+            fprintf(f, "   build: NEARRAIN " __DATE__ " " __TIME__ "\n");
             fprintf(f, "   zoom vignette: %s\n", akvr_xr_vig_diag());
             fprintf(f, "   pause look: %s, %s now, main view through the player camera: %s, head writes into the paused camera: %ld, darken %.0f%%\n",
                     akvr_xr_pause_look() ? "ON" : "off", akvr_xr_pause_live() ? "LIVE" : "not live",
@@ -2674,6 +2690,7 @@ namespace
             fprintf(f, "   rain probe: %s | every draw off %d, all compute off %d, see-through off %d, world rain streak cut %d\n",
                     akvr_probe_diag(), akvr_probe_every_draw() ? 1 : 0, akvr_probe_all_cs() ? 1 : 0, akvr_probe_all_but_rain() ? 1 : 0,
                     akvr_probe_rain_parts());   // DRAWPROBE, RAINPARTS
+            fprintf(f, "   %s\n", akvr_near_rain_diag());   // NEARRAIN
             for (int i = 0; i < akvr_probe_cs_count(); ++i)   // DRAWPROBE4
             {
                 unsigned long long h = 0; long pf = 0; bool seen = false, hide = false;

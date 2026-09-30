@@ -1600,6 +1600,22 @@ void akvr_head_update()
 
 float akvr_camera_game_fov() { return g_gameFov; }   // ZOOMVIG: 0 until the FOV lock has run
 
+// NEARRAIN 2026-10-01: the game's OWN camera axes this frame (the base rotator the stub saved at the last finalize,
+// before the head was added), UE3 world space, FRotationMatrix convention: X forward, Y right, Z up. The fix's rain
+// shader turns the camera-kept rain block from the head-turned camera (read from its own view-projection) back to
+// this one, so it hangs still when only the head moves. False while head tracking is off (then nothing to undo).
+bool akvr_camera_base_axes(float fwd[3], float right[3], float up[3])
+{
+    if (!g_htOn || !g_dYaw || !g_bYaw) return false;
+    const float y = (float)(*g_bYaw) * ROT2DEG * DEG2RAD, p = (float)(*g_bPitch) * ROT2DEG * DEG2RAD,
+                r = (float)(*g_bRoll) * ROT2DEG * DEG2RAD;
+    const float sy = sinf(y), cy = cosf(y), sp = sinf(p), cp = cosf(p), sr = sinf(r), cr = cosf(r);
+    fwd[0] = cp * cy;                 fwd[1] = cp * sy;                 fwd[2] = sp;
+    right[0] = sr * sp * cy - cr * sy; right[1] = sr * sp * sy + cr * cy; right[2] = -sr * cp;
+    up[0] = -(cr * sp * cy + sr * sy); up[1] = cy * sr - cr * sp * sy;   up[2] = cr * cp;
+    return true;
+}
+
 bool akvr_camera_base_yaw_deg(float& deg)
 {
     // g_bYaw holds the game's OWN yaw for the frame that just finalized — the stub

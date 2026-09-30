@@ -345,6 +345,35 @@ to JJ's game (texts byte-identical to the tested copy). Rollback: `akvr/diagnost
 
 ---
 
+## 1h. ShaderFixesDM: the rain block kept around the camera hangs in the room (AKVR, NEARRAIN, 2026-10-01)
+
+**File:** `ShaderFixesDM\f50d1365e929b3a0-vs.txt` (the fix's rain-streak vertex shader; the `-vs.bin` is deleted).
+
+**Why:** JJ: one layer of rain "attached to the face", in 3D, moving with the head even in the pause. AKVR's draw
+probe (build DRAWPROBE4 -> RAINPARTS2) showed it is part of the world rain draw itself (PS 5d787946eda54077 + this VS,
+6 x 20480 instances, streaks read from a structured buffer by SV_InstanceID): the FIRST 2048 streaks are a block the
+game places around its camera, and in VR the camera turns with the head. JJ wanted them hung in space, not removed.
+
+**Edit** (register names as in the fix's file today; the script reads them from the file):
+1. `dcl_constantbuffer CB12[3], immediateIndexed` after the first `dcl_constantbuffer` line; `dcl_temps 9` -> `16`.
+2. After `ld_structured_indexable(...) r2.xyzw, v1.x, l(48), t0.xyzw` (the streak position): 47 lines behind
+   `// AKVR NEARRAIN`: flags (instance < cb12[1].w AND cb12[0].w == 1 -> re-place; == 2 -> hide); the head-turned
+   camera from this draw's view-projection (cb0[6..9]: the w column = forward, the x / y columns minus their forward
+   part = right / up, the camera position solved from clip x = y = w = 0); the streak in that camera's axes; put back
+   with the axes AKVR sends in cb12[0..2].xyz (the game camera's own forward / right / up, UE3 world); `movc r2.xyz`.
+3. `mov o2.xyzw, r6.xyzw` (the final position) -> `movc o2.xyzw, r9.zzzz, l(-10, -10, 0, 1), r6.xyzw` (mode 2 hides).
+
+AKVR binds cb12 only around this draw (hudsplit.cpp `rain_cb_pre`). **Unbound, cb12 reads 0 = the fix's shader,
+unchanged** (so the edit is harmless without AKVR). Modes in the panel (RAIN LAYERS "rain close to you", setting
+`nearrain`): 1 hang in the room (default), 0 as the game draws it, 2 hidden.
+
+**Detect:** `// AKVR NEARRAIN`. **Reference:** `Patch-NearRain` in `tools/AKVR-fix-patches.ps1` (status line too).
+**Driver test:** assembled (cmd_Decompiler 0.6.90 `-a`) and loaded OK in vstest.exe. **Applied** 2026-10-01 to JJ's
+game with the real script (text byte-identical to the tested copy, `.bin` removed, original in `akvr_fix_backup\`).
+Untested in the headset.
+
+---
+
 ## 2. d3dxdm.ini
 
 | Key / section | Baseline | AKVR value | Status and reason |
@@ -422,6 +451,7 @@ Both need shader hashes. Applied by a byte-preserving script (Latin-1, CRLF kept
 - `[Hunting]`: `marking_actions = clipboard regex hlsl asm stereo_snapshot snapshot_if_pink` ->
   `marking_actions = clipboard asm` (a mark writes only the exact disassembly, never a decompiled HLSL that would
   then load as a "fix"). **Marked shaders' `.txt` dumps land in the fix folder: delete them after reading.**
+  2026-10-01 03:0x: JJ's one mark (5d787946eda54077-ps .txt/.bin in ShaderFixes AND ShaderFixesDM) deleted.
 - `[Hunting]`: added `analyse_frame = no_modifiers VK_SCROLL` (Scroll Lock; F8 is the AKVR panel) and
   `analyse_options = mono deferred_ctx_accurate` (log only, no images): a pause frame vs a gameplay frame -> the
   pause-only pixel shaders.

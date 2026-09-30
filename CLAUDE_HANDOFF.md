@@ -156,6 +156,19 @@ instance count (only the tail can be cut: SV_InstanceID ignores StartInstanceLoc
 some step, it is an instance block: then cull that range in the fix VS (ShaderFixesDM edit + FIX_CHANGES + driver
 test) or by count. If it thins evenly, the stuck streaks are interleaved: look at the buffer writer (a CS from the list).
 
+**NEARRAIN (2026-10-01, deployed + fix step 1h applied, untested in the headset):** RAINPARTS2 (JJ): the stuck
+streaks are the FIRST 2048 instances of the world rain draw (a few world drops among them). JJ wanted them hung in
+space, not hidden. Fix step 1h (FIX_CHANGES 1h, `Patch-NearRain`) edits the fix's VS f50d1365e929b3a0: with cb12 bound
+(mode 1) each of the first cb12[1].w streaks is re-expressed from the head-turned camera (derived in-shader from its own
+view-projection cb0[6..9]) into the game camera's axes (AKVR sends them: camera.cpp `akvr_camera_base_axes`, the
+stub's saved base rotator, UE3 FRotationMatrix convention); mode 2 hides them. The mod binds cb12 only around that draw
+(hudsplit.cpp `rain_cb_pre/post`). Panel RAIN LAYERS "rain close to you" (setting `nearrain`, default 1). Known
+limit: the base rotator is the latest finalize's, so during STICK turns it may lead the drawn frame by one frame
+(slight swim of the near rain); head turns use the draw's own matrix, exact. If the block still follows the head in
+mode 1, check the F2 "near rain:" line (binds / without axes) and the sign conventions first.
+HUNTRAIN d3dx.ini lines (hunting=2 etc.) are still on JJ's game: restore `diagnostics/before-HUNTRAIN-20261001/d3dx.ini`
+once the rain is settled; the finder-mark dumps (5d78...-ps) were deleted.
+
 ## PAUSELOOK + PAUSEDIM (2026-09-30, deployed to JJ's game only; JJ: "a good start")
 
 JJ: pause as in Sekiro — "the whole 360 world to freeze, darken, and then add the pause screen menus over the top",

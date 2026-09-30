@@ -439,6 +439,119 @@ function Patch-PartTag([string]$hash) {
     Say "  $hash : part mark patched (colour add $add, $kind, decision $dec)" 'Green'
 }
 
+# ---- 1h. NEARRAIN: the rain block the game keeps around the camera hangs in the room ------------------------
+# JJ 2026-10-01: one layer of rain "attached to the face", in 3D, moving with the head even in the pause. AKVR's draw
+# probe (DRAWPROBE4 / RAINPARTS2) found it inside the world rain draw itself: pixel shader 5d787946eda54077 with the
+# fix's vertex shader f50d1365e929b3a0, 6 vertices x 20480 instances, each streak read from a structured buffer by
+# SV_InstanceID. Cutting the instance count: the stuck streaks are the FIRST 2048 (with a few world drops among them;
+# everything past 2048 is world-fixed rain). The game places that block around its camera - in VR the head-turned one.
+# JJ: "Can't we hang them in space like the rest of them?" Edit, driven by AKVR through cb12 (bound only around the
+# rain draw; unbound it reads 0 and the shader is exactly the fix's):
+#   cb12[0] = the game camera's own forward + mode (w: 0 unchanged, 1 hang in the room, 2 hidden)
+#   cb12[1] = its right + how many streaks from the start (w), cb12[2] = its up.
+# Mode 1, right after a streak's position is read: the head-turned camera's position and axes come from this draw's
+# own view-projection (cb0[6..9]: clip.w row = forward; x / y rows minus their forward part = right / up; the camera
+# is where clip x, y and w are all 0), the streak is expressed in that camera's axes and put back with the game
+# camera's axes, so turning the head no longer turns the block. Mode 2: the final position write sends it off screen.
+$rainVs = 'f50d1365e929b3a0'
+$rainMarker = '// AKVR NEARRAIN'
+function Patch-NearRain {
+    $txt = Join-Path $dm "$rainVs-vs.txt"
+    $bin = Join-Path $dm "$rainVs-vs.bin"
+    if (-not (Test-Path $txt)) { Say "  $rainVs : rain shader not in the fix - near rain NOT patched" 'Red'; return }
+    $s = [System.IO.File]::ReadAllText($txt)
+    if ($s.Contains($rainMarker)) { Say "  $rainVs : near rain already patched"; return }
+    if ($s -match '(?i)\bcb12\b') { Say "  $rainVs : already uses cb12 - near rain NOT patched" 'Red'; return }
+    $nl = if ($s.Contains("`r`n")) { "`r`n" } else { "`n" }
+    $iidM = [regex]::Match($s, '(?m)^dcl_input_sgv (?<v>v\d+)\.x, instance_id\s*$')
+    if (-not $iidM.Success) { Say "  $rainVs : no instance id input - near rain NOT patched" 'Red'; return }
+    $iid = $iidM.Groups['v'].Value
+    $ldM = [regex]::Matches($s, '(?m)^ld_structured_indexable\(structured_buffer, stride=80\)\(mixed,mixed,mixed,mixed\) (?<p>r\d+)\.xyzw, ' + $iid + '\.x, l\(48\), t0\.xyzw[ \t]*$')
+    if ($ldM.Count -ne 1) { Say "  $rainVs : streak position read found $($ldM.Count) times - near rain NOT patched" 'Red'; return }
+    $P = $ldM[0].Groups['p'].Value
+    $posDcl = [regex]::Match($s, '(?m)^dcl_output_siv (?<o>o\d+)\.xyzw, position\s*$')
+    if (-not $posDcl.Success) { Say "  $rainVs : no position output - near rain NOT patched" 'Red'; return }
+    $hits = @([regex]::Matches($s, '(?m)^mov (?<o>o\d+)\.xyzw, (?<r>r\d+)\.xyzw[ \t]*$') | Where-Object { $_.Groups['o'].Value -eq $posDcl.Groups['o'].Value })
+    if ($hits.Count -ne 1) { Say "  $rainVs : position write found $($hits.Count) times - near rain NOT patched" 'Red'; return }
+    if ($hits[0].Index -lt $ldM[0].Index) { Say "  $rainVs : position written before the streak is read - near rain NOT patched" 'Red'; return }
+    $cbDecl = [regex]::Match($s, '(?m)^dcl_constantbuffer [^\r\n]*$')
+    $temps = [regex]::Match($s, '(?m)^dcl_temps (\d+)\s*$')
+    if (-not $cbDecl.Success -or -not $temps.Success) { Say "  $rainVs : declarations not found - near rain NOT patched" 'Red'; return }
+    $n = [int]$temps.Groups[1].Value
+    $T = 0..6 | ForEach-Object { "r$($n + $_)" }
+    $t0, $t1, $t2, $t3, $t4, $t5, $t6 = $T
+    $o = $hits[0].Groups['o'].Value; $r = $hits[0].Groups['r'].Value
+    $place = @(
+        "$rainMarker 2026-10-01: AKVR (cb12) re-places the first cb12[1].w streaks from the head-turned camera to the",
+        "// game's own camera (mode 1), or hides them (mode 2). cb12 unbound = 0 = the fix's shader unchanged.",
+        "utof $t0.y, $iid.x",
+        "lt $t0.y, $t0.y, cb12[1].w",
+        "eq $t0.w, cb12[0].w, l(1.000000)",
+        "and $t0.w, $t0.w, $t0.y",
+        "eq $t0.z, cb12[0].w, l(2.000000)",
+        "and $t0.z, $t0.z, $t0.y",
+        "mov $t1.x, cb0[6].x",
+        "mov $t1.y, cb0[7].x",
+        "mov $t1.z, cb0[8].x",
+        "mov $t2.x, cb0[6].y",
+        "mov $t2.y, cb0[7].y",
+        "mov $t2.z, cb0[8].y",
+        "mov $t3.x, cb0[6].w",
+        "mov $t3.y, cb0[7].w",
+        "mov $t3.z, cb0[8].w",
+        "mul $t4.xyz, $t2.yzxy, $t3.zxyz",
+        "mad $t4.xyz, $t2.zxyz, -$t3.yzxy, $t4.xyzx",
+        "dp3 $t0.x, $t1.xyzx, $t4.xyzx",
+        "mul $t4.xyz, $t4.xyzx, cb0[9].xxxx",
+        "mul $t5.xyz, $t3.yzxy, $t1.zxyz",
+        "mad $t5.xyz, $t3.zxyz, -$t1.yzxy, $t5.xyzx",
+        "mad $t4.xyz, $t5.xyzx, cb0[9].yyyy, $t4.xyzx",
+        "mul $t5.xyz, $t1.yzxy, $t2.zxyz",
+        "mad $t5.xyz, $t1.zxyz, -$t2.yzxy, $t5.xyzx",
+        "mad $t4.xyz, $t5.xyzx, cb0[9].wwww, $t4.xyzx",
+        "div $t4.xyz, -$t4.xyzx, $t0.xxxx",
+        "dp3 $t0.y, $t3.xyzx, $t3.xyzx",
+        "rsq $t0.y, $t0.y",
+        "mul $t3.xyz, $t3.xyzx, $t0.yyyy",
+        "dp3 $t0.y, $t1.xyzx, $t3.xyzx",
+        "mad $t1.xyz, -$t3.xyzx, $t0.yyyy, $t1.xyzx",
+        "dp3 $t0.y, $t1.xyzx, $t1.xyzx",
+        "rsq $t0.y, $t0.y",
+        "mul $t1.xyz, $t1.xyzx, $t0.yyyy",
+        "dp3 $t0.y, $t2.xyzx, $t3.xyzx",
+        "mad $t2.xyz, -$t3.xyzx, $t0.yyyy, $t2.xyzx",
+        "dp3 $t0.y, $t2.xyzx, $t2.xyzx",
+        "rsq $t0.y, $t0.y",
+        "mul $t2.xyz, $t2.xyzx, $t0.yyyy",
+        "add $t5.xyz, $P.xyzx, -$t4.xyzx",
+        "dp3 $t6.x, $t1.xyzx, $t5.xyzx",
+        "dp3 $t6.y, $t2.xyzx, $t5.xyzx",
+        "dp3 $t6.z, $t3.xyzx, $t5.xyzx",
+        "mad $t5.xyz, cb12[0].xyzx, $t6.zzzz, $t4.xyzx",
+        "mad $t5.xyz, cb12[1].xyzx, $t6.xxxx, $t5.xyzx",
+        "mad $t5.xyz, cb12[2].xyzx, $t6.yyyy, $t5.xyzx",
+        "movc $P.xyz, $t0.wwww, $t5.xyzx, $P.xyzx"
+    ) -join $nl
+    $hide = @(
+        "$rainMarker hide (mode 2): off screen. Original line: mov $o.xyzw, $r.xyzw",
+        "movc $o.xyzw, $t0.zzzz, l(-10.000000, -10.000000, 0.000000, 1.000000), $r.xyzw"
+    ) -join $nl
+    # From the end backwards: the position write, the streak read, dcl_temps, the constant buffer declaration.
+    $h = $hits[0]
+    $s = $s.Substring(0, $h.Index) + $hide + $s.Substring($h.Index + $h.Length)
+    $ld = $ldM[0]
+    $s = $s.Substring(0, $ld.Index + $ld.Length) + $nl + $place + $s.Substring($ld.Index + $ld.Length)
+    $temps = [regex]::Match($s, '(?m)^dcl_temps (\d+)\s*$')
+    $s = $s.Substring(0, $temps.Index) + "dcl_temps $($n + 7)" + $s.Substring($temps.Index + $temps.Length)
+    $cbDecl = [regex]::Match($s, '(?m)^dcl_constantbuffer [^\r\n]*$')
+    $s = $s.Substring(0, $cbDecl.Index + $cbDecl.Length) + $nl + 'dcl_constantbuffer CB12[3], immediateIndexed' + $s.Substring($cbDecl.Index + $cbDecl.Length)
+    Backup-Once $txt $bakDm
+    Backup-Once $bin $bakDm
+    [System.IO.File]::WriteAllText($txt, $s, $utf8)
+    if (Test-Path $bin) { Remove-Item $bin }
+    Say "  $rainVs : near rain patched (first streaks re-placed / hidden by AKVR, position $P, output $o)" 'Green'
+}
+
 # ---- 2. d3dxdm.ini --------------------------------------------------------------------------------
 $stereoKeys = [ordered]@{
     'dm_hud_detection'       = '1'
@@ -529,6 +642,9 @@ switch ($Mode) {
             $sp = if ((Test-Path $p) -and (Get-Content $p -Raw).Contains($splitMarker)) { ', split patched' } else { '' }
             Say ("  {0} : {1}{2}" -f $h, $st, $sp)
         }
+        $rp = Join-Path $dm "$rainVs-vs.txt"
+        $rs = if (-not (Test-Path $rp)) { 'missing' } elseif ((Get-Content $rp -Raw).Contains($rainMarker)) { 'near rain patched' } else { 'original' }
+        Say ("  {0} : {1}" -f $rainVs, $rs)
     }
     'apply' {
         Say 'AKVR fix patches' 'Cyan'
@@ -538,6 +654,7 @@ switch ($Mode) {
         foreach ($h in $hudVs) { Patch-RetSquash $h }
         foreach ($h in $hudVs) { Patch-DepthAll $h }
         foreach ($h in $hudVs) { Patch-PartTag $h }
+        Patch-NearRain
         Patch-DmIni
         if ($script:failed -gt 0) { Say "$($script:failed) edit(s) could not be applied - see the red lines above." 'Yellow'; exit 2 }
         Say 'Done. Originals are in akvr_fix_backup\.' 'Cyan'

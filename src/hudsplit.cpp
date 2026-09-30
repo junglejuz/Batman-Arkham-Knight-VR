@@ -27,6 +27,7 @@
 #include "hudsplit.h"
 #include "geo11conv.h"
 #include "xr.h"   // RETSQUASH: akvr_xr_game_tan
+#include "camera.h"   // NEARRAIN: akvr_camera_base_axes
 #include <windows.h>
 #include <d3d11.h>
 #include <dxgi.h>
@@ -557,6 +558,52 @@ namespace {
         return inst < (UINT)g_rainParts ? inst : (UINT)g_rainParts;
     }
 
+    // NEARRAIN 2026-10-01 — JJ: "Can't we hang them in space like the rest of them?" The fix's rain VS (patch step
+    // 1h) reads cb12 for the first g_nearCount streaks: [0] = the game camera's own forward + mode (w: 0 as the game
+    // draws it, 1 hang in the room, 2 hidden), [1] = its right + the streak count, [2] = its up. Mode 1: each streak
+    // is re-placed from the head-turned camera (the shader reads that from its own view-projection) to the game's
+    // camera, so head turns no longer drag the block. Bound only around the rain draw; unbound cb12 reads 0 = off.
+    ID3D11Buffer* g_rainCb = nullptr;
+    volatile LONG g_nearMode = 1;
+    volatile LONG g_nearCount = 2048;
+    volatile LONG g_nearBinds = 0, g_nearNoAxes = 0;
+    bool rain_now(ID3D11DeviceContext* c)
+    {
+        CtxSh* s = ctx_sh(c, false);
+        return s && s->ps && sh_get(s->ps) == g_probePs;
+    }
+    ID3D11Buffer* rain_cb_pre(ID3D11DeviceContext* c)
+    {
+        if (!g_rainCb)
+        {
+            ID3D11Device* dev = nullptr; c->GetDevice(&dev);
+            if (!dev) return nullptr;
+            D3D11_BUFFER_DESC bd{}; bd.ByteWidth = 48; bd.Usage = D3D11_USAGE_DEFAULT; bd.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
+            ID3D11Buffer* b = nullptr;
+            if (SUCCEEDED(dev->CreateBuffer(&bd, nullptr, &b)) && b)
+                if (InterlockedCompareExchangePointer((void**)&g_rainCb, b, nullptr) != nullptr) b->Release();
+            dev->Release();
+            if (!g_rainCb) return nullptr;
+        }
+        float d[12] = {};
+        float* fwd = d; float* right = d + 4; float* up = d + 8;
+        const bool axes = akvr_camera_base_axes(fwd, right, up);
+        if (!axes) InterlockedIncrement(&g_nearNoAxes);
+        d[3] = (float)(axes || g_nearMode == 2 ? g_nearMode : 0);
+        d[7] = (float)g_nearCount;
+        c->UpdateSubresource(g_rainCb, 0, nullptr, d, 0, 0);
+        ID3D11Buffer* old = nullptr;
+        c->VSGetConstantBuffers(12, 1, &old);
+        c->VSSetConstantBuffers(12, 1, (ID3D11Buffer* const*)&g_rainCb);
+        InterlockedIncrement(&g_nearBinds);
+        return old;
+    }
+    void rain_cb_post(ID3D11DeviceContext* c, ID3D11Buffer* old)
+    {
+        c->VSSetConstantBuffers(12, 1, &old);
+        if (old) old->Release();
+    }
+
     // DRAWPROBE4 2026-10-01 — JJ: with every see-through draw hidden, the stuck rain is STILL there. Two blind spots:
     // (1) the indirect draws (slots 39/40: the GPU supplies the count - how GPU-simulated effects are usually drawn)
     // were never hooked; (2) compute shaders (the fix names two rain ones: a96594b16ceb399b "Rain haloing CS",
@@ -890,6 +937,7 @@ namespace {
             note_draw(c, L);
             if (L == 0 && probe_skip(c, a, i)) return;   // DRAWPROBE
             if (L == 0) i = rain_inst(c, i);   // RAINPARTS
+            if (L == 0 && rain_now(c)) { ID3D11Buffer* ob = rain_cb_pre(c); oDrawIdxInst(c, a, i, s, b, si); rain_cb_post(c, ob); return; }   // NEARRAIN
             if (L == 0 && snoop_ctx(c)) mark_record(c, split_now(c), a, i);   // MARKREC
             if (L == 0 && split_now(c) && layer_only_now()) { layer_only_pre(c); oDrawIdxInst(c, a, i, s, b, si); layer_only_post(c); return; }   // PSMARK
             if (L == 0 && split_now(c)) { split_pre(c); oDrawIdxInst(c, a, i, s, b, si); split_mid(c); oDrawIdxInst(c, a, i, s, b, si); split_post(c); return; }
@@ -907,6 +955,7 @@ namespace {
             note_draw(c, L);
             if (L == 0 && probe_skip(c, a, i)) return;   // DRAWPROBE
             if (L == 0) i = rain_inst(c, i);   // RAINPARTS
+            if (L == 0 && rain_now(c)) { ID3D11Buffer* ob = rain_cb_pre(c); oDrawInst(c, a, i, s, si); rain_cb_post(c, ob); return; }   // NEARRAIN
             if (L == 0 && snoop_ctx(c)) mark_record(c, split_now(c), a, i);   // MARKREC
             if (L == 0 && split_now(c) && layer_only_now()) { layer_only_pre(c); oDrawInst(c, a, i, s, si); layer_only_post(c); return; }   // PSMARK
             if (L == 0 && split_now(c)) { split_pre(c); oDrawInst(c, a, i, s, si); split_mid(c); oDrawInst(c, a, i, s, si); split_post(c); return; }
@@ -1762,6 +1811,15 @@ void akvr_probe_group_hide(unsigned long long vs, bool on)
 }
 bool akvr_probe_all_but_rain() { return g_hideAllButRain; }
 void akvr_probe_all_but_rain_set(bool on) { g_hideAllButRain = on; }
+int  akvr_near_rain_mode() { return (int)g_nearMode; }                  // NEARRAIN
+void akvr_near_rain_mode_set(int m) { InterlockedExchange(&g_nearMode, m < 0 ? 0 : (m > 2 ? 2 : m)); }
+const char* akvr_near_rain_diag()
+{
+    static char d[160];
+    _snprintf_s(d, sizeof(d), _TRUNCATE, "near rain: mode %ld, first %ld streaks, bound to %ld rain draws (%ld without camera axes)",
+                (long)g_nearMode, (long)g_nearCount, (long)g_nearBinds, (long)g_nearNoAxes);
+    return d;
+}
 int  akvr_probe_rain_parts() { return (int)g_rainParts; }               // RAINPARTS
 void akvr_probe_rain_parts_set(int v) { InterlockedExchange(&g_rainParts, v < 0 ? -1 : (v > 20480 ? 20480 : v)); }
 bool akvr_probe_every_draw() { return g_hideEveryDraw; }                 // DRAWPROBE4
