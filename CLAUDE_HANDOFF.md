@@ -140,6 +140,13 @@ hook) as tag 16/"S"; 256 kinds. Panel RAIN LAYERS: "hide everything below except
 non-rain draw), then groups by vertex shader with a hide each (hidden-VS list) and a tree of kinds. Next if the top box
 does NOT remove the stuck layer: it is opaque or not drawn through the game-side context hooks.
 
+**DRAWPROBE4 (2026-10-01, deployed, untested):** JJ: with "hide everything except the world rain" (all see-through
+draws) the stuck layer STAYS. Blind spots found: the indirect draws (context slots 39/40) were never hooked, and compute
+work was never looked at. Now hooked on the game side: 39/40 (tag 64 "I", recorded as kinds), Dispatch 41 /
+DispatchIndirect 42 / CSSetShader 69, plus CreateComputeShader (device slot 18) for names. Panel: "hide EVERY draw
+except the world rain" (drops every non-rain draw outside the HUD call), "hide all compute work", and a list of compute
+shaders (the fix's rain CS a96594b16ceb399b / bc5c6aebf60c9308 labelled). F2 status lists the CS too.
+
 ## PAUSELOOK + PAUSEDIM (2026-09-30, deployed to JJ's game only; JJ: "a good start")
 
 JJ: pause as in Sekiro — "the whole 360 world to freeze, darken, and then add the pause screen menus over the top",
