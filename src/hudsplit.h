@@ -30,6 +30,11 @@ void        akvr_hudsplit_layer_shot(const wchar_t* path);
 void        akvr_hudsplit_marks_dump(const wchar_t* path);    // MARKREC: F2, what the HUD shaders get   // LAYERSHOT: save the HUD layer image (next readback)
 struct IUnknown;
 void        akvr_hudsplit_watch_device(IUnknown* dev);   // VSID: recognise the 13 patched HUD vertex shaders
+// DRAWPROBE: the kinds of draw (vertex shader + PS textures 0/1) that use the watched pixel shader (the rain)
+int         akvr_probe_kind_count();
+bool        akvr_probe_kind(int i, unsigned long long& vs, int& tex0, int& tex1, long& draws, unsigned& count, bool& seenNow, bool& hide);
+void        akvr_probe_kind_hide(int i, bool on);
+const char* akvr_probe_diag();
 const char* akvr_hudsplit_vs_diag();
 void        akvr_hudsplit_hook_game_device();   // VSID4: see the game-facing device at D3D11CreateDevice
 void        akvr_hudsplit_squash_set(bool on);   // RETSQUASH: reticle keeps its size near the view edges

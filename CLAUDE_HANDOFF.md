@@ -107,6 +107,13 @@ so frame lists cannot identify shaders; the Scroll Lock button was removed. Mark
 ShaderFixesDM (`5d787946eda54077-ps.txt` so far): delete them at cleanup. Safety copies of both folders taken before
 any VS marking: `diagnostics/before-HUNTRAIN-20261001/ShaderFixes*`.
 
+**DRAWPROBE (2026-10-01, deployed, untested):** JJ: stepping the finder "took a lot of button presses". The mod now
+names every VS and PS at creation on the game-facing device (new CreatePixelShader hook, slot 15; `sh_put` map), tracks
+the VS/PS bound per game-side context (PSSetShader slot 9 hook + Det<0>::VSSet), and sorts every game draw using PS
+`g_probePs` (5d787946eda54077, rain) into kinds = VS hash + PS t0/t1 SRV pointers. Panel (FIND A SHADER section):
+one "hide" tick per kind (the draw is dropped); F2 status lists the kinds ("rain probe"). Session-only; once JJ finds
+the head-locked kind, make it a fixed rule (by VS hash if that separates it; texture pointers do not persist).
+
 ## PAUSELOOK + PAUSEDIM (2026-09-30, deployed to JJ's game only; JJ: "a good start")
 
 JJ: pause as in Sekiro — "the whole 360 world to freeze, darken, and then add the pause screen menus over the top",

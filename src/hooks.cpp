@@ -2131,6 +2131,24 @@ namespace
                 ImGui::PopID();
             }
             ImGui::TextDisabled("   key presses sent: %ld", g_fkPresses);
+            // DRAWPROBE (JJ: the finder "took a lot of button presses"): the rain draws, listed directly
+            ImGui::Separator();
+            ImGui::TextWrapped("Rain draws: tick 'hide' on one row at a time until the layer stuck to your head "
+                               "disappears (the finder does not need to be on).");
+            const int nk = akvr_probe_kind_count();
+            if (nk == 0) ImGui::TextDisabled("   no rain drawn yet");
+            for (int i = 0; i < nk; ++i)
+            {
+                unsigned long long vs = 0; int t0 = 0, t1 = 0; long draws = 0; unsigned cnt = 0; bool seen = false, hide = false;
+                if (!akvr_probe_kind(i, vs, t0, t1, draws, cnt, seen, hide)) continue;
+                ImGui::PushID(i);
+                if (ImGui::Checkbox("hide", &hide)) akvr_probe_kind_hide(i, hide);
+                ImGui::SameLine();
+                ImGui::Text("rain %d: position shader %016llx, textures %d/%d, %ld draws a frame, %u points%s",
+                            i + 1, vs, t0, t1, draws, cnt, seen ? "" : "  (not seen now)");
+                ImGui::PopID();
+            }
+            ImGui::TextDisabled("   %s", akvr_probe_diag());
         }
 
         // ---- MENUS AND SCREENS ------------------------------------------------------
@@ -2580,11 +2598,19 @@ namespace
             float pvRatio = 0.0f, pvFov = 0.0f; int pvHits = 0;
             akvr_projvr_diag(pvRatio, pvHits, pvFov);
             fprintf(f, "\npatches:\n");
-            fprintf(f, "   build: SHADERFINDER2 " __DATE__ " " __TIME__ "\n");
+            fprintf(f, "   build: DRAWPROBE " __DATE__ " " __TIME__ "\n");
             fprintf(f, "   zoom vignette: %s\n", akvr_xr_vig_diag());
             fprintf(f, "   pause look: %s, %s now, main view through the player camera: %s, head writes into the paused camera: %ld, darken %.0f%%\n",
                     akvr_xr_pause_look() ? "ON" : "off", akvr_xr_pause_live() ? "LIVE" : "not live",
                     akvr_camera_main_view_live() ? "yes" : "no", akvr_camera_pause_writes(), akvr_xr_pause_dim() * 100.0f);
+            fprintf(f, "   rain probe: %s\n", akvr_probe_diag());   // DRAWPROBE
+            for (int i = 0; i < akvr_probe_kind_count(); ++i)
+            {
+                unsigned long long vs = 0; int t0 = 0, t1 = 0; long draws = 0; unsigned cnt = 0; bool seen = false, hide = false;
+                if (akvr_probe_kind(i, vs, t0, t1, draws, cnt, seen, hide))
+                    fprintf(f, "      rain %d: VS %016llx, textures %d/%d, %ld draws/frame, %u points, %s%s\n",
+                            i + 1, vs, t0, t1, draws, cnt, seen ? "seen now" : "not seen now", hide ? ", HIDDEN" : "");
+            }
             fprintf(f, "   native capture timing: %s Present (comparison test)\n", g_nativeAfterPresent ? "AFTER" : "BEFORE");
             {
                 int div = 1; double hz = 0.0; long late = 0, frames = 0;

@@ -310,11 +310,122 @@ namespace {
     typedef HRESULT (__stdcall* CreateVSFn)(ID3D11Device*, const void*, SIZE_T, ID3D11ClassLinkage*, ID3D11VertexShader**);
     CreateVSFn oCreateVS[3] = {};
     void* g_createVsTarget[3] = {};
+    void sh_note(const void* code, SIZE_T len, void* obj);   // DRAWPROBE, below
     template <int K> HRESULT __stdcall hkCreateVS(ID3D11Device* d, const void* code, SIZE_T len, ID3D11ClassLinkage* cl, ID3D11VertexShader** out)
     {
         HRESULT hr = oCreateVS[K](d, code, len, cl, out);
-        if (SUCCEEDED(hr) && out) vs_note(code, len, *out);
+        if (SUCCEEDED(hr) && out) { vs_note(code, len, *out); sh_note(code, len, *out); }
         return hr;
+    }
+
+    // ---- DRAWPROBE 2026-10-01 — JJ: stepping geo-11's shader finder to the rain "took a lot of button presses".
+    // The rain pixel shader 5d787946eda54077 (JJ's mark) draws BOTH the world rain and a layer stuck to the head.
+    // Every VS/PS the game creates is named here (FNV-1 64, the ShaderFixesDM names); every game-side draw that
+    // uses the probed pixel shader is sorted into a "kind" (its vertex shader + the textures in PS slots 0 and 1),
+    // counted per frame, and a kind can be hidden (the draw is dropped) from the panel. Session only: once JJ finds
+    // the stuck layer's kind, it becomes a fixed rule.
+    constexpr int kShMap = 1 << 17;
+    struct ShEnt { void* obj; uint64_t h; };
+    ShEnt   g_shMap[kShMap];
+    SRWLOCK g_shLock = SRWLOCK_INIT;
+    uint32_t sh_slot(const void* p) { return (uint32_t)((((uintptr_t)p) >> 4) * 2654435761u) & (kShMap - 1); }
+    void sh_put(void* obj, uint64_t h)
+    {
+        if (!obj) return;
+        AcquireSRWLockExclusive(&g_shLock);
+        for (uint32_t i = sh_slot(obj), n = 0; n < 256; ++n, i = (i + 1) & (kShMap - 1))
+            if (!g_shMap[i].obj || g_shMap[i].obj == obj) { g_shMap[i] = { obj, h }; break; }
+        ReleaseSRWLockExclusive(&g_shLock);
+    }
+    uint64_t sh_get(const void* obj)
+    {
+        if (!obj) return 0;
+        uint64_t h = 0;
+        AcquireSRWLockShared(&g_shLock);
+        for (uint32_t i = sh_slot(obj), n = 0; n < 256; ++n, i = (i + 1) & (kShMap - 1))
+        {
+            if (!g_shMap[i].obj) break;
+            if (g_shMap[i].obj == obj) { h = g_shMap[i].h; break; }
+        }
+        ReleaseSRWLockShared(&g_shLock);
+        return h;
+    }
+    void sh_note(const void* code, SIZE_T len, void* obj)
+    {
+        if (!code || !obj) return;
+        uint64_t h = 0;
+        __try { h = fnv64(code, len); } __except (EXCEPTION_EXECUTE_HANDLER) { h = 0; }
+        if (h) sh_put(obj, h);
+    }
+    typedef HRESULT (__stdcall* CreatePSFn)(ID3D11Device*, const void*, SIZE_T, ID3D11ClassLinkage*, ID3D11PixelShader**);
+    CreatePSFn oCreatePS[3] = {};
+    void* g_createPsTarget[3] = {};
+    int   g_psHooks = 0;
+    template <int K> HRESULT __stdcall hkCreatePS(ID3D11Device* d, const void* code, SIZE_T len, ID3D11ClassLinkage* cl, ID3D11PixelShader** out)
+    {
+        HRESULT hr = oCreatePS[K](d, code, len, cl, out);
+        if (SUCCEEDED(hr) && out && *out) sh_note(code, len, *out);
+        return hr;
+    }
+    // shaders bound on each game-side context (immediate + the game's deferred ones)
+    struct CtxSh { void* ctx; void* vs; void* ps; };
+    CtxSh g_ctxSh[32] = {};
+    CtxSh* ctx_sh(void* c, bool claim)
+    {
+        for (int i = 0; i < 32; ++i)
+        {
+            void* cur = g_ctxSh[i].ctx;
+            if (cur == c) return &g_ctxSh[i];
+            if (!cur)
+            {
+                if (!claim) return nullptr;
+                if (InterlockedCompareExchangePointer(&g_ctxSh[i].ctx, c, nullptr) == nullptr) return &g_ctxSh[i];
+                if (g_ctxSh[i].ctx == c) return &g_ctxSh[i];
+            }
+        }
+        return nullptr;
+    }
+    typedef void (__stdcall* PSSetFn)(ID3D11DeviceContext*, ID3D11PixelShader*, ID3D11ClassInstance* const*, UINT);
+    PSSetFn oPSSetG = nullptr;
+    void __stdcall hkPSSetG(ID3D11DeviceContext* c, ID3D11PixelShader* ps, ID3D11ClassInstance* const* ci, UINT n)
+    {
+        if (CtxSh* s = ctx_sh(c, true)) s->ps = ps;
+        oPSSetG(c, ps, ci, n);
+    }
+    uint64_t g_probePs = 0x5d787946eda54077ull;
+    struct DrawKind { uint64_t vs; void* t0; void* t1; long frame, drawsNow, drawsLast; unsigned count; bool hide; };
+    DrawKind g_kinds[32] = {};
+    int      g_kindN = 0;
+    SRWLOCK  g_kindLock = SRWLOCK_INIT;
+    volatile LONG g_probeHits = 0, g_probeDropped = 0;
+    long g_frameNow() { return (long)g_frame; }
+    bool probe_skip(ID3D11DeviceContext* c, UINT count)
+    {
+        if (!g_probePs) return false;
+        CtxSh* s = ctx_sh(c, false);
+        if (!s || !s->ps || sh_get(s->ps) != g_probePs) return false;
+        InterlockedIncrement(&g_probeHits);
+        ID3D11ShaderResourceView* srv[2] = {};
+        c->PSGetShaderResources(0, 2, srv);
+        void* t0 = srv[0]; void* t1 = srv[1];
+        if (srv[0]) srv[0]->Release();
+        if (srv[1]) srv[1]->Release();
+        const uint64_t vh = sh_get(s->vs);
+        const long f = g_frameNow();
+        bool hide = false;
+        AcquireSRWLockExclusive(&g_kindLock);
+        int k = 0;
+        for (; k < g_kindN; ++k) if (g_kinds[k].vs == vh && g_kinds[k].t0 == t0 && g_kinds[k].t1 == t1) break;
+        if (k == g_kindN && g_kindN < 32) g_kinds[g_kindN++] = { vh, t0, t1, f, 0, 0, 0, false };
+        if (k < 32)
+        {
+            DrawKind& d = g_kinds[k];
+            if (d.frame != f) { d.drawsLast = d.drawsNow; d.drawsNow = 0; d.frame = f; }
+            ++d.drawsNow; d.count = count; hide = d.hide;
+        }
+        ReleaseSRWLockExclusive(&g_kindLock);
+        if (hide) InterlockedIncrement(&g_probeDropped);
+        return hide;
     }
 
     Scope* cur_scope() { return g_curN > 0 ? &g_cur[g_curN - 1] : nullptr; }
@@ -560,6 +671,7 @@ namespace {
         static void __stdcall DrawIndexed(ID3D11DeviceContext* c, UINT n, UINT s, INT b)
         {
             note_draw(c, L);
+            if (L == 0 && probe_skip(c, n)) return;   // DRAWPROBE
             if (L == 0 && snoop_ctx(c)) mark_record(c, split_now(c), n, 1);   // MARKREC
             if (L == 0 && split_now(c) && layer_only_now()) { layer_only_pre(c); oDrawIndexed(c, n, s, b); layer_only_post(c); return; }   // PSMARK
             if (L == 0 && split_now(c)) { split_pre(c); oDrawIndexed(c, n, s, b); split_mid(c); oDrawIndexed(c, n, s, b); split_post(c); return; }
@@ -575,6 +687,7 @@ namespace {
         static void __stdcall Draw(ID3D11DeviceContext* c, UINT n, UINT s)
         {
             note_draw(c, L);
+            if (L == 0 && probe_skip(c, n)) return;   // DRAWPROBE
             if (L == 0 && snoop_ctx(c)) mark_record(c, split_now(c), n, 1);   // MARKREC
             if (L == 0 && split_now(c) && layer_only_now()) { layer_only_pre(c); oDraw(c, n, s); layer_only_post(c); return; }   // PSMARK
             if (L == 0 && split_now(c)) { split_pre(c); oDraw(c, n, s); split_mid(c); oDraw(c, n, s); split_post(c); return; }
@@ -590,6 +703,7 @@ namespace {
         static void __stdcall DrawIdxInst(ID3D11DeviceContext* c, UINT a, UINT i, UINT s, INT b, UINT si)
         {
             note_draw(c, L);
+            if (L == 0 && probe_skip(c, a)) return;   // DRAWPROBE
             if (L == 0 && snoop_ctx(c)) mark_record(c, split_now(c), a, i);   // MARKREC
             if (L == 0 && split_now(c) && layer_only_now()) { layer_only_pre(c); oDrawIdxInst(c, a, i, s, b, si); layer_only_post(c); return; }   // PSMARK
             if (L == 0 && split_now(c)) { split_pre(c); oDrawIdxInst(c, a, i, s, b, si); split_mid(c); oDrawIdxInst(c, a, i, s, b, si); split_post(c); return; }
@@ -605,6 +719,7 @@ namespace {
         static void __stdcall DrawInst(ID3D11DeviceContext* c, UINT a, UINT i, UINT s, UINT si)
         {
             note_draw(c, L);
+            if (L == 0 && probe_skip(c, a)) return;   // DRAWPROBE
             if (L == 0 && snoop_ctx(c)) mark_record(c, split_now(c), a, i);   // MARKREC
             if (L == 0 && split_now(c) && layer_only_now()) { layer_only_pre(c); oDrawInst(c, a, i, s, si); layer_only_post(c); return; }   // PSMARK
             if (L == 0 && split_now(c)) { split_pre(c); oDrawInst(c, a, i, s, si); split_mid(c); oDrawInst(c, a, i, s, si); split_post(c); return; }
@@ -645,6 +760,7 @@ namespace {
             if (L == 0)
             {
                 if (c == g_gameCtx) g_curVs = vs;   // VSID: which shader the next HUD draw uses
+                if (CtxSh* sh = ctx_sh(c, true)) sh->vs = vs;   // DRAWPROBE
                 t_realVs = nullptr;
                 oVSSet(c, vs, ci, n);
                 if (t_realVs && vs) vs_map_set(vs, real_is_hud(t_realVs));   // VSID2: geo-11 bound its real shader now
@@ -1093,6 +1209,7 @@ namespace {
         // MARKREC: constant-buffer traffic on the game context (slots 7 VSSetConstantBuffers, 14 Map, 15 Unmap, 48 UpdateSubresource)
         hook_slot(gvt, nullptr, 7, (void*)&hkVSSetCB, (void**)&oVSSetCB);
         hook_slot(gvt, nullptr, 16, (void*)&hkPSSetCB, (void**)&oPSSetCB);   // PSMARK
+        hook_slot(gvt, nullptr, 9, (void*)&hkPSSetG, (void**)&oPSSetG);      // DRAWPROBE: PSSetShader
         hook_slot(gvt, nullptr, 14, (void*)&hkMapG, (void**)&oMapG);
         hook_slot(gvt, nullptr, 15, (void*)&hkUnmapG, (void**)&oUnmapG);
         hook_slot(gvt, nullptr, 48, (void*)&hkUpdSubG, (void**)&oUpdSubG);
@@ -1414,6 +1531,43 @@ float akvr_hudsplit_band() { return g_bandPct; }
 void  akvr_hudsplit_bottom_set(float pct) { g_bottomPct = pct < 0.0f ? 0.0f : (pct > 45.0f ? 45.0f : pct); }
 float akvr_hudsplit_bottom() { return g_bottomPct; }
 
+// DRAWPROBE: the kinds of draw that use the probed pixel shader, for the panel.
+int akvr_probe_kind_count() { return g_kindN; }
+bool akvr_probe_kind(int i, unsigned long long& vs, int& tex0, int& tex1, long& draws, unsigned& count, bool& seenNow, bool& hide)
+{
+    if (i < 0 || i >= g_kindN) return false;
+    AcquireSRWLockShared(&g_kindLock);
+    const DrawKind d = g_kinds[i];
+    // textures as small numbers, in order of first appearance across the kinds
+    void* seen[64]; int ns = 0;
+    auto id = [&](void* p) -> int {
+        if (!p) return 0;
+        for (int k = 0; k < ns; ++k) if (seen[k] == p) return k + 1;
+        if (ns < 64) seen[ns++] = p;
+        return ns;
+    };
+    for (int k = 0; k <= i; ++k) { id(g_kinds[k].t0); id(g_kinds[k].t1); }
+    tex0 = id(d.t0); tex1 = id(d.t1);
+    ReleaseSRWLockShared(&g_kindLock);
+    vs = d.vs; count = d.count; hide = d.hide;
+    seenNow = (long)g_frame - d.frame < 90;
+    draws = d.frame == (long)g_frame ? d.drawsNow : d.drawsLast;
+    return true;
+}
+void akvr_probe_kind_hide(int i, bool on)
+{
+    AcquireSRWLockExclusive(&g_kindLock);
+    if (i >= 0 && i < g_kindN) g_kinds[i].hide = on;
+    ReleaseSRWLockExclusive(&g_kindLock);
+}
+const char* akvr_probe_diag()
+{
+    static char d[200];
+    _snprintf_s(d, sizeof(d), _TRUNCATE, "watching pixel shader %016llx: %ld draws seen, %ld hidden; shader creation hooks %d",
+                (unsigned long long)g_probePs, (long)g_probeHits, (long)g_probeDropped, g_psHooks);
+    return d;
+}
+
 // VSID: called from hooks.cpp's device / swapchain creation hooks, as early as possible (AK creates its shaders at
 // load). Hooks CreateVertexShader of each distinct device function table (game-facing wrapper and real device).
 void akvr_hudsplit_watch_device(IUnknown* devUnk)
@@ -1422,7 +1576,19 @@ void akvr_hudsplit_watch_device(IUnknown* devUnk)
     ID3D11Device* dev = nullptr;
     if (FAILED(devUnk->QueryInterface(__uuidof(ID3D11Device), (void**)&dev)) || !dev) return;
     void* fn = (*(void***)dev)[12];
+    void* fnPs = (*(void***)dev)[15];   // DRAWPROBE: CreatePixelShader
     dev->Release();
+    {
+        bool seen = false;
+        for (int i = 0; i < g_psHooks; ++i) seen = seen || g_createPsTarget[i] == fnPs;
+        if (!seen && g_psHooks < 3)
+        {
+            MH_Initialize();
+            void* det = g_psHooks == 0 ? (void*)&hkCreatePS<0> : (g_psHooks == 1 ? (void*)&hkCreatePS<1> : (void*)&hkCreatePS<2>);
+            if (MH_CreateHook(fnPs, det, (void**)&oCreatePS[g_psHooks]) == MH_OK && MH_EnableHook(fnPs) == MH_OK)
+                g_createPsTarget[g_psHooks++] = fnPs;
+        }
+    }
     for (int i = 0; i < g_vsHooks; ++i) if (g_createVsTarget[i] == fn) return;
     if (g_vsHooks >= 3) return;
     MH_Initialize();
