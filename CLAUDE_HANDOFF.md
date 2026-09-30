@@ -98,6 +98,15 @@ marked hashes (newest `*-ps.txt` in ShaderFixes / ShaderFixesDM, then delete the
 logs (pause vs gameplay); skip the pause vignette with a ShaderOverride (gated to the pause if it is shared);
 decide the rain fix; restore the hunting lines; add the kept changes to the patch script + FIX_CHANGES.
 
+**HUNTRAIN results so far (2026-10-01):** panel section "FIND A SHADER (geo-11)" (SHADERFINDER/2) presses the hunting
+keys by SendInput (rows: pixel 1/2/3, vertex 4/5/6, index buffer 7/8/9, vertex buffer / * -). JJ marked rain PS
+**5d787946eda54077** (a particle streak shader): hiding it removes BOTH the world rain and the head-locked layer, so
+the layer must be told apart by its vertex shader or buffers (likely a camera-attached emitter). geo-11 frame
+analysis logs `hash=0000000000000007` for every shader (flags, not hashes: memory geo11-shader-hash-not-in-context),
+so frame lists cannot identify shaders; the Scroll Lock button was removed. Marks dump asm into BOTH ShaderFixes and
+ShaderFixesDM (`5d787946eda54077-ps.txt` so far): delete them at cleanup. Safety copies of both folders taken before
+any VS marking: `diagnostics/before-HUNTRAIN-20261001/ShaderFixes*`.
+
 ## PAUSELOOK + PAUSEDIM (2026-09-30, deployed to JJ's game only; JJ: "a good start")
 
 JJ: pause as in Sekiro — "the whole 360 world to freeze, darken, and then add the pause screen menus over the top",

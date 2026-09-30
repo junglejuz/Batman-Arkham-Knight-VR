@@ -2106,16 +2106,30 @@ namespace
         // (hunting=2 in the fix's d3dx.ini, FIX_CHANGES 3c) listens for numpad keys; these buttons press them.
         if (ImGui::CollapsingHeader("FIND A SHADER (geo-11)"))
         {
-            ImGui::TextWrapped("Turn the finder on, then press 'hide the next one' until the thing you are after "
-                               "disappears, and 'record it'. Turn the finder off when done.");
+            ImGui::TextWrapped("Turn the finder on, then in one row press 'hide the next one' until the thing you are "
+                               "after disappears, and 'record it'. Turn the finder off when done.");
             if (ImGui::Button("finder on / off")) finder_press(VK_NUMPAD0);
-            ImGui::SameLine();
-            if (ImGui::Button("hide the previous one")) finder_press(VK_NUMPAD1);
-            ImGui::SameLine();
-            if (ImGui::Button("hide the next one")) finder_press(VK_NUMPAD2);
-            if (ImGui::Button("record it")) finder_press(VK_NUMPAD3);
-            ImGui::SameLine();
-            if (ImGui::Button("save a list of this frame (finder on)")) finder_press(VK_SCROLL);
+            // JJ 2026-10-01: the rain pixel shader (5d787946eda54077) draws BOTH the world rain and the layer stuck to
+            // the head, so the next things to step through are what places it: vertex shaders, then its buffers.
+            struct Row { const char* what; WORD prev, next, mark; };
+            static const Row rows[] = {
+                { "colour (pixel shaders)",      VK_NUMPAD1, VK_NUMPAD2, VK_NUMPAD3 },
+                { "position (vertex shaders)",   VK_NUMPAD4, VK_NUMPAD5, VK_NUMPAD6 },
+                { "shapes (index buffers)",      VK_NUMPAD7, VK_NUMPAD8, VK_NUMPAD9 },
+                { "points (vertex buffers)",     VK_DIVIDE,  VK_MULTIPLY, VK_SUBTRACT },
+            };
+            for (const Row& r : rows)
+            {
+                ImGui::PushID(r.what);
+                ImGui::TextUnformatted(r.what);
+                ImGui::SameLine(260.0f);
+                if (ImGui::Button("previous")) finder_press(r.prev);
+                ImGui::SameLine();
+                if (ImGui::Button("hide the next one")) finder_press(r.next);
+                ImGui::SameLine();
+                if (ImGui::Button("record it")) finder_press(r.mark);
+                ImGui::PopID();
+            }
             ImGui::TextDisabled("   key presses sent: %ld", g_fkPresses);
         }
 
@@ -2566,7 +2580,7 @@ namespace
             float pvRatio = 0.0f, pvFov = 0.0f; int pvHits = 0;
             akvr_projvr_diag(pvRatio, pvHits, pvFov);
             fprintf(f, "\npatches:\n");
-            fprintf(f, "   build: SHADERFINDER " __DATE__ " " __TIME__ "\n");
+            fprintf(f, "   build: SHADERFINDER2 " __DATE__ " " __TIME__ "\n");
             fprintf(f, "   zoom vignette: %s\n", akvr_xr_vig_diag());
             fprintf(f, "   pause look: %s, %s now, main view through the player camera: %s, head writes into the paused camera: %ld, darken %.0f%%\n",
                     akvr_xr_pause_look() ? "ON" : "off", akvr_xr_pause_live() ? "LIVE" : "not live",
