@@ -2121,11 +2121,11 @@ namespace
                 int nm = akvr_near_rain_mode();
                 ImGui::TextUnformatted("rain close to you:");
                 ImGui::SameLine();
-                bool ch = ImGui::RadioButton("hang in the room", &nm, 1);
+                bool ch = ImGui::RadioButton("hidden", &nm, 2);   // NEARHIDE: the default
                 ImGui::SameLine();
                 ch |= ImGui::RadioButton("as the game draws it", &nm, 0);
                 ImGui::SameLine();
-                ch |= ImGui::RadioButton("hidden", &nm, 2);
+                ch |= ImGui::RadioButton("hang in the room (experiment, not working yet)", &nm, 1);
                 if (ch) { akvr_near_rain_mode_set(nm); settings_save(); }
                 // NEARRAIN2 (JJ: the block still turns with the head): which camera the correction uses
                 const int lag = akvr_near_rain_lag();
@@ -2690,7 +2690,7 @@ namespace
             float pvRatio = 0.0f, pvFov = 0.0f; int pvHits = 0;
             akvr_projvr_diag(pvRatio, pvHits, pvFov);
             fprintf(f, "\npatches:\n");
-            fprintf(f, "   build: NEARRAIN2 " __DATE__ " " __TIME__ "\n");
+            fprintf(f, "   build: NEARHIDE " __DATE__ " " __TIME__ "\n");
             fprintf(f, "   zoom vignette: %s\n", akvr_xr_vig_diag());
             fprintf(f, "   pause look: %s, %s now, main view through the player camera: %s, head writes into the paused camera: %ld, darken %.0f%%\n",
                     akvr_xr_pause_look() ? "ON" : "off", akvr_xr_pause_live() ? "LIVE" : "not live",

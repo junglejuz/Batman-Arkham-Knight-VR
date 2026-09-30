@@ -564,7 +564,10 @@ namespace {
     // is re-placed from the head-turned camera (the shader reads that from its own view-projection) to the game's
     // camera, so head turns no longer drag the block. Bound only around the rain draw; unbound cb12 reads 0 = off.
     ID3D11Buffer* g_rainCb = nullptr;
-    volatile LONG g_nearMode = 1;
+    // NEARHIDE 2026-10-01 — JJ on NEARRAIN2 (every "frames back" value): the block still turns "as if there's another
+    // camera orbiting it" - the game does not place it by a plain rotation about the camera, so it cannot simply be
+    // turned back. Default now: hidden (2). "Hang in the room" stays as an experiment.
+    volatile LONG g_nearMode = 2;
     volatile LONG g_nearLag = 0;   // NEARRAIN2: Presents back for the camera pair (0 = the draw's own view-projection)
     volatile LONG g_nearCount = 2048;
     volatile LONG g_nearBinds = 0, g_nearNoAxes = 0;
