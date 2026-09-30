@@ -1465,6 +1465,30 @@ namespace
         CopyFileW((base + L"akvr_startup_log.txt").c_str(), (capture + L"status.txt").c_str(), TRUE);
     }
 
+    // SHADERFINDER 2026-10-01: panel buttons press geo-11's hunting keys (numpad 0-3, Scroll Lock) through
+    // SendInput; geo-11 polls the key state each frame, so each press is held 120 ms, then released here.
+    WORD      g_fkVk = 0;
+    ULONGLONG g_fkUpAt = 0;
+    long      g_fkPresses = 0;
+    void finder_send(WORD vk, bool down)
+    {
+        INPUT in{};
+        in.type = INPUT_KEYBOARD;
+        in.ki.wVk = vk;
+        in.ki.dwFlags = down ? 0 : KEYEVENTF_KEYUP;
+        SendInput(1, &in, sizeof(in));
+    }
+    void finder_press(WORD vk)
+    {
+        if (g_fkVk) finder_send(g_fkVk, false);
+        finder_send(vk, true);
+        g_fkVk = vk; g_fkUpAt = GetTickCount64() + 120; ++g_fkPresses;
+    }
+    void finder_tick()
+    {
+        if (g_fkVk && GetTickCount64() >= g_fkUpAt) { finder_send(g_fkVk, false); g_fkVk = 0; }
+    }
+
     void process_hotkeys()
     {
         // F8 edge-detect toggle (no input hook needed). Hiding the overlay ALSO forces
@@ -2077,6 +2101,24 @@ namespace
         }
         else akvr_xr_vig_preview(false);   // never leave a preview on behind a closed section
 
+        // ---- FIND A SHADER (SHADERFINDER 2026-10-01) ----------------------------------------------
+        // JJ: "Is there a way I can do this without being at the actual physical keyboard?" geo-11's shader finder
+        // (hunting=2 in the fix's d3dx.ini, FIX_CHANGES 3c) listens for numpad keys; these buttons press them.
+        if (ImGui::CollapsingHeader("FIND A SHADER (geo-11)"))
+        {
+            ImGui::TextWrapped("Turn the finder on, then press 'hide the next one' until the thing you are after "
+                               "disappears, and 'record it'. Turn the finder off when done.");
+            if (ImGui::Button("finder on / off")) finder_press(VK_NUMPAD0);
+            ImGui::SameLine();
+            if (ImGui::Button("hide the previous one")) finder_press(VK_NUMPAD1);
+            ImGui::SameLine();
+            if (ImGui::Button("hide the next one")) finder_press(VK_NUMPAD2);
+            if (ImGui::Button("record it")) finder_press(VK_NUMPAD3);
+            ImGui::SameLine();
+            if (ImGui::Button("save a list of this frame (finder on)")) finder_press(VK_SCROLL);
+            ImGui::TextDisabled("   key presses sent: %ld", g_fkPresses);
+        }
+
         // ---- MENUS AND SCREENS ------------------------------------------------------
         if (ImGui::CollapsingHeader("MENUS AND SCREENS"))
         {
@@ -2524,7 +2566,7 @@ namespace
             float pvRatio = 0.0f, pvFov = 0.0f; int pvHits = 0;
             akvr_projvr_diag(pvRatio, pvHits, pvFov);
             fprintf(f, "\npatches:\n");
-            fprintf(f, "   build: PAUSELOOK " __DATE__ " " __TIME__ "\n");
+            fprintf(f, "   build: SHADERFINDER " __DATE__ " " __TIME__ "\n");
             fprintf(f, "   zoom vignette: %s\n", akvr_xr_vig_diag());
             fprintf(f, "   pause look: %s, %s now, main view through the player camera: %s, head writes into the paused camera: %ld, darken %.0f%%\n",
                     akvr_xr_pause_look() ? "ON" : "off", akvr_xr_pause_live() ? "LIVE" : "not live",
@@ -3080,6 +3122,7 @@ namespace
         // }
 
         process_hotkeys();   // F-keys work every frame, even while the panel is hidden
+        finder_tick();       // SHADERFINDER: release a key a panel button pressed for geo-11
 
         // --- one OpenXR frame per Present (M4b) ---
         // begin: sample the single predicted head pose; then the camera injection
