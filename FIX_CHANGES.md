@@ -410,6 +410,27 @@ their textures). Every added line follows a `; AKVR DIAG RB` comment. Backup: `d
 
 ---
 
+## 3c. d3dx.ini TEMPORARY diagnostic + test "AKVR HUNTRAIN" (2026-10-01) - ON JJ's game, NOT for the installer
+
+JJ (2026-10-01): with PAUSELOOK, (a) the game's own "screen-sized black vignette-type overlay" shows in the pause
+(wanted: gone, only AKVR's whole-world darkening), and (b) "one particular layer" of rain is attached to the head.
+Both need shader hashes. Applied by a byte-preserving script (Latin-1, CRLF kept); backup of the fix's file:
+`akvr/diagnostics/before-HUNTRAIN-20261001/d3dx.ini` (copy it back to undo everything below). Each edit follows a
+`;AKVR HUNTRAIN` comment:
+- `[Hunting]`: `hunting=0` -> `hunting=2` (numpad 0 turns hunting on/off; numpad 1/2 step through visible pixel
+  shaders, `marking_mode=skip` hides the selected one; numpad 3 marks it).
+- `[Hunting]`: `marking_actions = clipboard regex hlsl asm stereo_snapshot snapshot_if_pink` ->
+  `marking_actions = clipboard asm` (a mark writes only the exact disassembly, never a decompiled HLSL that would
+  then load as a "fix"). **Marked shaders' `.txt` dumps land in the fix folder: delete them after reading.**
+- `[Hunting]`: added `analyse_frame = no_modifiers VK_SCROLL` (Scroll Lock; F8 is the AKVR panel) and
+  `analyse_options = mono deferred_ctx_accurate` (log only, no images): a pause frame vs a gameplay frame -> the
+  pause-only pixel shaders.
+- TEST: `[TextureOverrideRain1]` (`Hash = eaa6f638`, `StereoMode = 2`) commented out. The fix forces this rain
+  texture to ONE picture for both eyes, which in VR reads as a sheet on the face: suspect for the head-locked rain
+  layer. If the rain looks broken instead, restore the block.
+
+---
+
 ## 4. geo-11 itself (HOOK mode and version)
 
 | File | Baseline (fix pack) | Installed | Status |

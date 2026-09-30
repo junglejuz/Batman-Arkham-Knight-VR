@@ -88,7 +88,17 @@ game's own FOV (camera.cpp `g_gameFov`) is below `vigbelow` 45. JJ's settings: s
 game's 2D zoom overlay is the same part as the gameplay tips (`K1/0.0.0.0.2`): it is set to "hide while zoomed"
 (ZOOMHIDE, 7th field), and it is also "hang in the room".
 
-## PAUSELOOK + PAUSEDIM (2026-09-30, deployed to JJ's game only, untested; NOT in the release)
+## HUNTRAIN (2026-10-01): shader hunt for the pause vignette and a head-locked rain layer
+
+JJ on PAUSELOOK: "a good start"; wants the game's own "screen-sized black vignette-type overlay" in the pause gone
+(only AKVR's whole-world darkening), and found "one particular layer" of rain attached to the head. No F2 from that
+run. Temporary d3dx.ini edits on JJ's game (FIX_CHANGES 3c): hunting=2, marks dump asm only, frame dump on Scroll
+Lock (log only), and a TEST with `[TextureOverrideRain1]` (eaa6f638 forced mono) commented out. Next: read JJ's
+marked hashes (newest `*-ps.txt` in ShaderFixes / ShaderFixesDM, then delete them) or diff the two FrameAnalysis
+logs (pause vs gameplay); skip the pause vignette with a ShaderOverride (gated to the pause if it is shared);
+decide the rain fix; restore the hunting lines; add the kept changes to the patch script + FIX_CHANGES.
+
+## PAUSELOOK + PAUSEDIM (2026-09-30, deployed to JJ's game only; JJ: "a good start")
 
 JJ: pause as in Sekiro — "the whole 360 world to freeze, darken, and then add the pause screen menus over the top",
 "not fully darken to black. just darker". Evidence it can work: the mode trace through a pause (SCREENTAN capture,
