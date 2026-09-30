@@ -177,6 +177,15 @@ rotation (e.g. wrapped in a camera-aligned box) -> recommend "hidden".
 pivot / Batman). Default is now mode 2 = hidden (the first 2048 streaks off screen; ~90% of the rain stays); "hang in
 the room" is labelled an experiment. Reopening it needs RE of how the game fills the first 2048 entries of the rain
 buffer (the simulation CS or CPU upload), not more shader maths.
+**RAINWRITER (2026-10-01, deployed, needs one F2 in the rain):** JJ: "I don't want them turned off. I want them fixed
+so they hang in space." Reading of NEARRAIN2's failure: the streaks are world-placed; the REGION they are wrapped into
+follows the (head-turned) view, so turning the streaks orbits them. The fix belongs in whatever moves the rain. This
+build watches the rain VS's t0 buffer (+ CopyResource/CopySubresourceRegion sources), hooks CSSetUnorderedAccessViews
+(68) / CSSetConstantBuffers (71), records each writer CS with its cb contents (snapshots via the Map/Unmap/
+UpdateSubresource hooks), keeps every CS's bytecode from creation and saves the writer's as
+`Binaries\Win64\akvr_shader_<hash>.bin`; F2 status "rain writer:" lists it all with the camera position/axes for
+matching. Next: disassemble the writer, find the wrap region (box centre/size, from camera position + view direction?)
+and make it use the game camera (not the head) - via cb from the mod around that dispatch, like cb12 for the draw.
 HUNTRAIN d3dx.ini lines (hunting=2 etc.) are still on JJ's game: restore `diagnostics/before-HUNTRAIN-20261001/d3dx.ini`
 once the rain is settled; the finder-mark dumps (5d78...-ps) were deleted.
 
