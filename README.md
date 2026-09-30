@@ -63,9 +63,8 @@ geo-11 comes with the mod, so you don't need to download it.
 1. **Download the mod.** Under **Releases** on this page, open the newest release and download
    the `AKVR-ArkhamKnight` zip. Right-click it, choose **Extract All...**, and extract it in
    your Downloads folder.
-2. **Download the 3D fix.** On the
-   [Batman: Arkham Knight HelixMod page](https://helixmod.blogspot.com/2020/12/batman-arkham-knight-dx11.html),
-   download the **geo-11 fix** (`Batman_Arkham_Knight_geo11_fix.7z`), not the 3D Vision one.
+2. **Download the 3D fix:**
+   [Batman_Arkham_Knight_geo11_fix.7z](https://masterotaku.s3.amazonaws.com/Batman+Arkham+Knight/Batman_Arkham_Knight_geo11_fix.7z).
    Leave it in Downloads without unpacking it.
 3. **Run the installer.** Close the game, open the `AKVR-ArkhamKnight` folder and double-click
    `Install-AKVR.bat`.

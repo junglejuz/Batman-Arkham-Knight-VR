@@ -15,7 +15,7 @@ $Game = @{
     Exe          = 'BatmanAK.exe'
     SteamFolder  = 'Batman Arkham Knight\Binaries\Win64'                      # under steamapps\common
     FixMatch     = 'arkham.*knight.*geo-?11.*\.(7z|zip)$'   # the fix's file name
-    FixPage      = 'https://helixmod.blogspot.com/2020/12/batman-arkham-knight-dx11.html'
+    FixPage      = 'https://masterotaku.s3.amazonaws.com/Batman+Arkham+Knight/Batman_Arkham_Knight_geo11_fix.7z'
     AddNonSquare = $true                         # keep 3D on the tall VR picture (FIX_CHANGES.md section 3)
     FixPatches   = 'AKVR-fix-patches.ps1'       # the mod's HUD edits to the fix (FIX_CHANGES.md sections 1-2)
     # The game's graphics settings the mod was tested with (BmSystemSettings.ini [SystemSettings]),
