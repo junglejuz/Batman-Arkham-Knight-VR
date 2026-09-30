@@ -509,6 +509,7 @@ namespace {
         ReleaseSRWLockExclusive(&g_kindLock);
     }
     volatile bool g_hideEveryDraw = false;   // DRAWPROBE4: every game draw except the world rain and the HUD
+    void rw_rain_tick(ID3D11DeviceContext* c);   // RAINWRITER, below
     bool probe_skip(ID3D11DeviceContext* c, UINT count, UINT inst = 1, int extraTag = 0)
     {
         if (!g_probePs) return false;
@@ -522,6 +523,7 @@ namespace {
         if (ph == g_probePs)
         {
             InterlockedIncrement(&g_probeHits);
+            rw_rain_tick(c);   // RAINWRITER
             g_rainTex[0] = s->srv[0]; g_rainTex[1] = s->srv[1];
             kind_note(ph, vh, 1, count, inst);                           // the world rain
             for (int j = 0; j < 12; ++j)                                 // the 12 before it
@@ -618,6 +620,191 @@ namespace {
         if (old) old->Release();
     }
 
+    // RAINWRITER 2026-10-01 — JJ on NEARHIDE: "I don't want them turned off. I want them fixed so they hang in space."
+    // NEARRAIN2 turned each streak about the camera and JJ saw the block "rotate as if there's another camera orbiting
+    // it": the streaks are already world-placed; what follows the view is the REGION they are kept in (streaks leaving
+    // it are moved to its far side). That happens where the game moves the rain, not in the draw. Find it: the
+    // resource the rain VS reads (t0) is watched, plus anything copied into it; every compute dispatch with a watched
+    // resource bound as a UAV is recorded (shader name, its constant buffers and their last contents), and that
+    // shader's original bytecode is saved as akvr_shader_<hash>.bin for disassembly. CPU writes are counted too.
+    void* volatile g_rwWatch[8] = {};
+    volatile LONG g_rwWatchN = 0, g_rwCpuWrites = 0, g_rwCopies = 0, g_rwRainSeen = 0;
+    bool rw_watched(void* r)
+    {
+        if (!r) return false;
+        for (LONG i = 0; i < g_rwWatchN; ++i) if (g_rwWatch[i] == r) return true;
+        return false;
+    }
+    void rw_watch(void* r)
+    {
+        if (!r || rw_watched(r)) return;
+        const LONG n = g_rwWatchN;
+        if (n < 8) { g_rwWatch[n] = r; InterlockedExchange(&g_rwWatchN, n + 1); }
+    }
+    struct CsCode { uint64_t h; void* p; SIZE_T n; };
+    CsCode  g_csCode[2048] = {};
+    volatile LONG g_csCodeN = 0;
+    SRWLOCK g_csCodeLock = SRWLOCK_INIT;
+    void cs_code_keep(const void* code, SIZE_T len)
+    {
+        if (!code || !len || len > (1u << 20)) return;
+        uint64_t h = 0;
+        __try { h = fnv64(code, len); } __except (EXCEPTION_EXECUTE_HANDLER) { return; }
+        AcquireSRWLockExclusive(&g_csCodeLock);
+        bool have = false;
+        for (LONG i = 0; i < g_csCodeN && !have; ++i) have = g_csCode[i].h == h;
+        if (!have && g_csCodeN < 2048)
+            if (void* p = malloc(len))
+            {
+                bool ok = true;
+                __try { memcpy(p, code, len); } __except (EXCEPTION_EXECUTE_HANDLER) { ok = false; }
+                if (ok) g_csCode[g_csCodeN++] = { h, p, len }; else free(p);
+            }
+        ReleaseSRWLockExclusive(&g_csCodeLock);
+    }
+    void cs_code_save(uint64_t h)
+    {
+        AcquireSRWLockShared(&g_csCodeLock);
+        for (LONG i = 0; i < g_csCodeN; ++i)
+            if (g_csCode[i].h == h)
+            {
+                wchar_t path[MAX_PATH];
+                const DWORD n = GetModuleFileNameW(nullptr, path, MAX_PATH);
+                wchar_t* slash = n ? wcsrchr(path, L'\\') : nullptr;
+                if (slash)
+                {
+                    _snwprintf_s(slash + 1, MAX_PATH - (slash + 1 - path), _TRUNCATE, L"akvr_shader_%016llx.bin", (unsigned long long)h);
+                    HANDLE f = CreateFileW(path, GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+                    if (f != INVALID_HANDLE_VALUE) { DWORD w = 0; WriteFile(f, g_csCode[i].p, (DWORD)g_csCode[i].n, &w, nullptr); CloseHandle(f); }
+                }
+                break;
+            }
+        ReleaseSRWLockShared(&g_csCodeLock);
+    }
+    // per game-side context (same index as g_ctxSh): the CS unordered-access views' resources and constant buffers
+    void* g_ctxUav[32][8] = {};
+    void* g_ctxCsCb[32][4] = {};
+    struct RwWriter { uint64_t h; long dispatches; int watch; void* cb[4]; };
+    RwWriter g_rw[8] = {};
+    int      g_rwN = 0;
+    SRWLOCK  g_rwLock = SRWLOCK_INIT;
+    struct CbSnap { void* cb; UINT size; void* mapped; uint8_t data[1024]; long writes; };
+    CbSnap   g_cbSnap[16] = {};
+    int      g_cbSnapN = 0;
+    typedef void (__stdcall* CSSetUavFn)(ID3D11DeviceContext*, UINT, UINT, ID3D11UnorderedAccessView* const*, const UINT*);
+    CSSetUavFn oCSSetUavG = nullptr;
+    void __stdcall hkCSSetUavG(ID3D11DeviceContext* c, UINT start, UINT num, ID3D11UnorderedAccessView* const* u, const UINT* ic)
+    {
+        if (CtxSh* s = ctx_sh(c, true))
+        {
+            const int ci = (int)(s - g_ctxSh);
+            for (UINT i = 0; i < num && start + i < 8; ++i)
+            {
+                void* res = nullptr;
+                if (u && u[i]) { ID3D11Resource* r = nullptr; u[i]->GetResource(&r); res = r; if (r) r->Release(); }
+                g_ctxUav[ci][start + i] = res;
+            }
+        }
+        oCSSetUavG(c, start, num, u, ic);
+    }
+    typedef void (__stdcall* CSSetCBFn)(ID3D11DeviceContext*, UINT, UINT, ID3D11Buffer* const*);
+    CSSetCBFn oCSSetCBG = nullptr;
+    void __stdcall hkCSSetCBG(ID3D11DeviceContext* c, UINT start, UINT num, ID3D11Buffer* const* b)
+    {
+        if (CtxSh* s = ctx_sh(c, true))
+        {
+            const int ci = (int)(s - g_ctxSh);
+            for (UINT i = 0; i < num && start + i < 4; ++i) g_ctxCsCb[ci][start + i] = b ? b[i] : nullptr;
+        }
+        oCSSetCBG(c, start, num, b);
+    }
+    typedef void (__stdcall* CopyResFn)(ID3D11DeviceContext*, ID3D11Resource*, ID3D11Resource*);
+    CopyResFn oCopyResG = nullptr;
+    void __stdcall hkCopyResG(ID3D11DeviceContext* c, ID3D11Resource* dst, ID3D11Resource* src)
+    {
+        if (rw_watched(dst)) { InterlockedIncrement(&g_rwCopies); rw_watch(src); }
+        oCopyResG(c, dst, src);
+    }
+    typedef void (__stdcall* CopySubFn)(ID3D11DeviceContext*, ID3D11Resource*, UINT, UINT, UINT, UINT, ID3D11Resource*, UINT, const D3D11_BOX*);
+    CopySubFn oCopySubG = nullptr;
+    void __stdcall hkCopySubG(ID3D11DeviceContext* c, ID3D11Resource* dst, UINT ds, UINT x, UINT y, UINT z, ID3D11Resource* src, UINT ss, const D3D11_BOX* b)
+    {
+        if (rw_watched(dst)) { InterlockedIncrement(&g_rwCopies); rw_watch(src); }
+        oCopySubG(c, dst, ds, x, y, z, src, ss, b);
+    }
+    void rw_on_rain_draw(ID3D11DeviceContext* c)   // the rain particles are being drawn: watch what they read
+    {
+        InterlockedIncrement(&g_rwRainSeen);
+        ID3D11ShaderResourceView* srv = nullptr;
+        c->VSGetShaderResources(0, 1, &srv);
+        if (!srv) return;
+        ID3D11Resource* r = nullptr;
+        srv->GetResource(&r);
+        srv->Release();
+        if (r) { rw_watch(r); r->Release(); }
+    }
+    void rw_rain_tick(ID3D11DeviceContext* c)   // from the rain draw: learn its buffer first, then re-check now and then
+    {
+        if (g_rwWatchN == 0 || (g_probeHits & 255) == 0) rw_on_rain_draw(c);
+    }
+    void rw_on_dispatch(ID3D11DeviceContext* c, uint64_t h)
+    {
+        if (!g_rwWatchN) return;
+        CtxSh* s = ctx_sh(c, false);
+        if (!s) return;
+        const int ci = (int)(s - g_ctxSh);
+        int w = -1;
+        for (int i = 0; i < 8 && w < 0; ++i)
+            for (LONG k = 0; k < g_rwWatchN && w < 0; ++k)
+                if (g_ctxUav[ci][i] && g_ctxUav[ci][i] == g_rwWatch[k]) w = (int)k;
+        if (w < 0) return;
+        bool fresh = false;
+        AcquireSRWLockExclusive(&g_rwLock);
+        int k = 0;
+        for (; k < g_rwN; ++k) if (g_rw[k].h == h) break;
+        if (k == g_rwN && g_rwN < 8) { g_rw[g_rwN++] = { h, 0, w, {} }; fresh = true; }
+        if (k < 8)
+        {
+            ++g_rw[k].dispatches;
+            for (int i = 0; i < 4; ++i)
+            {
+                void* cb = g_ctxCsCb[ci][i];
+                g_rw[k].cb[i] = cb;
+                bool have = false;
+                for (int j = 0; j < g_cbSnapN && !have; ++j) have = g_cbSnap[j].cb == cb;
+                if (cb && !have && g_cbSnapN < 16)
+                {
+                    CbSnap& sn = g_cbSnap[g_cbSnapN++];
+                    sn.cb = cb; sn.mapped = nullptr; sn.writes = 0;
+                    D3D11_BUFFER_DESC d{}; ((ID3D11Buffer*)cb)->GetDesc(&d);
+                    sn.size = d.ByteWidth > 1024 ? 1024 : d.ByteWidth;
+                }
+            }
+        }
+        ReleaseSRWLockExclusive(&g_rwLock);
+        if (fresh) cs_code_save(h);
+    }
+    CbSnap* cb_snap(void* r)
+    {
+        for (int j = 0; j < g_cbSnapN; ++j) if (g_cbSnap[j].cb == r) return &g_cbSnap[j];
+        return nullptr;
+    }
+    void rw_note_cpu_write(void* r) { if (rw_watched(r)) InterlockedIncrement(&g_rwCpuWrites); }
+    void rw_note_cb_data(void* r, const void* data, UINT, bool mapped)
+    {
+        CbSnap* s = cb_snap(r);
+        if (!s || !data) return;
+        if (mapped) { s->mapped = (void*)data; return; }
+        __try { memcpy(s->data, data, s->size); ++s->writes; } __except (EXCEPTION_EXECUTE_HANDLER) {}
+    }
+    void rw_note_unmap(void* r)
+    {
+        CbSnap* s = cb_snap(r);
+        if (!s || !s->mapped) return;
+        __try { memcpy(s->data, s->mapped, s->size); ++s->writes; } __except (EXCEPTION_EXECUTE_HANDLER) {}
+        s->mapped = nullptr;
+    }
+
     // DRAWPROBE4 2026-10-01 — JJ: with every see-through draw hidden, the stuck rain is STILL there. Two blind spots:
     // (1) the indirect draws (slots 39/40: the GPU supplies the count - how GPU-simulated effects are usually drawn)
     // were never hooked; (2) compute shaders (the fix names two rain ones: a96594b16ceb399b "Rain haloing CS",
@@ -636,6 +823,7 @@ namespace {
     {
         CtxSh* s = ctx_sh(c, true);
         const uint64_t h = s ? sh_get(g_ctxCs[s - g_ctxSh]) : 0;
+        rw_on_dispatch(c, h);   // RAINWRITER
         const long f = g_frameNow();
         bool hide = false;
         AcquireSRWLockExclusive(&g_csLock);
@@ -670,7 +858,7 @@ namespace {
     template <int K> HRESULT __stdcall hkCreateCS(ID3D11Device* d, const void* code, SIZE_T len, ID3D11ClassLinkage* cl, ID3D11ComputeShader** out)
     {
         HRESULT hr = oCreateCS[K](d, code, len, cl, out);
-        if (SUCCEEDED(hr) && out && *out) sh_note(code, len, *out);
+        if (SUCCEEDED(hr) && out && *out) { sh_note(code, len, *out); cs_code_keep(code, len); }   // RAINWRITER: keep the code
         return hr;
     }
 
@@ -844,14 +1032,19 @@ namespace {
         for (int i = 0; i < 8; ++i) if (f[i] < -0.0002f && f[i] > -0.02f) return true;   // PARTTAG5: stacked marks too
         return false;
     }
+    void rw_note_cpu_write(void* r);                       // RAINWRITER, below
+    void rw_note_cb_data(void* r, const void* data, UINT size, bool mapped);
     HRESULT __stdcall hkMapG(ID3D11DeviceContext* c, ID3D11Resource* r, UINT sub, D3D11_MAP t, UINT f, D3D11_MAPPED_SUBRESOURCE* m)
     {
         const HRESULT hr = oMapG(c, r, sub, t, f, m);
+        if (SUCCEEDED(hr) && m) { rw_note_cpu_write(r); rw_note_cb_data(r, m->pData, 0, true); }   // RAINWRITER
         if (SUCCEEDED(hr) && m && snoop_ctx(c)) if (Shadow* s = sh_find(r, false)) s->mapped = m->pData;
         return hr;
     }
+    void rw_note_unmap(void* r);                          // RAINWRITER, below
     void __stdcall hkUnmapG(ID3D11DeviceContext* c, ID3D11Resource* r, UINT sub)
     {
+        rw_note_unmap(r);   // RAINWRITER
         if (snoop_ctx(c))
             if (Shadow* s = sh_find(r, false))
                 if (s->mapped && s->size) { __try { memcpy(s->data, s->mapped, s->size); } __except (EXCEPTION_EXECUTE_HANDLER) {} s->mapped = nullptr; }
@@ -859,6 +1052,7 @@ namespace {
     }
     void __stdcall hkUpdSubG(ID3D11DeviceContext* c, ID3D11Resource* r, UINT sub, const D3D11_BOX* box, const void* src, UINT rp, UINT dp)
     {
+        if (src) { rw_note_cpu_write(r); if (!box) rw_note_cb_data(r, src, 0, false); }   // RAINWRITER
         if (snoop_ctx(c) && !box && src)
             if (Shadow* s = sh_find(r, false))
                 if (s->size) { __try { memcpy(s->data, src, s->size); } __except (EXCEPTION_EXECUTE_HANDLER) {} }
@@ -1467,6 +1661,10 @@ namespace {
         hook_slot(gvt, nullptr, 41, (void*)&hkDispatchG, (void**)&oDispatchG);  // DRAWPROBE4: Dispatch
         hook_slot(gvt, nullptr, 42, (void*)&hkDispatchIndG, (void**)&oDispatchIndG);   // DRAWPROBE4: DispatchIndirect
         hook_slot(gvt, nullptr, 69, (void*)&hkCSSetG, (void**)&oCSSetG);        // DRAWPROBE4: CSSetShader
+        hook_slot(gvt, nullptr, 68, (void*)&hkCSSetUavG, (void**)&oCSSetUavG);  // RAINWRITER: CSSetUnorderedAccessViews
+        hook_slot(gvt, nullptr, 71, (void*)&hkCSSetCBG, (void**)&oCSSetCBG);    // RAINWRITER: CSSetConstantBuffers
+        hook_slot(gvt, nullptr, 47, (void*)&hkCopyResG, (void**)&oCopyResG);    // RAINWRITER: CopyResource
+        hook_slot(gvt, nullptr, 46, (void*)&hkCopySubG, (void**)&oCopySubG);    // RAINWRITER: CopySubresourceRegion
         hook_slot(gvt, nullptr, 14, (void*)&hkMapG, (void**)&oMapG);
         hook_slot(gvt, nullptr, 15, (void*)&hkUnmapG, (void**)&oUnmapG);
         hook_slot(gvt, nullptr, 48, (void*)&hkUpdSubG, (void**)&oUpdSubG);
@@ -1825,6 +2023,35 @@ void akvr_probe_group_hide(unsigned long long vs, bool on)
 }
 bool akvr_probe_all_but_rain() { return g_hideAllButRain; }
 void akvr_probe_all_but_rain_set(bool on) { g_hideAllButRain = on; }
+// RAINWRITER: who writes the rain's streak buffer, and with which constants (F2 status)
+void akvr_rainwriter_dump(FILE* f)
+{
+    fprintf(f, "   rain writer: watching %ld resource(s) (rain draws seen %ld), CPU writes %ld, copies into them %ld, %d writer shader(s)\n",
+            (long)g_rwWatchN, (long)g_rwRainSeen, (long)g_rwCpuWrites, (long)g_rwCopies, g_rwN);
+    const CameraView cv = akvr_camera_read();
+    float bf[3] = {}, br[3] = {}, bu[3] = {};
+    const bool ax = akvr_camera_base_axes(bf, br, bu);
+    fprintf(f, "      camera: pos %.2f %.2f %.2f, rotator p/y/r %d %d %d, fov %.2f; game camera fwd %.4f %.4f %.4f (%s)\n",
+            cv.x, cv.y, cv.z, cv.pitch, cv.yaw, cv.roll, cv.fov, bf[0], bf[1], bf[2], ax ? "ok" : "none");
+    AcquireSRWLockShared(&g_rwLock);
+    for (int k = 0; k < g_rwN; ++k)
+    {
+        const RwWriter& w = g_rw[k];
+        fprintf(f, "      writer CS %016llx: %ld dispatches, writes watched resource %d, saved as akvr_shader_%016llx.bin\n",
+                (unsigned long long)w.h, w.dispatches, w.watch, (unsigned long long)w.h);
+        for (int i = 0; i < 4; ++i)
+        {
+            if (!w.cb[i]) continue;
+            CbSnap* s = cb_snap(w.cb[i]);
+            if (!s) continue;
+            fprintf(f, "         cb%d (%u bytes, %ld writes seen):\n", i, s->size, s->writes);
+            const float* v = (const float*)s->data;
+            for (UINT r = 0; r * 16 < s->size && r < 64; ++r)
+                fprintf(f, "            [%2u] %14.5f %14.5f %14.5f %14.5f\n", r, v[r * 4], v[r * 4 + 1], v[r * 4 + 2], v[r * 4 + 3]);
+        }
+    }
+    ReleaseSRWLockShared(&g_rwLock);
+}
 int  akvr_near_rain_lag() { return (int)g_nearLag; }                    // NEARRAIN2
 void akvr_near_rain_lag_set(int k) { InterlockedExchange(&g_nearLag, k < 0 ? 0 : (k > 12 ? 12 : k)); }
 int  akvr_near_rain_mode() { return (int)g_nearMode; }                  // NEARRAIN

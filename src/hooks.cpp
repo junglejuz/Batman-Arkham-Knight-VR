@@ -2690,7 +2690,7 @@ namespace
             float pvRatio = 0.0f, pvFov = 0.0f; int pvHits = 0;
             akvr_projvr_diag(pvRatio, pvHits, pvFov);
             fprintf(f, "\npatches:\n");
-            fprintf(f, "   build: NEARHIDE " __DATE__ " " __TIME__ "\n");
+            fprintf(f, "   build: RAINWRITER " __DATE__ " " __TIME__ "\n");
             fprintf(f, "   zoom vignette: %s\n", akvr_xr_vig_diag());
             fprintf(f, "   pause look: %s, %s now, main view through the player camera: %s, head writes into the paused camera: %ld, darken %.0f%%\n",
                     akvr_xr_pause_look() ? "ON" : "off", akvr_xr_pause_live() ? "LIVE" : "not live",
@@ -2699,6 +2699,7 @@ namespace
                     akvr_probe_diag(), akvr_probe_every_draw() ? 1 : 0, akvr_probe_all_cs() ? 1 : 0, akvr_probe_all_but_rain() ? 1 : 0,
                     akvr_probe_rain_parts());   // DRAWPROBE, RAINPARTS
             fprintf(f, "   %s\n", akvr_near_rain_diag());   // NEARRAIN
+            akvr_rainwriter_dump(f);   // RAINWRITER
             for (int i = 0; i < akvr_probe_cs_count(); ++i)   // DRAWPROBE4
             {
                 unsigned long long h = 0; long pf = 0; bool seen = false, hide = false;
