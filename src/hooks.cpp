@@ -2113,6 +2113,16 @@ namespace
             // every see-through draw of the frame, grouped by the shader that places it.
             ImGui::TextWrapped("In the rain: first tick the top box. If the layer stuck to your head disappears, it is "
                                "in one of the groups: untick the top box and hide one group at a time.");
+            // DRAWPROBE4b (JJ: "I don't have a checkbox called the world rain" - DRAWPROBE3's groups skip it)
+            for (int i = 0; i < akvr_probe_kind_count(); ++i)
+            {
+                unsigned long long ps = 0, vs = 0; int tags = 0; long draws = 0; unsigned cnt = 0, inst = 0;
+                bool seen = false, hide = false;
+                if (!akvr_probe_kind(i, ps, vs, tags, draws, cnt, inst, seen, hide) || !(tags & 1)) continue;
+                ImGui::PushID(5000 + i);
+                if (ImGui::Checkbox("hide the world rain", &hide)) akvr_probe_kind_hide(i, hide);
+                ImGui::PopID();
+            }
             bool all = akvr_probe_all_but_rain();
             if (ImGui::Checkbox("hide everything below except the world rain", &all)) akvr_probe_all_but_rain_set(all);
             // DRAWPROBE4 (JJ: with all see-through draws hidden the stuck rain stays): the wider tests
@@ -2644,7 +2654,7 @@ namespace
             float pvRatio = 0.0f, pvFov = 0.0f; int pvHits = 0;
             akvr_projvr_diag(pvRatio, pvHits, pvFov);
             fprintf(f, "\npatches:\n");
-            fprintf(f, "   build: DRAWPROBE4 " __DATE__ " " __TIME__ "\n");
+            fprintf(f, "   build: DRAWPROBE4b " __DATE__ " " __TIME__ "\n");
             fprintf(f, "   zoom vignette: %s\n", akvr_xr_vig_diag());
             fprintf(f, "   pause look: %s, %s now, main view through the player camera: %s, head writes into the paused camera: %ld, darken %.0f%%\n",
                     akvr_xr_pause_look() ? "ON" : "off", akvr_xr_pause_live() ? "LIVE" : "not live",
