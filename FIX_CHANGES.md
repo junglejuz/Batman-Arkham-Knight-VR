@@ -425,9 +425,10 @@ Both need shader hashes. Applied by a byte-preserving script (Latin-1, CRLF kept
 - `[Hunting]`: added `analyse_frame = no_modifiers VK_SCROLL` (Scroll Lock; F8 is the AKVR panel) and
   `analyse_options = mono deferred_ctx_accurate` (log only, no images): a pause frame vs a gameplay frame -> the
   pause-only pixel shaders.
-- TEST: `[TextureOverrideRain1]` (`Hash = eaa6f638`, `StereoMode = 2`) commented out. The fix forces this rain
-  texture to ONE picture for both eyes, which in VR reads as a sheet on the face: suspect for the head-locked rain
-  layer. If the rain looks broken instead, restore the block.
+- ~~TEST: `[TextureOverrideRain1]` commented out~~ — RESTORED the same day, before any run: JJ clarified the rain
+  layer "moves around with your head, even when the game is paused", i.e. it is drawn in screen space; a stereo
+  setting cannot move it into the world. Plan: find its pixel shader in the pause (the only moving thing there) and
+  skip it.
 
 ---
 
