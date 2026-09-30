@@ -172,6 +172,11 @@ rotators every Present (camera.cpp `akvr_camera_record_rotators`, ring of 16) an
 (setting `nearrainlag`), sends that frame's pair in cb12[0..5]; the shader (step 1h v2) uses it instead of its own
 view-projection. JJ to find the N where the block stops turning; if none does, the block is not a rigid camera
 rotation (e.g. wrapped in a camera-aligned box) -> recommend "hidden".
+**NEARHIDE (built; deploys when JJ closes the game):** JJ on NEARRAIN2: no "frames back" value works; the block turns
+"as if there's another camera orbiting it" - not a rigid rotation about the camera (maybe placed around the orbit
+pivot / Batman). Default is now mode 2 = hidden (the first 2048 streaks off screen; ~90% of the rain stays); "hang in
+the room" is labelled an experiment. Reopening it needs RE of how the game fills the first 2048 entries of the rain
+buffer (the simulation CS or CPU upload), not more shader maths.
 HUNTRAIN d3dx.ini lines (hunting=2 etc.) are still on JJ's game: restore `diagnostics/before-HUNTRAIN-20261001/d3dx.ini`
 once the rain is settled; the finder-mark dumps (5d78...-ps) were deleted.
 
