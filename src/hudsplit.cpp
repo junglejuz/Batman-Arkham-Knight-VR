@@ -565,6 +565,7 @@ namespace {
     // camera, so head turns no longer drag the block. Bound only around the rain draw; unbound cb12 reads 0 = off.
     ID3D11Buffer* g_rainCb = nullptr;
     volatile LONG g_nearMode = 1;
+    volatile LONG g_nearLag = 0;   // NEARRAIN2: Presents back for the camera pair (0 = the draw's own view-projection)
     volatile LONG g_nearCount = 2048;
     volatile LONG g_nearBinds = 0, g_nearNoAxes = 0;
     bool rain_now(ID3D11DeviceContext* c)
@@ -578,16 +579,26 @@ namespace {
         {
             ID3D11Device* dev = nullptr; c->GetDevice(&dev);
             if (!dev) return nullptr;
-            D3D11_BUFFER_DESC bd{}; bd.ByteWidth = 48; bd.Usage = D3D11_USAGE_DEFAULT; bd.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
+            D3D11_BUFFER_DESC bd{}; bd.ByteWidth = 96; bd.Usage = D3D11_USAGE_DEFAULT; bd.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
             ID3D11Buffer* b = nullptr;
             if (SUCCEEDED(dev->CreateBuffer(&bd, nullptr, &b)) && b)
                 if (InterlockedCompareExchangePointer((void**)&g_rainCb, b, nullptr) != nullptr) b->Release();
             dev->Release();
             if (!g_rainCb) return nullptr;
         }
-        float d[12] = {};
+        // NEARRAIN2 — JJ on NEARRAIN: "only for position translation. When rotating your head around, the rain as a
+        // complete block seems to rotate." Likely the game places the block with an OLDER camera than the one this
+        // draw uses. g_nearLag > 0: send the game camera AND the drawn camera from that many Presents ago
+        // (cb12[3..5], flag cb12[3].w = 1) and the shader uses that pair instead of its own view-projection.
+        float d[24] = {};
         float* fwd = d; float* right = d + 4; float* up = d + 8;
-        const bool axes = akvr_camera_base_axes(fwd, right, up);
+        bool axes = false;
+        if (g_nearLag > 0)
+        {
+            axes = akvr_camera_axes_ago((int)g_nearLag, fwd, right, up, d + 12, d + 16, d + 20);
+            if (axes) d[15] = 1.0f;
+        }
+        else axes = akvr_camera_base_axes(fwd, right, up);
         if (!axes) InterlockedIncrement(&g_nearNoAxes);
         d[3] = (float)(axes || g_nearMode == 2 ? g_nearMode : 0);
         d[7] = (float)g_nearCount;
@@ -1811,13 +1822,15 @@ void akvr_probe_group_hide(unsigned long long vs, bool on)
 }
 bool akvr_probe_all_but_rain() { return g_hideAllButRain; }
 void akvr_probe_all_but_rain_set(bool on) { g_hideAllButRain = on; }
+int  akvr_near_rain_lag() { return (int)g_nearLag; }                    // NEARRAIN2
+void akvr_near_rain_lag_set(int k) { InterlockedExchange(&g_nearLag, k < 0 ? 0 : (k > 12 ? 12 : k)); }
 int  akvr_near_rain_mode() { return (int)g_nearMode; }                  // NEARRAIN
 void akvr_near_rain_mode_set(int m) { InterlockedExchange(&g_nearMode, m < 0 ? 0 : (m > 2 ? 2 : m)); }
 const char* akvr_near_rain_diag()
 {
     static char d[160];
-    _snprintf_s(d, sizeof(d), _TRUNCATE, "near rain: mode %ld, first %ld streaks, bound to %ld rain draws (%ld without camera axes)",
-                (long)g_nearMode, (long)g_nearCount, (long)g_nearBinds, (long)g_nearNoAxes);
+    _snprintf_s(d, sizeof(d), _TRUNCATE, "near rain: mode %ld, camera %ld frames back, first %ld streaks, bound to %ld rain draws (%ld without camera axes)",
+                (long)g_nearMode, (long)g_nearLag, (long)g_nearCount, (long)g_nearBinds, (long)g_nearNoAxes);
     return d;
 }
 int  akvr_probe_rain_parts() { return (int)g_rainParts; }               // RAINPARTS

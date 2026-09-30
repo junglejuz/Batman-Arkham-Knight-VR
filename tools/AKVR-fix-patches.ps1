@@ -453,14 +453,27 @@ function Patch-PartTag([string]$hash) {
 # own view-projection (cb0[6..9]: clip.w row = forward; x / y rows minus their forward part = right / up; the camera
 # is where clip x, y and w are all 0), the streak is expressed in that camera's axes and put back with the game
 # camera's axes, so turning the head no longer turns the block. Mode 2: the final position write sends it off screen.
+# NEARRAIN2 2026-10-01 (JJ: head translation fixed, but "when rotating your head around, the rain as a complete block
+# seems to rotate"): the game may place the block with an older camera than this draw's. cb12 grows to 6 rows: with
+# cb12[3].w = 1 the shader uses the drawn camera's axes AKVR sends in cb12[3..5].xyz (from N frames back, with the game
+# camera of the same frame in cb12[0..2]) instead of the ones from its own view-projection. A NEARRAIN (v1) file is
+# first restored from akvr_fix_backup, then patched fresh.
 $rainVs = 'f50d1365e929b3a0'
 $rainMarker = '// AKVR NEARRAIN'
+$rainMarker2 = '// AKVR NEARRAIN2'
 function Patch-NearRain {
     $txt = Join-Path $dm "$rainVs-vs.txt"
     $bin = Join-Path $dm "$rainVs-vs.bin"
     if (-not (Test-Path $txt)) { Say "  $rainVs : rain shader not in the fix - near rain NOT patched" 'Red'; return }
     $s = [System.IO.File]::ReadAllText($txt)
-    if ($s.Contains($rainMarker)) { Say "  $rainVs : near rain already patched"; return }
+    if ($s.Contains($rainMarker2)) { Say "  $rainVs : near rain already patched"; return }
+    if ($s.Contains($rainMarker)) {
+        $orig = Join-Path $bakDm "$rainVs-vs.txt"
+        if (-not (Test-Path $orig)) { Say "  $rainVs : older near rain edit and no original in akvr_fix_backup - NOT patched" 'Red'; return }
+        $s = [System.IO.File]::ReadAllText($orig)
+        if ($s.Contains($rainMarker)) { Say "  $rainVs : the backup is not the original - NOT patched" 'Red'; return }
+        Say "  $rainVs : older near rain edit replaced (restored from akvr_fix_backup)"
+    }
     if ($s -match '(?i)\bcb12\b') { Say "  $rainVs : already uses cb12 - near rain NOT patched" 'Red'; return }
     $nl = if ($s.Contains("`r`n")) { "`r`n" } else { "`n" }
     $iidM = [regex]::Match($s, '(?m)^dcl_input_sgv (?<v>v\d+)\.x, instance_id\s*$')
@@ -482,7 +495,7 @@ function Patch-NearRain {
     $t0, $t1, $t2, $t3, $t4, $t5, $t6 = $T
     $o = $hits[0].Groups['o'].Value; $r = $hits[0].Groups['r'].Value
     $place = @(
-        "$rainMarker 2026-10-01: AKVR (cb12) re-places the first cb12[1].w streaks from the head-turned camera to the",
+        "$rainMarker2 2026-10-01: AKVR (cb12) re-places the first cb12[1].w streaks from the head-turned camera to the",
         "// game's own camera (mode 1), or hides them (mode 2). cb12 unbound = 0 = the fix's shader unchanged.",
         "utof $t0.y, $iid.x",
         "lt $t0.y, $t0.y, cb12[1].w",
@@ -523,6 +536,11 @@ function Patch-NearRain {
         "dp3 $t0.y, $t2.xyzx, $t2.xyzx",
         "rsq $t0.y, $t0.y",
         "mul $t2.xyz, $t2.xyzx, $t0.yyyy",
+        "// NEARRAIN2: cb12[3].w = 1 - the drawn camera's axes from AKVR (N frames back) instead of this draw's own",
+        "eq $t0.y, cb12[3].w, l(1.000000)",
+        "movc $t3.xyz, $t0.yyyy, cb12[3].xyzx, $t3.xyzx",
+        "movc $t1.xyz, $t0.yyyy, cb12[4].xyzx, $t1.xyzx",
+        "movc $t2.xyz, $t0.yyyy, cb12[5].xyzx, $t2.xyzx",
         "add $t5.xyz, $P.xyzx, -$t4.xyzx",
         "dp3 $t6.x, $t1.xyzx, $t5.xyzx",
         "dp3 $t6.y, $t2.xyzx, $t5.xyzx",
@@ -544,7 +562,7 @@ function Patch-NearRain {
     $temps = [regex]::Match($s, '(?m)^dcl_temps (\d+)\s*$')
     $s = $s.Substring(0, $temps.Index) + "dcl_temps $($n + 7)" + $s.Substring($temps.Index + $temps.Length)
     $cbDecl = [regex]::Match($s, '(?m)^dcl_constantbuffer [^\r\n]*$')
-    $s = $s.Substring(0, $cbDecl.Index + $cbDecl.Length) + $nl + 'dcl_constantbuffer CB12[3], immediateIndexed' + $s.Substring($cbDecl.Index + $cbDecl.Length)
+    $s = $s.Substring(0, $cbDecl.Index + $cbDecl.Length) + $nl + 'dcl_constantbuffer CB12[6], immediateIndexed' + $s.Substring($cbDecl.Index + $cbDecl.Length)
     Backup-Once $txt $bakDm
     Backup-Once $bin $bakDm
     [System.IO.File]::WriteAllText($txt, $s, $utf8)
@@ -643,7 +661,7 @@ switch ($Mode) {
             Say ("  {0} : {1}{2}" -f $h, $st, $sp)
         }
         $rp = Join-Path $dm "$rainVs-vs.txt"
-        $rs = if (-not (Test-Path $rp)) { 'missing' } elseif ((Get-Content $rp -Raw).Contains($rainMarker)) { 'near rain patched' } else { 'original' }
+        $rs = if (-not (Test-Path $rp)) { 'missing' } elseif ((Get-Content $rp -Raw).Contains($rainMarker2)) { 'near rain patched' } elseif ((Get-Content $rp -Raw).Contains($rainMarker)) { 'near rain patched (older v1)' } else { 'original' }
         Say ("  {0} : {1}" -f $rainVs, $rs)
     }
     'apply' {

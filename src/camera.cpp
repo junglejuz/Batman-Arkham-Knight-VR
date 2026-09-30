@@ -1596,6 +1596,7 @@ void akvr_head_update()
     else
         *g_dFov = 0.0f;
     pause_look_write();   // PAUSELOOK
+    akvr_camera_record_rotators();   // NEARRAIN2
 }
 
 float akvr_camera_game_fov() { return g_gameFov; }   // ZOOMVIG: 0 until the FOV lock has run
@@ -1604,15 +1605,51 @@ float akvr_camera_game_fov() { return g_gameFov; }   // ZOOMVIG: 0 until the FOV
 // before the head was added), UE3 world space, FRotationMatrix convention: X forward, Y right, Z up. The fix's rain
 // shader turns the camera-kept rain block from the head-turned camera (read from its own view-projection) back to
 // this one, so it hangs still when only the head moves. False while head tracking is off (then nothing to undo).
+namespace {
+    void ue3_axes(int32_t yaw, int32_t pitch, int32_t roll, float fwd[3], float right[3], float up[3])
+    {
+        const float y = (float)yaw * ROT2DEG * DEG2RAD, p = (float)pitch * ROT2DEG * DEG2RAD, r = (float)roll * ROT2DEG * DEG2RAD;
+        const float sy = sinf(y), cy = cosf(y), sp = sinf(p), cp = cosf(p), sr = sinf(r), cr = cosf(r);
+        fwd[0] = cp * cy;                 fwd[1] = cp * sy;                 fwd[2] = sp;
+        right[0] = sr * sp * cy - cr * sy; right[1] = sr * sp * sy + cr * cy; right[2] = -sr * cp;
+        up[0] = -(cr * sp * cy + sr * sy); up[1] = cy * sr - cr * sp * sy;   up[2] = cr * cp;
+    }
+    // NEARRAIN2: the game camera (base) and the drawn camera (base + head, the fields after the finalize) per Present,
+    // so the rain correction can use the pair from k Presents ago (the game may place the block with an older camera).
+    struct CamRec { int32_t by, bp, br, fy, fp, fr; bool ok; };
+    CamRec   g_camRing[16] = {};
+    volatile LONG g_camHead = 0;
+}
+void akvr_camera_record_rotators()   // once per Present, after the head update (and the pause write)
+{
+    CamRec rec{};
+    const uintptr_t b = cam_base();
+    if (g_htOn && g_bYaw && b)
+    {
+        __try
+        {
+            rec.fy = *(int32_t*)(b + OFF_YAW); rec.fp = *(int32_t*)(b + OFF_PITCH); rec.fr = *(int32_t*)(b + OFF_ROLL);
+            rec.by = *g_bYaw; rec.bp = *g_bPitch; rec.br = *g_bRoll; rec.ok = true;
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER) { rec.ok = false; }
+    }
+    const LONG h = g_camHead + 1;
+    g_camRing[h & 15] = rec;
+    InterlockedExchange(&g_camHead, h);
+}
 bool akvr_camera_base_axes(float fwd[3], float right[3], float up[3])
 {
     if (!g_htOn || !g_dYaw || !g_bYaw) return false;
-    const float y = (float)(*g_bYaw) * ROT2DEG * DEG2RAD, p = (float)(*g_bPitch) * ROT2DEG * DEG2RAD,
-                r = (float)(*g_bRoll) * ROT2DEG * DEG2RAD;
-    const float sy = sinf(y), cy = cosf(y), sp = sinf(p), cp = cosf(p), sr = sinf(r), cr = cosf(r);
-    fwd[0] = cp * cy;                 fwd[1] = cp * sy;                 fwd[2] = sp;
-    right[0] = sr * sp * cy - cr * sy; right[1] = sr * sp * sy + cr * cy; right[2] = -sr * cp;
-    up[0] = -(cr * sp * cy + sr * sy); up[1] = cy * sr - cr * sp * sy;   up[2] = cr * cp;
+    ue3_axes(*g_bYaw, *g_bPitch, *g_bRoll, fwd, right, up);
+    return true;
+}
+bool akvr_camera_axes_ago(int k, float bf[3], float br[3], float bu[3], float ff[3], float fr[3], float fu[3])
+{
+    if (k < 0 || k > 12) return false;
+    const CamRec rec = g_camRing[(g_camHead - k) & 15];
+    if (!rec.ok) return false;
+    ue3_axes(rec.by, rec.bp, rec.br, bf, br, bu);
+    ue3_axes(rec.fy, rec.fp, rec.fr, ff, fr, fu);
     return true;
 }
 

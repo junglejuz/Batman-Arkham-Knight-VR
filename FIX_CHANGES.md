@@ -367,7 +367,15 @@ AKVR binds cb12 only around this draw (hudsplit.cpp `rain_cb_pre`). **Unbound, c
 unchanged** (so the edit is harmless without AKVR). Modes in the panel (RAIN LAYERS "rain close to you", setting
 `nearrain`): 1 hang in the room (default), 0 as the game draws it, 2 hidden.
 
-**Detect:** `// AKVR NEARRAIN`. **Reference:** `Patch-NearRain` in `tools/AKVR-fix-patches.ps1` (status line too).
+**NEARRAIN2 (same day, replaces v1):** JJ: head translation fixed, but "when rotating your head around, the rain as a
+complete block seems to rotate". `CB12[6]`; after the axes are taken from the view-projection, 4 lines (behind
+`// NEARRAIN2`): `eq rT.y, cb12[3].w, l(1)` and three `movc` that take the drawn camera's forward / right / up from
+cb12[3..5].xyz instead (AKVR sends the pair from N Presents back: panel "camera frames back", setting `nearrainlag`,
+0 = the draw's own view-projection as in v1). The script restores a v1 file from `akvr_fix_backup` before patching.
+Tested on a practice copy both ways (v1 upgrade and a fresh original -> identical text), assembled and driver-loaded OK;
+applied to JJ's game with the real script (text identical to the tested copy, sha256 0C3B2F75...).
+
+**Detect:** `// AKVR NEARRAIN2` (v1: `// AKVR NEARRAIN` only). **Reference:** `Patch-NearRain` in `tools/AKVR-fix-patches.ps1`.
 **Driver test:** assembled (cmd_Decompiler 0.6.90 `-a`) and loaded OK in vstest.exe. **Applied** 2026-10-01 to JJ's
 game with the real script (text byte-identical to the tested copy, `.bin` removed, original in `akvr_fix_backup\`).
 Untested in the headset.
