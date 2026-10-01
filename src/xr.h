@@ -241,6 +241,7 @@ void        akvr_xr_native_swap_eyes_set(bool on);
 int         akvr_xr_pose_delay();              // Presents between pose publish and its image (0-3)
 void        akvr_xr_pose_delay_set(int frames);
 int         akvr_xr_pose_delay_used();         // the delay actually applied this Present
+bool        akvr_xr_pose_pair(int a, int b, float qa[4], float qb[4]);   // FRAMEPAIR2: head quats the next submit picks at delays a / b
 bool        akvr_xr_pose_auto();               // FRAMEID: pair poses exactly when possible
 void        akvr_xr_pose_auto_set(bool on);
 bool        akvr_xr_pose_matched();            // this Present used the exact match

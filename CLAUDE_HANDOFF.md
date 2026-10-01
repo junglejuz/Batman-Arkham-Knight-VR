@@ -267,8 +267,188 @@ change by the same amount (so not an eye-order problem); ~25% of Batman's lit pi
 difference picture puts them on the suit's specular highlights (ears, shoulders, rims) while the menu's intro camera
 glides in for ~20 s. Reads as highlight shimmer during the camera move, which ends when it stops - matching JJ's
 "first ten to twenty seconds". Not yet known whether JJ means that sparkle or the whole figure juddering: asked.
-HUNTRAIN d3dx.ini lines (hunting=2 etc.) are still on JJ's game: restore `diagnostics/before-HUNTRAIN-20261001/d3dx.ini`
-once the rain is settled; the finder-mark dumps (5d78...-ps) were deleted.
+**RESIZESTOP (2026-10-01, deployed, untested) - the real MENUFLICKER cause.** JJ: "It's the entire rendering. It flickers
+on and off for the first 10 to 20 seconds ... worse when you're moving your head more." The mode trace's frame gaps: from
+7 s on, EXACTLY two ~114 ms stalls per second (73 frames/s otherwise). That is `resync_client_size()` (hooks.cpp): the
+window client is stuck at 2560x1440 (start-up log: "CLAMPED, does not match", wanted 2888x2860), so it retried a
+SetWindowPos every 500 ms for 40 tries = 20 s, every one refused, and each made the game re-run its display-change
+handling (EnumDisplayMonitors / GetMonitorInfoW / GetClientRect repeated in the start-up log) = a stall with the
+picture dropping out. Now it stops after two refusals in a row (start-up log line "window resize refused twice").
+The render size comes from the ResX/ResY lever, so nothing depended on the resize. Check after JJ's run: mode trace has
+no 114 ms gaps, and the HUD / render size are unchanged. Backup: diagnostics/before-RESIZESTOP-20261001.
+JJ on RESIZESTOP: "Okay, that's better."
+**CLEANUP (2026-10-01, deployed, untested).** JJ: "check that there's no other processes running during the gameplay,
+such as analyzing HUD elements, trying to force different things ... old redundant stuff from earlier tests. Even
+captures running in the background. Clean it all up." One switch, `testtools=1` in akvr_settings.ini (or the box at
+the top of the advanced "RAIN LAYERS (tests)" section), now gates every leftover test recorder; OFF by default:
+- DRAWPROBE rain probe: per-draw shader lookups with locks on EVERY game draw (probe_skip), blend/vertex/texture
+  tracking, indirect-draw sorting. Pixel/vertex shader tracking also stays on if nearrain != 0 or the rain-parts cut is set.
+- RAINWRITER: compute UAV/constant-buffer tracking, a malloc'd copy of every compute shader's bytecode.
+- SHADERDUMP: 3 shader .bin files written to akvr_captures\shaders at every launch.
+- MARKREC: ~1.3 KB copied per HUD draw every frame (F2 hudmarks.csv is empty without test tools).
+- HUD-004 coverage: the HUD layer read back to the CPU every 90 frames (LAYERSHOT on F2 still works).
+- observe_rts (dead scene tap): GetResource/QueryInterface/GetDesc on every OMSetRenderTargets.
+- RADARREC: a 1024 px copy every frame into 90 textures (~380 MB video memory); freed when the switch goes off.
+- frame_early.bmp at 6 s and the MENUSTART 20-shot capture at every launch.
+- present probe pixel read-back every 30 frames (its CPU timing ring, frames.csv, stays).
+Also: FRAMEID's memory scan (3 x up to 64 MB copies ~3 s into play) runs only with poseauto=1 (0 on JJ's game; it only
+fed that option); the retired HUDPROBE tick is no longer called; NEARRAIN binds nothing in mode 0; geo-11 `d3dx.ini`
+restored from before HUNTRAIN (`hunting=0`; FIX_CHANGES 3c). Kept on purpose: FARRAIN (needs the compute-shader
+name per dispatch), PSMARK constant-buffer shadows (HUD routing), the camera/mode/frame timing rings (cheap; F2 needs
+them), the start-up log (3 writes). Backup: diagnostics/before-CLEANUP-20261001 (dll, settings, HUNTRAIN d3dx.ini).
+Check on JJ's run: HUD in the room as before (compass marks, reticle on target), rain hangs in space (FARRAIN), F2
+still writes its folder.
+**BANDOFF + RETNEAR (2026-10-01, deployed, untested).** JJ (4 F2s, 19:55): (1) the grapple reticle "splits into its
+various elements when it reaches the edge of the field of view"; (2) the target-distance number "floats around a
+general area ... doesn't stay locked onto anything". Findings from hudlayers.txt: in all 4 captures the reticle part
+(`K2/0.0.0.0.1.0.0.0`, 4-5 concentric kids + one at +1525 twips) sat at the TOP of the HUD (y -6835..-8997 of a 7680
+half-height). RETSQUASH is OFF since PANELTIDY (g_squashWant=false), so not the edge scaling. The live suspect is the
+28% top band (1c): pieces whose origin is above it go flat (to the layer); with ROOMALL every other part is marked
+anyway, so the band only caught the on-target parts. BANDOFF (hudsplit.cpp layer_begin): band sent as 0 while
+hudroomall=1. The distance part (`K2/0.0.0.0.1.0.0.1`) is at the stage centre with an identity matrix and the number
+is drawn away from it (capture 1: "51m" below centre while the reticle is at the top), so RETFLAT's origin search gave
+it the scene depth at the middle of the view. RETNEAR (fix step 1j, 2 shaders): vertices farther than 0.15-0.25 clip
+from their origin search from their own corner. ASSUMPTION: the number is drawn by 9938094a / 05154232 - MARKREC came
+back EMPTY in all 4 captures (hudmarks.csv "frame (0)", no rows: mark_record never fills, cause unknown; now also
+needs testtools=1). If the number still floats, fix the recorder and capture with test tools on to find its shader.
+Also note: the katanga.bmp in F2 is only 962x476 - too small to see the reticle; a full-res crop would help next time.
+JJ on BANDOFF + RETNEAR (2026-10-02): "The grapple points seem okay" (CONFIRMED). The distance target "is not okay
+still ... a combination of both sticking to its target and sticking to my face"; asked: it "appears wherever the world
+object is that it's pointing to, but it moves around when you move your head" and "should be at the depth of what's
+behind it, what it's pointing to". RETNEAR's premise was WRONG: the widget is `K2/0.0.0.0.1.0.0.1` -> `.0` (moves; at
+the 51m in F2 #1) with ~20 pieces (digits, mirrored bracket halves at +-604 twips, lines), each at its own origin.
+**TARGETDEPTH (2026-10-02, deployed, untested):** earlyres `akvr_hud_target_points` walks each top-level "stays on its
+target" part down the LIVE tree while a node has one child (widget -> 813; reticle stays 803), then up through the
+parent matrices (node+0x20) to the movie root (root matrix = stage twips -> game-target pixels) -> clip. Hand-check on
+F2 #1: widget 0.530/0.667 vs "51m" at 0.530/0.651; reticle 0.501/0.243 vs 0.52/0.248. hudsplit layer_begin sends them
+in cb13 rows 1/2 (buffers now 48 bytes; radius 0.12; only with hudroomall=1) every frame; fix step 1k (all 13 shaders):
+pieces whose origin is within the radius take that point's depth (one rigid shift) and follow depth (gameplay, not
+room-marked). Status line: "target points N: (x, y) (x, y)" in the HUD layer diag. RISK: the 4 no-colour shaders
+cannot see room marks, so a room part drawn by them within 0.12 of the reticle (compass at the top?) is pulled into the
+3D picture while the reticle is near it - watch for compass pieces doubling/flicking near the reticle.
+RAINCHECK: the rain section shows without advancedpanel again ("RAIN TEST"); ticking either hide box turns on the
+test tools (JJ: the option "is gone in the overlay").
+JJ on TARGETDEPTH (2026-10-02): the distance target "is still not locked in world space on the object ... still
+moving around with the head". So depth was not (only) it: the widget's 2D position likely comes from the game's
+camera WITHOUT AKVR's head turn, or one frame late. Not guessed this time - **TARGETTRACE** (test tools only): one
+row per HUD frame (on-target clip points, camera yaw/pitch WITH the head, the game's own yaw, base forward, camera
+position, finalize count) -> F2 `targets.csv`. Analysis plan: with the stick still and the head turning, if the widget
+point does not move with (cam yaw - base yaw) -> the HUD ignores the head (fix: shift on-target pieces by the head
+rotation reprojection in the shaders, cb13 rows have room); if it moves one row late -> lag.
+Rain: JJ "whilst it's good, it's still hanging in world space", but isolated in the pause it "jitters a bit ... kind
+of follows a little bit" on head turns. **RAINSTRETCH** (fix step 1l, A/B switch in RAIN TEST, default off): drops
+the rain VS's `cb0[12] * 0.5` head-of-streak term (looks like per-frame camera motion). Hypothesis only.
+JJ's F2 20261002_002826 was taken at 00:28 on the TARGETDEPTH build (TARGETTRACE deployed 00:34), so no targets.csv
+yet - MARKREC DID record this time (hudmarks.csv / hudcb.txt filled; with testtools=1). Rain, JJ: isolated it is
+"more solid", then "slowly moving with the head ... laggy ... following slowly a little bit", jitters, then "goes back
+to hanging in space solidly"; confused by the options. Note: "show only the rain" removes almost all GPU work, so the
+frame rate / pipeline depth changes and the pose pairing (posedelay) can be off for a while - judge rain in the normal
+picture too. **RAINTIDY (deployed):** RAIN TEST now has 4 explained boxes (show only the rain, FARRAIN keep ON, the
+stretch TEST, test tools); the rain-hunt controls are folded under advancedpanel=1.
+JJ 2026-10-02 (later): RAINSTRETCH "doesn't seem to do anything" (hypothesis rejected); rain no longer flickers but
+"very gently following head movements. A small amount. It's not rock solid." Reticle AND distance widget "still
+following head movement". No F2 with targets.csv was taken. **TARGETMOVE (fix step 1m, deployed, untested):** assumes
+the HUD uses the game camera without the head turn; each on-target point is re-projected through the drawn camera
+(camera pair k Presents back, k = pose delay - 1 by default) and the pieces near it are moved by that offset in the
+shaders. Panel HUD: on/off "reticle and distance marker stay on their target when you turn your head" + "marker
+timing". If ON is clearly worse (markers swing twice as far), the hypothesis is wrong - then F2 with test tools on
+gives targets.csv (points, offsets, cam yaw with head, base yaw) to decide. Rain open: candidates - the rain sim's
+region uses the camera POSITION incl. AKVR's head position offset (dPos), or FARRAIN uses the newest base axes while
+the CS draws an older frame (lag): try FARRAIN with `nearrainlag` 1-3 / compare.
+JJ on TARGETMOVE: before, moving the head up/down carried the markers along ("if you moved your head up, they would
+come up"); with the move "it does the opposite and more exaggerated". => the HUD DOES include the head turn, only
+late. **TARGETMOVE2 (DLL only, deployed, untested):** the source camera is now the DRAWN camera (with head) of
+`markerhudlag` Presents earlier (default 1, panel slider "how far the markers trail your head", 0 = no correction);
+zero offset when the head is still. Still no targets.csv capture to confirm the lag size.
+JJ on TARGETMOVE2: "when my head is still yes the marker sits still but it doesn't mean they're at the location that
+the game has put them. That new setting appears to do nothing at all." **TARGETSTOCK (DLL only, deployed, untested) -
+the real cause:** ROOTSHRINK draws the HUD movie in the ~60% HUD box, and the game places world markers in STAGE space
+for the full screen, so every marker is pulled toward the box centre (head up -> target drops, marker drops only 60%:
+"follows the head"; TARGETMOVE undid the whole head turn: "opposite and more exaggerated"). `akvr_hud_target_points`
+now also returns, per point, (movie's own matrix view+0x110 applied to the stage point) - (drawn point); hudsplit sends
+that as cb13 row 3 (fix step 1m moves the pieces + depth sample). Hand-check on F2 00:28: reticle drawn 0.356, stock
+0.586 clip x (x1.65 = 1/0.6). Lag sliders removed; panel box "reticle and distance marker sit on their target".
+NOTE: all other world markers marked for the room (enemy/objective icons in other movies) are pulled inward the same
+way - if JJ wants them on target too, they need the same treatment.
+Rain in the PAUSE (frozen): isolated it is "rock solid for the first couple of seconds, and then it slowly starts to
+drift with your head". Theory: "show only the rain" removes the GPU load, the frame rate jumps, the fixed pose delay
+pairs frames with the wrong head pose -> the picture trails the head. Ask: does the normal (not isolated) pause view
+drift? F2 during the drift (test tools on) -> frames.csv / present.csv show frame times and the pose delay used.
+JJ on TARGETSTOCK: "I think we're making an improvement", but the markers are "jittering when you move your head";
+rain "still drifting"; and a black pause entering the main menu with its audio already playing. **MENUBLACK:**
+frames.csv (F2 20261002_013133) - OUR Present hook took 2197 ms on that frame (106 ms on the one before): MENUSTART's
+synchronous 66 MB picture grabs, active because testtools=1. The menu/start-up pictures now need `menucapture=1`
+(settings file only). The September 2.07 s gap (menustart_20261001_182853) was the same thing. **TARGETSCALE (fix step
+1n + DLL):** the per-frame tree read raced the game's next layout -> jitter; now each on-target vertex is mapped in the
+shader through the fixed affine (movie's own matrix vs AKVR's root): cb13 row 4. Markers return at the game's size.
+targets.csv from that F2 had n=0 (menu), so the jitter cause is reasoned, not measured.
+**JJ FOUND THE RAIN/MARKER CAUSE (2026-10-02):** "Head pose delay of 2 makes the rain go rock solid and stable, and
+it makes the [reticle] and the distance HUD marker go rock solid ... the world becomes jittery." = UE3's one-frame thread
+lag: the world uses the camera one frame older than the rain draw and the HUD markers. OneFrameThreadLag=False would
+align them but costs 44 vs 84 fps (earlyres.cpp note), so **FRAMEPAIR (fix step 1o + DLL, deployed, untested):** the
+rain VS re-places each streak end for the world's camera (cb12 rows 6-8 = M | t, row 4 .w on); the markers get the
+one-frame turn shift in cb13 row 4 .zw. Camera ring now stores the drawn position (`akvr_camera_pose_ago`). Panel HUD:
+"rain and markers match the world's frame" + "timing" slider (`frameworld`, world camera k back, default 1 - a reasoned
+guess; JJ may need 2). posedelay set back to 3 in JJ's settings. The earlier FARRAIN fix stays. Likely the same
+one-frame offset hits other game-thread-placed effects (particles, world markers) - check if JJ reports them.
+JJ on FRAMEPAIR: rain "I don't think that fixed" (can't tell: "the pause menu is not pausing the rain anymore" -
+unexplained, the rain simulation was not touched; ask whether it falls in the pause with the box OFF); markers
+"definitely not fixed. They still jitter when moving the head". **FRAMEPAIR2 (DLL only, deployed, untested):** no more
+game-camera ring guess - it reproduces JJ's test: xr `akvr_xr_pose_pair(a, b)` gives the head quats the next submit
+picks at the world's delay a (posedelay, 3) and the rain/markers' delay b (`framedelay`, default 2). Rd = R(qa)^-1
+R(qb) in OpenXR view space: markers - their point re-projected by Rd (shift in cb13 row 4 .zw); rain - M = A Q A^T,
+Q = C^T Rd C (UE3 camera axes A of the drawn camera, ring index 0), t = P - M P, into cb12 rows 6-8 (fix step 1o
+unchanged). Head rotation only (no head-translation difference). Panel slider renamed "head pose delay for the rain
+and markers". Old `frameworld` key ignored.
+JJ on FRAMEPAIR2: "World space locked. HUD elements are still jittering when moving [the head]." The rain switch "makes it
+continue to rain when the pause screen is on. When I turn that off, the rain pauses as well" - cause unknown (positions
+are plain UE3 world units ~4000/11000/2400; no d3dx.ini rule on the rain shader). **RAINSPLIT (DLL only, built,
+deployed by a watcher when the game closes):** rain correction has its own switch in RAIN TEST (`rainframefix`), the
+markers keep `framefix` in HUD; readout "rain frame fix: last turn X deg (... 3 m away moves Y units), N draws, M while
+paused" in the HUD layer diag / panel; targets.csv now has frame_shift_x/y. Next: F2 in the pause with the rain fix on
+(is the turn tiny while the head is still?) and F2 in gameplay with markers (is frame_shift non-zero, does its sign
+oppose the marker motion?). Cheap sign test for JJ: delay slider 4 = the same correction reversed.
+JJ: "Clearly, the rain and the HUD elements need to somehow be on the same frame timing as the 3D elements." **THREADSYNC
+TEST (2026-10-02, set on JJ's game, untested):** BmSystemSettings.ini `OneFrameThreadLag=False` + `posedelay=2` (with
+framedelay 2 the FRAMEPAIR corrections are no-ops). Judge: world, rain and markers all steady at delay 2? Frame rate /
+smoothness vs before (F2 frames.csv intervals). If too slow: back to True + posedelay 3 (backup before-THREADSYNC).
+**THREADSYNC RESULT (2026-10-02):** JJ: "the grappling hook and the distance marker look perfectly stable now. And locked
+to their targets, which is amazing. But after playing for a very short time, the game crashes." Two UE3 "Fatal error!"
+crashes after the 02:18 switch (02:20:27 and 02:27:18; none all day with True). Dump (BmGame\Logs\unreal-v10246-
+2026.10.02-02.25.38.dmp, read with python `minidump`): EXCEPTION_ACCESS_VIOLATION reading 0xffffffffffffffff at
+BatmanAK+0xF1E3B6 (base 0x7FF6169B0000 = log setter 0x7FF617B7DC70 - 0x11CDC70), on a worker thread whose loop is
++0xFA592B/+0xFA5AD3/+0xFA7F20 (the same loop as ~6 idle sibling threads); the first crash ended in geo11.dll from the same
+worker loop. NO dinput8 frame on either crashed stack. Hypothesis: with the threads unstaggered, something racing on the
+worker threads (deferred contexts) - our worker-thread hooks grew a lot since Codex ran False under geo-11 on 09-25
+(test tools' DRAWPROBE/RAINWRITER, PS tracking for the rain options). **TEST:** testtools removed, rainnostretch=0,
+rainframefix=0 (framefix already 0), still False + posedelay 2. If it still crashes -> back to True + posedelay 3 and
+find another way to align the rain/HUD (FRAMEPAIR2 did not fix the markers; JJ never ran the slider-4 sign test).
+Ghidra MCP was not running (127.0.0.1:8080 refused) - function names for the crash offsets unknown.
+**2026-10-02 late (deployed, untested):** JJ: no crash with test tools + rain options off -> THREADSYNC kept (mod forces
+OneFrameThreadLag=False under geo-11, posedelay default 2; test-tools box warns it can crash). Panel: rain stretch, rain
+frame fix, marker frame fix + delay slider REMOVED (defaults off). SCALE110: world scale rebased (old 1.1 = new 1.00;
+d3dxdm convergence 2272.7; slider now also saves 1 s after a change). MARKFIRST: until the first HUD-part read of a
+gameplay stretch has landed its marks (0.5 s + 200 ms), every HUD draw goes whole to the room layer (JJ: HUD pieces
+"attached to the face and then quickly snap out"). TARGETMULTI (fix step 1p): 8 points; a part with 6+ children is a
+list, one point per visible child; JJ's hudlayers now has K4/0.0.0.0.1.0.0.0 on target (74 world markers; the Batmobile
+marker JJ saw moving "opposite" to the head was .15 of it). Open: Batmobile enter/exit camera snap (the game's own fast
+camera swing) - offered a comfort fade, not built.
+Lesson (cost two rebuilds): in PowerShell `@('a', 'b' + "x")` is an ARRAY of 3 ('a','b','x'), the comma binds
+before `+`; scripted replacements built that way silently lost lines. Use the Edit tool or parenthesise.
+HUNTRAIN d3dx.ini lines: already restored (build CLEANUP, FIX_CHANGES 3c); checked again 2026-10-02 - JJ's d3dx.ini
+equals `diagnostics/before-HUNTRAIN-20261001/d3dx.ini`.
+**VRLAUNCH (2026-10-02, build VRLAUNCH, deployed, untested in the game):** JJ: "update the package now ... The installer
+also needs to create a way for the game to be launched in VR, leaving launching it from Steam to just play normally in
+2D mode." The mod decides in DllMain (src/vrmode.cpp): VR only via the "Batman Arkham Knight (VR)" shortcut
+(`AKVR-Launch-VR.bat` -> fresh `akvr_launch_vr.flag` + `steam://rungameid/208650`) or `-akvr`; a Steam start runs
+nothing of AKVR. BmSystemSettings.ini + the NvGsa store are swapped per mode via `akvr_profiles\{2d,vr}` + `last.txt`
+(log `akvr_mode_log.txt`). Installer: VR graphics go into the VR copy only; makes the launcher + shortcuts. Uninstaller:
+removes them, restores 2D by last mode. Details + practice tests: FIX_CHANGES section 6 "VRLAUNCH". README rewritten
+(VR shortcut, panel tables = the panel with advancedpanel off, pose delay 2). Package rebuilt (`dist/`, NOT uploaded:
+JJ decides releases). On JJ's game: new DLL, launcher, Uninstall-AKVR.ps1, both shortcuts, `testtools=0`; backup
+`diagnostics/before-VRLAUNCH-20261002/`. Ask JJ to check: (1) the shortcut starts VR (first start migrates: log line
+"first start since VR/2D launching"); (2) a Steam start is plain 2D fullscreen 2560x1440 at HIS settings (30 fps cap from
+his pre-mod backup); (3) back to VR keeps his VR settings. Untested: the fix's nvapi64.dll in 2D.
 
 ## PAUSELOOK + PAUSEDIM (2026-09-30, deployed to JJ's game only; JJ: "a good start")
 

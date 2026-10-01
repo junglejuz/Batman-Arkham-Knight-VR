@@ -28,6 +28,9 @@
 #include "geo11conv.h"
 #include "xr.h"   // RETSQUASH: akvr_xr_game_tan
 #include "camera.h"   // NEARRAIN: akvr_camera_base_axes
+bool akvr_hud_room_all();   // earlyres.cpp: ROOMALL (whole HUD in the room) - BANDOFF
+int  akvr_hud_target_points(float* xy, int max, int rtW, int rtH, float* off, float* xf);   // earlyres.cpp: TARGETDEPTH / TARGETSTOCK / TARGETSCALE
+bool akvr_hud_marks_ready();                                                              // earlyres.cpp: MARKFIRST
 #include <windows.h>
 #include <d3d11.h>
 #include <dxgi.h>
@@ -122,6 +125,42 @@ namespace {
     // RETSQUASH: the game frame's tan half-angles for the shader's edge-squash correction (cb13[0].zw).
     bool  g_squashWant = false;   // PANELTIDY 2026-09-28: JJ - never worked in the headset; removed from the panel, always off
     float g_tanSent[2] = { -1.0f, -1.0f };
+    // TARGETDEPTH (fix step 1k, 2026-10-02): the on-target parts' points sent to the shaders (cb13 rows 1 / 2)
+    bool  g_targetWant = true;
+    float g_targetRadius = 0.12f;            // clip units: the widget's pieces sit within ~0.08 of its point
+    float g_tgtSent[40] = { -9.0f };   // TARGETMULTI: cb13 rows 1-10
+    float g_tgtXf[4] = {};                   // TARGETSCALE: cb13 row 4 sent last frame (kx-1, ky-1, bx, by)
+    float g_framePx = 0.0f, g_framePy = 0.0f;   // FRAMEPAIR: the markers' one-frame shift (clip), for the diag
+    int   g_tgtN = 0; float g_tgtXY[4] = {};
+    // TARGETMOVE (fix step 1m, 2026-10-02): move the on-target parts by the head turn the game's HUD does not know about
+    bool  g_markerHead = true;
+    int   g_markerLag = -1;                  // the drawn camera: k Presents back; -1 = the pose delay in use - 1
+    int   g_markerHudLag = 1;                // TARGETMOVE2: the markers' camera is this many Presents older (0 = off)
+    float g_tgtOff[4] = {};
+    // TARGETTRACE 2026-10-02 — JJ after TARGETDEPTH: the distance widget is "still moving around with the head". Does
+    // the game place it from the camera WITHOUT the head turn, or a frame late? One row per HUD frame (test tools
+    // only): the on-target points, the camera with the head (yaw/pitch) and the game's own yaw, the finalize count.
+    struct TgtRow { double t; uint64_t fin; int n; float xy[4]; float yaw, pitch, baseYaw, fwd[3], pos[3], off[4], fshift[2]; };
+    extern float g_framePx, g_framePy;   // FRAMEPAIR2, below
+    extern float g_tgtOff[4];   // TARGETMOVE, below
+    constexpr int kTgtRing = 4096;
+    TgtRow g_tgtRing[kTgtRing]; int g_tgtHead = 0, g_tgtCount = 0;
+    void tgt_record(int n, const float* xy)
+    {
+        TgtRow& r = g_tgtRing[g_tgtHead];
+        LARGE_INTEGER q, f; QueryPerformanceCounter(&q); QueryPerformanceFrequency(&f);
+        r.t = 1000.0 * (double)q.QuadPart / (double)f.QuadPart;
+        r.fin = akvr_camera_finalize_count(); r.n = n;
+        for (int k = 0; k < 4; ++k) r.xy[k] = xy[k];
+        const CameraView cv = akvr_camera_read();
+        r.yaw = cv.valid ? (float)cv.yaw * (360.0f / 65536.0f) : 0.0f; r.pitch = cv.valid ? (float)cv.pitch * (360.0f / 65536.0f) : 0.0f;
+        r.pos[0] = cv.x; r.pos[1] = cv.y; r.pos[2] = cv.z;
+        for (int k = 0; k < 4; ++k) r.off[k] = g_tgtOff[k];
+        r.fshift[0] = g_framePx; r.fshift[1] = g_framePy;
+        r.baseYaw = 0.0f; akvr_camera_base_yaw_deg(r.baseYaw);
+        float rr[3], uu[3]; r.fwd[0] = r.fwd[1] = r.fwd[2] = 0.0f; akvr_camera_base_axes(r.fwd, rr, uu);
+        g_tgtHead = (g_tgtHead + 1) % kTgtRing; if (g_tgtCount < kTgtRing) ++g_tgtCount;
+    }
     long g_layerFrames = 0, g_subsRep = 0, g_restores = 0;
     // HUD-004 proof: alpha census of H, read back every ~2 s.
     ID3D11Texture2D* g_stage = nullptr;
@@ -325,6 +364,11 @@ namespace {
     // uses the probed pixel shader is sorted into a "kind" (its vertex shader + the textures in PS slots 0 and 1),
     // counted per frame, and a kind can be hidden (the draw is dropped) from the panel. Session only: once JJ finds
     // the stuck layer's kind, it becomes a fixed rule.
+    // CLEANUP 2026-10-01 — JJ: "check that there's no other processes running during the gameplay ... old redundant
+    // stuff from earlier tests. Even captures running in the background." The rain hunt (DRAWPROBE, RAINWRITER, the
+    // shader dumps), the HUD mark recorder (MARKREC) and the 90-frame HUD coverage read-back only run with
+    // testtools=1 in the settings file. The live fixes (FARRAIN, NEARRAIN when set, PSMARK) do not depend on it.
+    volatile bool g_testTools = false;
     constexpr int kShMap = 1 << 17;
     struct ShEnt { void* obj; uint64_t h; };
     ShEnt   g_shMap[kShMap];
@@ -379,7 +423,7 @@ namespace {
         if (!code || !obj) return;
         uint64_t h = 0;
         __try { h = fnv64(code, len); } __except (EXCEPTION_EXECUTE_HANDLER) { h = 0; }
-        if (h) { sh_put(obj, h); sh_dump(h, code, len); }
+        if (h) { sh_put(obj, h); if (g_testTools) sh_dump(h, code, len); }
     }
     typedef HRESULT (__stdcall* CreatePSFn)(ID3D11Device*, const void*, SIZE_T, ID3D11ClassLinkage*, ID3D11PixelShader**);
     CreatePSFn oCreatePS[3] = {};
@@ -412,17 +456,22 @@ namespace {
     }
     typedef void (__stdcall* PSSetFn)(ID3D11DeviceContext*, ID3D11PixelShader*, ID3D11ClassInstance* const*, UINT);
     PSSetFn oPSSetG = nullptr;
+    extern volatile LONG g_nearMode, g_rainParts;   // NEARRAIN / RAINPARTS, below: they need the bound pixel shader
+    extern volatile LONG g_rainNoStretch;          // RAINSTRETCH, below
+    extern volatile LONG g_rainFrameFix;           // FRAMEPAIR (rain), below
+    bool ps_track() { return g_testTools || g_nearMode != 0 || g_rainParts >= 0 || g_rainNoStretch || g_rainFrameFix; }
     void __stdcall hkPSSetG(ID3D11DeviceContext* c, ID3D11PixelShader* ps, ID3D11ClassInstance* const* ci, UINT n)
     {
-        if (CtxSh* s = ctx_sh(c, true)) s->ps = ps;
+        if (ps_track()) if (CtxSh* s = ctx_sh(c, true)) s->ps = ps;
         oPSSetG(c, ps, ci, n);
     }
     typedef void (__stdcall* PSSetSRVFn)(ID3D11DeviceContext*, UINT, UINT, ID3D11ShaderResourceView* const*);
     PSSetSRVFn oPSSetSRVG = nullptr;
     void __stdcall hkPSSetSRVG(ID3D11DeviceContext* c, UINT start, UINT num, ID3D11ShaderResourceView* const* v)
     {
-        if (CtxSh* s = ctx_sh(c, true))
-            for (UINT i = 0; i < num && start + i < 8; ++i) s->srv[start + i] = v ? v[i] : nullptr;
+        if (g_testTools)
+            if (CtxSh* s = ctx_sh(c, true))
+                for (UINT i = 0; i < num && start + i < 8; ++i) s->srv[start + i] = v ? v[i] : nullptr;
         oPSSetSRVG(c, start, num, v);
     }
     // DRAWPROBE3: blend state -> blending on (see-through draws: particles, glass, fog), looked up once per bind
@@ -512,7 +561,7 @@ namespace {
     void rw_rain_tick(ID3D11DeviceContext* c);   // RAINWRITER, below
     bool probe_skip(ID3D11DeviceContext* c, UINT count, UINT inst = 1, int extraTag = 0)
     {
-        if (!g_probePs) return false;
+        if (!g_testTools || !g_probePs) return false;   // CLEANUP: the rain hunt is over
         CtxSh* s = ctx_sh(c, false);
         if (g_hideEveryDraw && g_scopeTid != GetCurrentThreadId() && !(s && s->ps && sh_get(s->ps) == g_probePs))
         { InterlockedIncrement(&g_probeDropped); return true; }
@@ -576,8 +625,68 @@ namespace {
     volatile LONG g_nearLag = 0;   // NEARRAIN2: Presents back for the camera pair (0 = the draw's own view-projection)
     volatile LONG g_nearCount = 2048;
     volatile LONG g_nearBinds = 0, g_nearNoAxes = 0;
+    // RAINSTRETCH 2026-10-02 — JJ: isolated rain in the pause "sort of jitters a bit" when turning the head, "it kind of
+    // follows a little bit". Test switch: drop the per-frame camera term the rain VS adds to each streak (fix step 1l).
+    volatile LONG g_rainNoStretch = 0;
+    // FRAMEPAIR 2026-10-02 — JJ: "Head pose delay of 2 makes the rain go rock solid ... and it makes the [reticle] and the
+    // distance HUD marker go rock solid. The problem with that is that the world becomes jittery." UE3's one-frame thread
+    // lag (True: 44 -> 84 fps under geo-11, so it stays): the world is drawn with the camera recorded g_frameWorld
+    // Presents back, the rain and the HUD markers with the one a Present newer. Both are redrawn as the world's camera
+    // would see them: the rain per streak end in its shader (fix step 1o), the markers by a screen shift (row 4).
+    volatile LONG g_frameFix = 0;            // FRAMEPAIR for the HUD markers (setting framefix; off since THREADSYNC)
+    // RAINSPLIT 2026-10-02 — JJ: the rain correction "makes it continue to rain when the pause screen is on"; with it off
+    // the rain pauses again; and the option belongs in the rain section. Its own switch (setting rainframefix), and a
+    // readout of what it does each draw (turn, largest move near the camera, paused or not) for F2.
+    volatile LONG g_rainFrameFix = 0;        // off since THREADSYNC (setting rainframefix)
+    float g_rainRotDeg = 0.0f, g_rainMove = 0.0f; volatile LONG g_rainFixDraws = 0, g_rainFixPaused = 0;
+    volatile LONG g_frameWorld = 2;          // FRAMEPAIR2: the head pose delay the rain and the markers match (JJ: 2)
+    // FRAMEPAIR2 2026-10-02 — JJ on FRAMEPAIR (the game-camera ring): the markers "still jitter when moving the head".
+    // Reproduce JJ's own test instead: the head pose the headset uses for the picture (the world's delay) vs the one at
+    // the rain's / markers' delay, from the same pose history. Rd (OpenXR view space, x right, y up, -z forward) takes a
+    // direction drawn for the markers' pose to the direction the world's pose shows it at: Rd = R(qWorld)^-1 R(qMarker).
+    bool head_fix_rot(float Rd[9])
+    {
+        const int a = akvr_xr_pose_delay_used(), b = (int)g_frameWorld;
+        if (a == b) return false;
+        float qa[4], qb[4];
+        if (!akvr_xr_pose_pair(a, b, qa, qb)) return false;
+        const float ax = -qa[0], ay = -qa[1], az = -qa[2], aw = qa[3];   // conj(qa)
+        const float bx = qb[0], by = qb[1], bz = qb[2], bw = qb[3];
+        const float w = aw * bw - ax * bx - ay * by - az * bz;
+        const float x = aw * bx + ax * bw + ay * bz - az * by;
+        const float y = aw * by - ax * bz + ay * bw + az * bx;
+        const float z = aw * bz + ax * by - ay * bx + az * bw;
+        Rd[0] = 1 - 2 * (y * y + z * z); Rd[1] = 2 * (x * y - z * w);     Rd[2] = 2 * (x * z + y * w);
+        Rd[3] = 2 * (x * y + z * w);     Rd[4] = 1 - 2 * (x * x + z * z); Rd[5] = 2 * (y * z - x * w);
+        Rd[6] = 2 * (x * z - y * w);     Rd[7] = 2 * (y * z + x * w);     Rd[8] = 1 - 2 * (x * x + y * y);
+        return true;
+    }
+    // The rain: X' = M X + t turns each streak about the drawn camera by Rd (in its UE3 axes: f = -z, r = x, u = y).
+    bool frame_pair(float M[9], float t[3])
+    {
+        float Rd[9], F[3], R[3], U[3], P[3];
+        if (!head_fix_rot(Rd) || !akvr_camera_pose_ago(0, F, R, U, P)) return false;
+        // Q = C^T Rd C with xr = C ue: xr.x = r, xr.y = u, xr.z = -f
+        const float C[9] = { 0, 1, 0,   0, 0, 1,   -1, 0, 0 };
+        float RC[9], Q[9];
+        for (int i = 0; i < 3; ++i) for (int j = 0; j < 3; ++j)
+        { float s = 0; for (int k = 0; k < 3; ++k) s += Rd[i * 3 + k] * C[k * 3 + j]; RC[i * 3 + j] = s; }
+        for (int i = 0; i < 3; ++i) for (int j = 0; j < 3; ++j)
+        { float s = 0; for (int k = 0; k < 3; ++k) s += C[k * 3 + i] * RC[k * 3 + j]; Q[i * 3 + j] = s; }
+        // M = A Q A^T, A = [F R U] as columns (world axes of the drawn camera)
+        const float* A[3] = { F, R, U };
+        for (int i = 0; i < 3; ++i) for (int j = 0; j < 3; ++j)
+        {
+            float s = 0;
+            for (int k = 0; k < 3; ++k) for (int l = 0; l < 3; ++l) s += A[k][i] * Q[k * 3 + l] * A[l][j];
+            M[i * 3 + j] = s;
+        }
+        for (int i = 0; i < 3; ++i) t[i] = P[i] - (M[i * 3] * P[0] + M[i * 3 + 1] * P[1] + M[i * 3 + 2] * P[2]);
+        return true;
+    }
     bool rain_now(ID3D11DeviceContext* c)
     {
+        if (!g_nearMode && !g_rainNoStretch && !g_rainFrameFix) return false;   // CLEANUP: mode 0 binds nothing; RAINSTRETCH / FRAMEPAIR need cb12
         CtxSh* s = ctx_sh(c, false);
         return s && s->ps && sh_get(s->ps) == g_probePs;
     }
@@ -587,7 +696,7 @@ namespace {
         {
             ID3D11Device* dev = nullptr; c->GetDevice(&dev);
             if (!dev) return nullptr;
-            D3D11_BUFFER_DESC bd{}; bd.ByteWidth = 96; bd.Usage = D3D11_USAGE_DEFAULT; bd.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
+            D3D11_BUFFER_DESC bd{}; bd.ByteWidth = 144; bd.Usage = D3D11_USAGE_DEFAULT; bd.BindFlags = D3D11_BIND_CONSTANT_BUFFER;   // FRAMEPAIR: 9 rows
             ID3D11Buffer* b = nullptr;
             if (SUCCEEDED(dev->CreateBuffer(&bd, nullptr, &b)) && b)
                 if (InterlockedCompareExchangePointer((void**)&g_rainCb, b, nullptr) != nullptr) b->Release();
@@ -598,7 +707,7 @@ namespace {
         // complete block seems to rotate." Likely the game places the block with an OLDER camera than the one this
         // draw uses. g_nearLag > 0: send the game camera AND the drawn camera from that many Presents ago
         // (cb12[3..5], flag cb12[3].w = 1) and the shader uses that pair instead of its own view-projection.
-        float d[24] = {};
+        float d[36] = {};
         float* fwd = d; float* right = d + 4; float* up = d + 8;
         bool axes = false;
         if (g_nearMode == 3)   // NEARRAIN3: cb12[0].xyz = the head's position offset to take back off (mode 3)
@@ -612,6 +721,23 @@ namespace {
         if (!axes) InterlockedIncrement(&g_nearNoAxes);
         d[3] = (float)(axes || g_nearMode == 2 ? g_nearMode : 0);
         d[7] = (float)g_nearCount;
+        d[11] = g_rainNoStretch ? 1.0f : 0.0f;   // RAINSTRETCH (fix step 1l): cb12[2].w = 1 drops the streak's camera term
+        // FRAMEPAIR (fix step 1o): rows 6-8 = M | t, cb12[4].w = 1 on
+        if (g_rainFrameFix)
+        {
+            float M[9], t[3];
+            if (frame_pair(M, t))
+            {
+                for (int i = 0; i < 3; ++i) { d[24 + i * 4] = M[i * 3]; d[25 + i * 4] = M[i * 3 + 1]; d[26 + i * 4] = M[i * 3 + 2]; d[27 + i * 4] = t[i]; }
+                d[19] = 1.0f;
+                // RAINSPLIT readout: the turn this draw, and how far a streak 3 m (300 units) away moves
+                float c = (M[0] + M[4] + M[8] - 1.0f) * 0.5f; c = c > 1.0f ? 1.0f : (c < -1.0f ? -1.0f : c);
+                g_rainRotDeg = acosf(c) * 57.29578f;
+                g_rainMove = g_rainRotDeg * 0.01745329f * 300.0f;
+                InterlockedIncrement(&g_rainFixDraws);
+                if (akvr_xr_pause_live()) InterlockedIncrement(&g_rainFixPaused);
+            }
+        }
         c->UpdateSubresource(g_rainCb, 0, nullptr, d, 0, 0);
         ID3D11Buffer* old = nullptr;
         c->VSGetConstantBuffers(12, 1, &old);
@@ -700,7 +826,7 @@ namespace {
     CSSetUavFn oCSSetUavG = nullptr;
     void __stdcall hkCSSetUavG(ID3D11DeviceContext* c, UINT start, UINT num, ID3D11UnorderedAccessView* const* u, const UINT* ic)
     {
-        if (CtxSh* s = ctx_sh(c, true))
+        if (g_testTools) if (CtxSh* s = ctx_sh(c, true))
         {
             const int ci = (int)(s - g_ctxSh);
             for (UINT i = 0; i < num && start + i < 8; ++i)
@@ -716,7 +842,7 @@ namespace {
     CSSetCBFn oCSSetCBG = nullptr;
     void __stdcall hkCSSetCBG(ID3D11DeviceContext* c, UINT start, UINT num, ID3D11Buffer* const* b)
     {
-        if (CtxSh* s = ctx_sh(c, true))
+        if (g_testTools) if (CtxSh* s = ctx_sh(c, true))
         {
             const int ci = (int)(s - g_ctxSh);
             for (UINT i = 0; i < num && start + i < 4; ++i) g_ctxCsCb[ci][start + i] = b ? b[i] : nullptr;
@@ -829,6 +955,7 @@ namespace {
         CtxSh* s = ctx_sh(c, true);
         const uint64_t h = s ? sh_get(g_ctxCs[s - g_ctxSh]) : 0;
         if (hashOut) *hashOut = h;
+        if (!g_testTools) return false;   // CLEANUP: only the shader name (FARRAIN) outside the rain hunt
         rw_on_dispatch(c, h);   // RAINWRITER
         const long f = g_frameNow();
         bool hide = false;
@@ -914,7 +1041,7 @@ namespace {
     template <int K> HRESULT __stdcall hkCreateCS(ID3D11Device* d, const void* code, SIZE_T len, ID3D11ClassLinkage* cl, ID3D11ComputeShader** out)
     {
         HRESULT hr = oCreateCS[K](d, code, len, cl, out);
-        if (SUCCEEDED(hr) && out && *out) { sh_note(code, len, *out); cs_code_keep(code, len); }   // RAINWRITER: keep the code
+        if (SUCCEEDED(hr) && out && *out) { sh_note(code, len, *out); if (g_testTools) cs_code_keep(code, len); }   // RAINWRITER: keep the code
         return hr;
     }
 
@@ -1117,7 +1244,7 @@ namespace {
     int vs_hud_index(void* vs);
     void mark_record(ID3D11DeviceContext* c, bool split, UINT cnt, UINT inst)
     {
-        if (g_mrCurN >= 96) return;
+        if (!g_testTools || g_mrCurN >= 96) return;   // CLEANUP: F2's hudmarks.csv only with test tools
         MarkRow& m = g_mrCur[g_mrCurN++];
         m.vs = vs_hud_index(g_curVs); m.split = split ? 1 : 0; m.nHits = 0; m.cbSize = 0;
         m.toH = g_hBound ? 1 : 0; m.cnt = cnt; m.inst = inst;   // CBDUMP
@@ -1252,7 +1379,7 @@ namespace {
         }
         static void __stdcall Blend(ID3D11DeviceContext* c, ID3D11BlendState* bs, const FLOAT f[4], UINT m)
         {
-            if (L == 0) if (CtxSh* sh = ctx_sh(c, true)) sh->blendOn = blend_on(bs);   // DRAWPROBE3
+            if (L == 0 && g_testTools) if (CtxSh* sh = ctx_sh(c, true)) sh->blendOn = blend_on(bs);   // DRAWPROBE3 (CLEANUP: test tools only)
             if (L == 0 && layer_blend(c, bs, f, m)) return;
             oBlend(c, bs, f, m);
         }
@@ -1261,7 +1388,7 @@ namespace {
             if (L == 0)
             {
                 if (c == g_gameCtx) g_curVs = vs;   // VSID: which shader the next HUD draw uses
-                if (CtxSh* sh = ctx_sh(c, true)) sh->vs = vs;   // DRAWPROBE
+                if (ps_track()) if (CtxSh* sh = ctx_sh(c, true)) sh->vs = vs;   // DRAWPROBE
                 t_realVs = nullptr;
                 oVSSet(c, vs, ci, n);
                 if (t_realVs && vs) vs_map_set(vs, real_is_hud(t_realVs));   // VSID2: geo-11 bound its real shader now
@@ -1498,7 +1625,9 @@ namespace {
     void split_pre(ID3D11DeviceContext* c) { c->VSSetConstantBuffers(13, 1, &g_cbFlat); }
     // PSMARK: one draw into H (already bound) with cb13 = 0, so the shader's split tail keeps the piece.
     long g_layerOnlyDraws = 0, g_layerOnlyRep = 0;
-    bool layer_only_now() { return g_cbAll && vs_no_colour(vs_hud_index(g_curVs)) && ps_marked(); }
+    // MARKFIRST 2026-10-02: until the first HUD-part read of a gameplay stretch has landed its room marks, every HUD draw
+    // goes whole to the room layer (nothing of the HUD in the head-locked picture).
+    bool layer_only_now() { return g_cbAll && ((vs_no_colour(vs_hud_index(g_curVs)) && ps_marked()) || !akvr_hud_marks_ready()); }
     void layer_only_pre(ID3D11DeviceContext* c) { c->VSSetConstantBuffers(13, 1, &g_cbAll); }
     void layer_only_post(ID3D11DeviceContext* c) { c->VSSetConstantBuffers(13, 1, &g_cbFlat); ++g_layerOnlyDraws; }
     void split_mid(ID3D11DeviceContext* c)
@@ -1546,8 +1675,11 @@ namespace {
         // Usage and BindFlags - the switch buffers were created without CONSTANT_BUFFER, never reached the shaders
         // (cb13 read 0 = keep everything), and every split HUD piece was drawn in BOTH the layer and the picture
         // (JJ's "doubled HUD" from EDGEBAND on). Back to one row, as the shaders declare (CB13[1]).
-        const float v1[4] = { 1, 0, 0, 0 }, v2[4] = { 2, 0, 0, 0 }, v0[4] = { 0, 0, 0, 0 };
-        D3D11_BUFFER_DESC bd{}; bd.ByteWidth = 16; bd.Usage = D3D11_USAGE_DEFAULT; bd.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
+        // TARGETDEPTH (fix step 1k): three rows - row 0 as before, rows 1 / 2 = the "stays on its target" points.
+        // TARGETMOVE (fix step 1m): + row 3 = the points' screen offsets for the head turn.
+        // TARGETSCALE (fix step 1n): + row 4 = the map from AKVR's HUD box back to the movie's own layout.
+        const float v1[44] = { 1 }, v2[44] = { 2 }, v0[44] = { 0 };   // TARGETMULTI: 11 rows
+        D3D11_BUFFER_DESC bd{}; bd.ByteWidth = 176; bd.Usage = D3D11_USAGE_DEFAULT; bd.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
         g_bandSent = -1.0f;   // written with the band line on first use
         D3D11_SUBRESOURCE_DATA sd{};
         sd.pSysMem = v1; if (!g_cbFlat && FAILED(dev->CreateBuffer(&bd, &sd, &g_cbFlat))) g_cbFlat = nullptr;
@@ -1568,15 +1700,45 @@ namespace {
             split_buffers(g_gameCtx);
             float th = 0.0f, tv = 0.0f;
             if (g_squashWant) akvr_xr_game_tan(th, tv);
-            if (g_cbFlat && g_cbDepth && (g_bandSent != g_bandPct ||
+            // BANDOFF 2026-10-01 — JJ: the grapple reticle "splits into its various elements when it reaches the edge
+            // of the field of view". All four F2s had it at the TOP of the HUD (part y -6835..-8997 twips of a 7680
+            // half-height), inside the 28% compass band, which pushes pieces out of the 3D picture onto the layer.
+            // The band predates ROOMALL: with the whole HUD in the room every other part is marked for the room
+            // anyway, so the band only ever caught the "stays on its target" parts. Band only without ROOMALL.
+            const float band = akvr_hud_room_all() ? 0.0f : g_bandPct;
+            // TARGETDEPTH (fix step 1k): rows 1 and 2 = the "stays on its target" parts' points (clip x, y, radius,
+            // 1 = on), live every frame. Only with the whole HUD in the room - the shaders pull every unmarked piece
+            // near a point into the 3D picture, which is right only when everything else is marked for the room.
+            // TARGETMULTI (fix step 1p) 2026-10-02: up to 8 points (world-marker lists give one per visible marker): points
+            // 1-2 in rows 1-2, points 3-8 in rows 5-10; row 4 = the movie-layout map (1n), row 3 unused (the shaders take the
+            // depth point through the map). The one-frame marker shift (FRAMEPAIR) is gone since THREADSYNC.
+            float tp[16] = {}, toff[16] = {}, txf[4] = {};
+            const int nTp = (akvr_hud_room_all() && g_targetWant && g_Hw > 0 && g_Hh > 0)
+                          ? akvr_hud_target_points(tp, 8, g_Hw, g_Hh, toff, txf) : 0;
+            g_tgtN = nTp; g_tgtXY[0] = tp[0]; g_tgtXY[1] = tp[1]; g_tgtXY[2] = tp[2]; g_tgtXY[3] = tp[3];
+            float rows[40] = {};                                   // cb13 rows 1-10
+            for (int k = 0; k < nTp; ++k)
+            {
+                const int r = k < 2 ? k + 1 : k + 3;               // 1, 2, 5, 6, ... 10
+                float* q = rows + (r - 1) * 4;
+                q[0] = tp[k * 2]; q[1] = tp[k * 2 + 1]; q[2] = g_targetRadius; q[3] = 1.0f;
+            }
+            g_tgtOff[0] = g_tgtOff[1] = g_tgtOff[2] = g_tgtOff[3] = 0.0f;
+            g_framePx = g_framePy = 0.0f;
+            // TARGETSCALE (fix step 1n): row 4 moves the pieces themselves, per vertex, in the same frame as their draw
+            for (int k = 0; k < 4; ++k) g_tgtXf[k] = (nTp > 0 && g_markerHead) ? txf[k] : 0.0f;
+            rows[12] = g_tgtXf[0]; rows[13] = g_tgtXf[1]; rows[14] = g_tgtXf[2]; rows[15] = g_tgtXf[3];
+            if (g_testTools) tgt_record(nTp, tp);   // TARGETTRACE
+            if (g_cbFlat && g_cbDepth && (g_bandSent != band || memcmp(rows, g_tgtSent, sizeof(rows)) != 0 ||
                                           fabsf(th - g_tanSent[0]) > 1e-4f || fabsf(tv - g_tanSent[1]) > 1e-4f))
-            {   // .y = the band line in clip y (0 = no band); .zw = tan half-angles (0 = no squash fix);
-                // row 1 .x = the bottom strip's line, as a distance below the centre (0 = no strip)
-                const float y = g_bandPct > 0.5f ? 1.0f - 2.0f * g_bandPct / 100.0f : 0.0f;
-                const float f1[4] = { 1, y, th, tv }, f2[4] = { 2, y, th, tv };
+            {   // .y = the band line in clip y (0 = no band); .zw = tan half-angles (0 = no squash fix)
+                const float y = band > 0.5f ? 1.0f - 2.0f * band / 100.0f : 0.0f;
+                float f1[44] = { 1, y, th, tv }, f2[44] = { 2, y, th, tv };   // 11 rows = the buffer's 176 bytes
+                memcpy(f1 + 4, rows, sizeof(rows)); memcpy(f2 + 4, rows, sizeof(rows));
                 g_gameCtx->UpdateSubresource(g_cbFlat, 0, nullptr, f1, 0, 0);
                 g_gameCtx->UpdateSubresource(g_cbDepth, 0, nullptr, f2, 0, 0);
-                g_bandSent = g_bandPct; g_bottomSent = g_bottomPct; g_tanSent[0] = th; g_tanSent[1] = tv;
+                g_bandSent = band; g_bottomSent = g_bottomPct; g_tanSent[0] = th; g_tanSent[1] = tv;
+                memcpy(g_tgtSent, rows, sizeof(rows));
             }
             g_cb13Orig = nullptr;
             g_gameCtx->VSGetConstantBuffers(13, 1, &g_cb13Orig);   // released at the end, after restoring it
@@ -1760,7 +1922,7 @@ namespace {
             return;
         }
         const bool shot = g_shotWant == 1;   // LAYERSHOT: copy now rather than on the 90-frame beat
-        if (g_stageState == 0 && (shot || (g_frame % 90) == 0) && g_frame - g_lastSubFrame <= 1)
+        if (g_stageState == 0 && (shot || (g_testTools && (g_frame % 90) == 0)) && g_frame - g_lastSubFrame <= 1)   // CLEANUP
         {
             const int bpp = (g_Hfmt >= 27 && g_Hfmt <= 32) || (g_Hfmt >= 87 && g_Hfmt <= 93) ? 4 : 0;
             if (!bpp) return;                              // only 8-bit RGBA / BGRA are counted
@@ -1894,6 +2056,15 @@ const char* akvr_hudsplit_layer_diag()
         _snprintf_s(d, sizeof(d), _TRUNCATE, "HUD layer: %s; image %dx%d f%d (real: %s); %ld swaps last call, %ld frames, restores %ld, blend copies %d (special %d, fails %d); "
                     "covered %.2f%% (solid %.2f%%, see-through %.2f%%)",
                     why, g_Hw, g_Hh, g_Hfmt, g_Hfound, g_subsRep, g_layerFrames, g_restores, g_bvN, g_bvOther, g_bvFail, g_covAny, g_covSolid, g_covPart);
+    {   // TARGETDEPTH: the on-target points sent last frame (clip x, y)
+        const size_t len = strlen(d);
+        _snprintf_s(d + len, sizeof(d) - len, _TRUNCATE, " | target points %d: (%.3f, %.3f) (%.3f, %.3f) r %.2f, markers on target %s, depth point move (%.3f, %.3f) (%.3f, %.3f), layout map k-1 %.3f / %.3f, b %.3f / %.3f | frame pair %s (rain/markers at head pose delay %ld), marker shift %.4f / %.4f",
+                    g_tgtN, g_tgtXY[0], g_tgtXY[1], g_tgtXY[2], g_tgtXY[3], g_targetRadius, g_markerHead ? "ON" : "off",
+                    g_tgtOff[0], g_tgtOff[1], g_tgtOff[2], g_tgtOff[3], g_tgtXf[0], g_tgtXf[1], g_tgtXf[2], g_tgtXf[3],
+                    g_frameFix ? "ON" : "off", (long)g_frameWorld, g_framePx, g_framePy);
+        const size_t len2 = strlen(d);
+        _snprintf_s(d + len2, sizeof(d) - len2, _TRUNCATE, " | %s", akvr_rain_frame_diag());   // RAINSPLIT
+    }
     return d;
 }
 
@@ -1933,6 +2104,22 @@ const char* akvr_hudsplit_diag()
                              s.b[j].binds, s.b[j].draws);
     }
     return d;
+}
+
+// TARGETTRACE: the on-target points per HUD frame (test tools only), for F2
+void akvr_hudsplit_targets_dump(const wchar_t* path)
+{
+    FILE* f = nullptr;
+    if (!path || _wfopen_s(&f, path, L"w") != 0 || !f) return;
+    fprintf(f, "t_ms,finalize,n,x0,y0,x1,y1,cam_yaw_deg,cam_pitch_deg,base_yaw_deg,base_fwd_x,base_fwd_y,base_fwd_z,cam_x,cam_y,cam_z,off0x,off0y,off1x,off1y,frame_shift_x,frame_shift_y\n");
+    for (int i = 0; i < g_tgtCount; ++i)
+    {
+        const TgtRow& r = g_tgtRing[(g_tgtHead - g_tgtCount + i + kTgtRing) % kTgtRing];
+        fprintf(f, "%.3f,%llu,%d,%.5f,%.5f,%.5f,%.5f,%.4f,%.4f,%.4f,%.5f,%.5f,%.5f,%.2f,%.2f,%.2f,%.5f,%.5f,%.5f,%.5f,%.5f,%.5f\n", r.t, (unsigned long long)r.fin, r.n,
+                r.xy[0], r.xy[1], r.xy[2], r.xy[3], r.yaw, r.pitch, r.baseYaw, r.fwd[0], r.fwd[1], r.fwd[2], r.pos[0], r.pos[1], r.pos[2],
+                r.off[0], r.off[1], r.off[2], r.off[3], r.fshift[0], r.fshift[1]);
+    }
+    fclose(f);
 }
 
 void akvr_hudsplit_marks_dump(const wchar_t* path)
@@ -2119,6 +2306,29 @@ const char* akvr_far_rain_diag()
 }
 int  akvr_near_rain_lag() { return (int)g_nearLag; }                    // NEARRAIN2
 void akvr_near_rain_lag_set(int k) { InterlockedExchange(&g_nearLag, k < 0 ? 0 : (k > 12 ? 12 : k)); }
+bool akvr_rain_no_stretch() { return g_rainNoStretch != 0; }            // RAINSTRETCH
+void akvr_rain_no_stretch_set(bool on) { InterlockedExchange(&g_rainNoStretch, on ? 1 : 0); }
+bool akvr_test_tools() { return g_testTools; }                          // CLEANUP
+bool akvr_rain_frame_fix() { return g_rainFrameFix != 0; }              // RAINSPLIT
+void akvr_rain_frame_fix_set(bool on) { InterlockedExchange(&g_rainFrameFix, on ? 1 : 0); }
+const char* akvr_rain_frame_diag()
+{
+    static char s[200];
+    _snprintf_s(s, sizeof(s), _TRUNCATE, "rain frame fix %s: last turn %.3f deg (a streak 3 m away moves %.2f units), %ld draws, %ld while paused",
+                g_rainFrameFix ? "ON" : "off", g_rainRotDeg, g_rainMove, (long)g_rainFixDraws, (long)g_rainFixPaused);
+    return s;
+}
+bool akvr_frame_fix() { return g_frameFix != 0; }                       // FRAMEPAIR
+void akvr_frame_fix_set(bool on) { InterlockedExchange(&g_frameFix, on ? 1 : 0); }
+int  akvr_frame_world() { return (int)g_frameWorld; }
+void akvr_frame_world_set(int k) { InterlockedExchange(&g_frameWorld, k < 1 ? 1 : (k > 4 ? 4 : k)); }   // FRAMEPAIR2: a head pose delay
+bool akvr_marker_head() { return g_markerHead; }                        // TARGETMOVE
+void akvr_marker_head_set(bool on) { g_markerHead = on; }
+int  akvr_marker_lag() { return g_markerLag; }
+void akvr_marker_lag_set(int k) { g_markerLag = k < -1 ? -1 : (k > 8 ? 8 : k); }
+int  akvr_marker_hud_lag() { return g_markerHudLag; }                   // TARGETMOVE2
+void akvr_marker_hud_lag_set(int n) { g_markerHudLag = n < 0 ? 0 : (n > 4 ? 4 : n); }
+void akvr_test_tools_set(bool on) { g_testTools = on; }
 int  akvr_near_rain_mode() { return (int)g_nearMode; }                  // NEARRAIN
 void akvr_near_rain_mode_set(int m) { InterlockedExchange(&g_nearMode, m < 0 ? 0 : (m > 3 ? 3 : m)); }
 const char* akvr_near_rain_diag()

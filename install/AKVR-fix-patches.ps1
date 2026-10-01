@@ -250,6 +250,374 @@ function Patch-RetFlat([string]$hash) {
     Say "  $hash : flat reticle patched" 'Green'
 }
 
+# ---- 1j. RETNEAR: a piece drawn far from its origin searches scene depth from its own corner ----------
+# JJ 2026-10-01: the target-distance number "floats around a general area ... doesn't stay locked onto anything".
+# Its HUD part sits at the stage centre (identity matrix) and the game places the number away from that origin, so
+# RETFLAT made it take the scene depth at the middle of the view. Each vertex now blends from the piece origin
+# (closer than 0.15 clip units: the reticle rings, one depth for the whole piece) to its own corner (farther than
+# 0.25), after RETFLAT and before the fix's decision, the band and the depth search.
+$nearMarker = '// AKVR RETNEAR'
+function Patch-RetNear([string]$hash) {
+    $pos = $squashPos[$hash]
+    if (-not $pos) { return }
+    $txt = Join-Path $dm "$hash-vs.txt"
+    $bin = Join-Path $dm "$hash-vs.bin"
+    if (-not (Test-Path $txt)) { Say "  $hash : not in this fix - skipped" 'Yellow'; return }
+    $s = [System.IO.File]::ReadAllText($txt)
+    if ($s.Contains($nearMarker)) { Say "  $hash : number depth already patched"; return }
+    $nl = if ($s.Contains("`r`n")) { "`r`n" } else { "`n" }
+    $anchor = "// each corner, so the whole piece gets one depth. Falls back to the corner when the vertex w is not 1."
+    if (([regex]::Matches($s, [regex]::Escape($anchor))).Count -ne 1) { Say "  $hash : RETFLAT block not found once - number depth NOT patched" 'Red'; return }
+    # the RETFLAT block: comment, eq, movc T.y, movc T.z - insert after the second movc
+    $m = [regex]::Match($s, [regex]::Escape($anchor) + '\r?\n[^\r\n]*\r?\nmovc (r\d+)\.y, [^\r\n]*\r?\nmovc \1\.z, [^\r\n]*\r?\n')
+    if (-not $m.Success) { Say "  $hash : RETFLAT lines not as expected - number depth NOT patched" 'Red'; return }
+    $t = $m.Groups[1].Value
+    $corner = $pos[0].Split('.')[0]
+    if ($pos[1].Split('.')[0] -ne $corner) { Say "  $hash : corner x/y in different registers - number depth NOT patched" 'Red'; return }
+    $temps = [regex]::Match($s, '(?m)^dcl_temps (\d+)\s*$')
+    if (-not $temps.Success) { Say "  $hash : no dcl_temps - number depth NOT patched" 'Red'; return }
+    $n = [int]$temps.Groups[1].Value
+    $u = "r$n"
+    $block = @(
+        "$nearMarker 2026-10-01: a piece drawn far from its origin (a number the game places away from it) searches",
+        "// scene depth from its own corner instead (blend from 0.15 to 0.25 clip units), so it follows what it marks.",
+        "add $u.xy, $corner.xyxx, -$t.yzyy",
+        "dp2 $u.z, $u.xyxx, $u.xyxx",
+        "sqrt $u.z, $u.z",
+        "mad_sat $u.z, $u.z, l(10.000000), l(-1.500000)",
+        "mad $t.yz, $u.zzzz, $u.xxyx, $t.yyzy"
+    )
+    $at = $m.Index + $m.Length
+    $s = $s.Substring(0, $at) + ($block -join $nl) + $nl + $s.Substring($at)
+    $temps = [regex]::Match($s, '(?m)^dcl_temps (\d+)\s*$')
+    $s = $s.Substring(0, $temps.Index) + "dcl_temps $($n + 1)" + $s.Substring($temps.Index + $temps.Length)
+    Backup-Once $txt $bakDm
+    Backup-Once $bin $bakDm
+    [System.IO.File]::WriteAllText($txt, $s, $utf8)
+    if (Test-Path $bin) { Remove-Item $bin }
+    Say "  $hash : number depth patched" 'Green'
+}
+
+# ---- 1k. TARGETDEPTH: the "stays on its target" parts follow scene depth as ONE piece, in all 13 shaders ----
+# JJ 2026-10-02: the target-distance widget is "a combination of both sticking to its target and sticking to my
+# face"; it should be "at the depth of what's behind it, what it's pointing to". The widget is ~20 pieces (digits,
+# bracket halves, lines) each searching scene depth at its own spot, some over the ground right in front of Batman.
+# AKVR now sends the on-target parts' screen positions (clip x/y, a radius, on) in cb13 rows 1 and 2. A piece whose
+# origin (matrix translation, as EDGEBAND found it; the vertex when its w is not 1) is within the radius of one of
+# them searches depth from that point instead of its own corner/origin, and follows scene depth even where the fix
+# would keep it flat (in gameplay, and unless AKVR marked it for the room). Rows 0 / unbound = no change.
+$targetMarker = '// AKVR TARGETDEPTH'
+function Patch-TargetDepth([string]$hash) {
+    $txt = Join-Path $dm "$hash-vs.txt"
+    $bin = Join-Path $dm "$hash-vs.bin"
+    if (-not (Test-Path $txt)) { return }
+    $s = [System.IO.File]::ReadAllText($txt)
+    if ($s.Contains($targetMarker)) { Say "  $hash : target depth already patched"; return }
+    $nl = if ($s.Contains("`r`n")) { "`r`n" } else { "`n" }
+    $code = $s.IndexOf('// HLSL Code')
+    if ($code -lt 0) { $code = $s.Length }
+    $asm = $s.Substring(0, $code)
+    $temps = [regex]::Match($s, '(?m)^dcl_temps (\d+)\s*$')
+    $cbd = [regex]::Matches($asm, '(?m)^dcl_constantbuffer CB13\[1\], immediateIndexed[ \t]*$')
+    if (-not $temps.Success -or $cbd.Count -ne 1) { Say "  $hash : split (1b) not found - target depth NOT patched" 'Red'; return }
+    $n = [int]$temps.Groups[1].Value; $w = "r$n"; $u = "r$($n + 1)"; $v = "r$($n + 2)"
+    # the fix's decision, at AKVR's "remember" line (DEPTHALL: ine rN.x, rD.c, l(0) / HUDSPLIT: mov r10.x, rD.c)
+    $rem = [regex]::Match($asm, '(?m)^(?<i>[ \t]*)// AKVR (DEPTHALL 2026-09-28: remember|HUDSPLIT: remember)[^\r\n]*\r?\n[ \t]*(ine r\d+\.x, (?<d>r\d+\.[xyzw]), l\(0\)|mov r\d+\.x, (?<d>r\d+\.[xyzw]))[ \t]*\r?\n')
+    if (-not $rem.Success) { Say "  $hash : decision not found - target depth NOT patched" 'Red'; return }
+    $dec = $rem.Groups['d'].Value
+    # the room mark (PARTTAG): "and rD, rD, rM.x" between the PARTTAG comment and the remember line
+    $notMark = $null
+    $pt = $asm.LastIndexOf('// AKVR PARTTAG 2026-09-30', $rem.Index)
+    if ($pt -ge 0) {
+        $mk = [regex]::Matches($asm.Substring($pt, $rem.Index - $pt), '(?m)^[ \t]*and ' + [regex]::Escape($dec) + ', ' + [regex]::Escape($dec) + ', (?<m>r\d+\.x)[ \t]*$')
+        if ($mk.Count -ge 1) { $notMark = $mk[$mk.Count - 1].Groups['m'].Value }
+    }
+    # the depth block: first "if_nz rD" after the remember line, its row (mad .., Y, -0.5, 0.5) and its march start
+    $blk = [regex]::Match($asm.Substring($rem.Index), '(?m)^[ \t]*if_nz ' + [regex]::Escape($dec) + '[ \t]*$')
+    if (-not $blk.Success) { Say "  $hash : depth block not found - target depth NOT patched" 'Red'; return }
+    $blkAt = $rem.Index + $blk.Index
+    $rowM = [regex]::Match($asm.Substring($blkAt), '(?m)^(?<i>[ \t]*)mad (?<o>r\d+\.[xyzw]), (?<y>r\d+\.[xyzw]), l\(-0\.500000\), l\(0\.500000\)[ \t]*$')
+    $stepM = [regex]::Match($asm.Substring($blkAt), '(?m)^[ \t]*mad (?<s>r\d+\.[xyzw]), r\d+\.[xyzw], l\(0\.005000\), \k<s>[ \t]*\r?\n(?<i>[ \t]*)add (?<o>r\d+\.[xyzw]), (?<a>r\d+\.[xyzw]), (?<b>r\d+\.[xyzw])[ \t]*$')
+    if (-not $rowM.Success -or -not $stepM.Success) { Say "  $hash : depth search lines not found - target depth NOT patched" 'Red'; return }
+    $step = $stepM.Groups['s'].Value
+    if ($stepM.Groups['a'].Value -eq $step) { $sx = $stepM.Groups['b'].Value } elseif ($stepM.Groups['b'].Value -eq $step) { $sx = $stepM.Groups['a'].Value } else { Say "  $hash : march start not found - target depth NOT patched" 'Red'; return }
+    $sy = $rowM.Groups['y'].Value
+    # the piece origin, right after the position transform (EDGEBAND's method; x and y rows)
+    $ld = [regex]::Match($asm, '(?m)^ld_indexable\(texture1d\)[^\r\n]*t120\.')
+    $dps = [regex]::Matches($asm.Substring(0, $ld.Index), '(?m)^dp4 (?<r>r\d+)\.y, (?<v>v\d+)\.xyzw, (?<row>cb0\[[^\]]+\])\.xyzw[ \t]*$')
+    if (-not $ld.Success -or $dps.Count -lt 1) { Say "  $hash : position transform not found - target depth NOT patched" 'Red'; return }
+    $dp = $dps[$dps.Count - 1]
+    $pr = $dp.Groups['r'].Value; $pv = $dp.Groups['v'].Value; $rowY = $dp.Groups['row'].Value
+    $dxs = [regex]::Matches($asm.Substring(0, $dp.Index), '(?m)^dp4 ' + [regex]::Escape($pr) + '\.x, ' + [regex]::Escape($pv) + '\.xyzw, (?<row>cb0\[[^\]]+\])\.xyzw[ \t]*$')
+    if ($dxs.Count -lt 1) { Say "  $hash : position x row not found - target depth NOT patched" 'Red'; return }
+    $rowX = $dxs[$dxs.Count - 1].Groups['row'].Value
+    foreach ($r in @($sx, $sy, $dec)) { if ($r.StartsWith("$w.") -or $r.StartsWith("$u.") -or $r.StartsWith("$v.")) { Say "  $hash : register clash - target depth NOT patched" 'Red'; return } }
+    # ---- edit from the end backwards so earlier offsets stay valid ----
+    $o = $stepM.Groups['o'].Value
+    $addLine = $stepM.Value.Substring($stepM.Value.IndexOf("add $o,"))
+    $newAdd = "add $o, $step, $v.x"
+    $at = $blkAt + $stepM.Index + $stepM.Value.IndexOf("add $o,")
+    $s = $s.Substring(0, $at) + $newAdd + $s.Substring($at + $addLine.TrimEnd().Length)
+    $at = $blkAt + $rowM.Index + $rowM.Groups['i'].Length
+    $oldRow = $rowM.Value.Substring($rowM.Groups['i'].Length).TrimEnd()
+    $s = $s.Substring(0, $at) + "mad $($rowM.Groups['o'].Value), $v.y, l(-0.500000), l(0.500000)" + $s.Substring($at + $oldRow.Length)
+    $i = $rem.Groups['i'].Value
+    $mark = if ($notMark) { @("and $u.z, $u.z, $notMark") } else { @() }
+    $near = @(
+        "$targetMarker 2026-10-02: a piece of a ""stays on its target"" part (origin within cb13[1].z / cb13[2].z of",
+        "// cb13[1].xy / cb13[2].xy, .w = 1 on) searches scene depth from that point, as one piece, and follows it.",
+        "add $u.xy, $w.yzyy, -cb13[1].xyxx",
+        "dp2 $u.z, $u.xyxx, $u.xyxx",
+        "mul $u.w, cb13[1].z, cb13[1].z",
+        "lt $u.z, $u.z, $u.w",
+        "ne $u.w, cb13[1].w, l(0.000000)",
+        "and $u.z, $u.z, $u.w",
+        "add $u.xy, $w.yzyy, -cb13[2].xyxx",
+        "dp2 $u.x, $u.xyxx, $u.xyxx",
+        "mul $u.y, cb13[2].z, cb13[2].z",
+        "lt $u.x, $u.x, $u.y",
+        "ne $u.y, cb13[2].w, l(0.000000)",
+        "and $u.x, $u.x, $u.y",
+        "movc $v.xy, $u.zzzz, cb13[1].xyxx, cb13[2].xyxx",
+        "or $u.z, $u.z, $u.x",
+        "movc $v.x, $u.z, $v.x, $sx",
+        "movc $v.y, $u.z, $v.y, $sy",
+        "ld_indexable(texture1d)(float,float,float,float) $u.w, l(11, 0, 0, 0), t120.yzwx",
+        "eq $u.w, $u.w, l(0.000000)",
+        "and $u.z, $u.z, $u.w"
+    ) + $mark + @("or $dec, $dec, $u.z")
+    $near = $near | ForEach-Object { $i + $_ }
+    $at = $rem.Index
+    $s = $s.Substring(0, $at) + ($near -join $nl) + $nl + $s.Substring($at)
+    $at = $dp.Index + $dp.Length
+    $orig = @(
+        "${targetMarker}: the piece origin (matrix translation; the vertex when its w is not 1)",
+        "eq $w.x, $pv.w, l(1.000000)",
+        "movc $w.y, $w.x, $rowX.w, $pr.x",
+        "movc $w.z, $w.x, $rowY.w, $pr.y"
+    )
+    $s = $s.Substring(0, $at) + $nl + ($orig -join $nl) + $s.Substring($at)
+    $s = [regex]::Replace($s, '(?m)^dcl_constantbuffer CB13\[1\], immediateIndexed', 'dcl_constantbuffer CB13[3], immediateIndexed')
+    $temps = [regex]::Match($s, '(?m)^dcl_temps (\d+)\s*$')
+    $s = $s.Substring(0, $temps.Index) + "dcl_temps $($n + 3)" + $s.Substring($temps.Index + $temps.Length)
+    Backup-Once $txt $bakDm
+    Backup-Once $bin $bakDm
+    [System.IO.File]::WriteAllText($txt, $s, $utf8)
+    if (Test-Path $bin) { Remove-Item $bin }
+    $mk = if ($notMark) { "room mark $notMark" } else { 'no room mark' }
+    Say "  $hash : target depth patched (origin $rowX.w / $rowY.w, start $sx / $sy, decision $dec, $mk)" 'Green'
+}
+
+# ---- 1m. TARGETMOVE: the "stays on its target" parts are moved to where the head-turned camera sees them --------
+# JJ 2026-10-02: "the reticle for different grappling hook points and the target distance HUD element are still
+# following head movement". The game places its markers with its own camera, before AKVR adds the head turn, so they
+# keep their screen spot while the world turns. AKVR sends, per on-target point, the screen offset from the game's
+# camera to the drawn one (cb13 row 3: point 1 .xy, point 2 .zw). Each piece that 1k pulls to a point is moved by that
+# offset and searches depth from the moved point. Needs 1k. Row 3 zero / unbound = no change.
+$moveMarker = '// AKVR TARGETMOVE'
+function Patch-TargetMove([string]$hash) {
+    $txt = Join-Path $dm "$hash-vs.txt"
+    $bin = Join-Path $dm "$hash-vs.bin"
+    if (-not (Test-Path $txt)) { return }
+    $s = [System.IO.File]::ReadAllText($txt)
+    if ($s.Contains($moveMarker)) { Say "  $hash : target move already patched"; return }
+    if (-not $s.Contains($targetMarker)) { Say "  $hash : target depth (1k) not applied - target move NOT patched" 'Red'; return }
+    $nl = if ($s.Contains("`r`n")) { "`r`n" } else { "`n" }
+    $cbd = [regex]::Matches($s, '(?m)^dcl_constantbuffer CB13\[3\], immediateIndexed[ \t]*$')
+    $org = [regex]::Match($s, '(?m)^// AKVR TARGETDEPTH: the piece origin[^\r\n]*\r?\neq (?<w>r\d+)\.x, [^\r\n]*\r?\nmovc \k<w>\.y, \k<w>\.x, cb0\[[^\]]+\]\.w, (?<p>r\d+)\.x[ \t]*$')
+    $sel = [regex]::Match($s, '(?m)^(?<i>[ \t]*)movc (?<v>r\d+)\.xy, (?<u>r\d+)\.zzzz, cb13\[1\]\.xyxx, cb13\[2\]\.xyxx[ \t]*$')
+    if ($cbd.Count -ne 1 -or -not $org.Success -or -not $sel.Success) { Say "  $hash : 1k lines not found - target move NOT patched" 'Red'; return }
+    $w = $org.Groups['w'].Value; $p = $org.Groups['p'].Value; $v = $sel.Groups['v'].Value; $u = $sel.Groups['u'].Value; $i = $sel.Groups['i'].Value
+    $orLine = [regex]::Match($s.Substring($sel.Index), '(?m)^[ \t]*or r\d+\.[xyzw], r\d+\.[xyzw], ' + [regex]::Escape($u) + '\.z[ \t]*$')
+    if (-not $orLine.Success) { Say "  $hash : 1k decision line not found - target move NOT patched" 'Red'; return }
+    # edit from the end backwards
+    $at = $sel.Index + $orLine.Index + $orLine.Length
+    $move = @(
+        "${moveMarker}: the piece moves by its point's offset (only pieces that follow the point)",
+        "and $w.xw, $w.xxxw, $u.zzzz",
+        "add $p.xy, $p.xyxx, $w.xwxx"
+    ) | ForEach-Object { $i + $_ }
+    $s = $s.Substring(0, $at) + $nl + ($move -join $nl) + $s.Substring($at)
+    $at = $sel.Index + $sel.Length
+    $pick = @(
+        "$moveMarker 2026-10-02: the offset from the game's camera to the head-turned one (cb13[3]: point 1 .xy, 2 .zw)",
+        "movc $w.xw, $u.zzzz, cb13[3].xxxy, cb13[3].zzzw",
+        "add $v.xy, $v.xyxx, $w.xwxx"
+    ) | ForEach-Object { $i + $_ }
+    $s = $s.Substring(0, $at) + $nl + ($pick -join $nl) + $s.Substring($at)
+    $s = [regex]::Replace($s, '(?m)^dcl_constantbuffer CB13\[3\], immediateIndexed', 'dcl_constantbuffer CB13[4], immediateIndexed')
+    Backup-Once $txt $bakDm
+    Backup-Once $bin $bakDm
+    [System.IO.File]::WriteAllText($txt, $s, $utf8)
+    if (Test-Path $bin) { Remove-Item $bin }
+    Say "  $hash : target move patched (position $p, offset in $w.xw)" 'Green'
+}
+
+# ---- 1n. TARGETSCALE: the on-target pieces are drawn through the movie's own layout, not AKVR's shrunk HUD box --------
+# JJ 2026-10-02 on TARGETSTOCK (1m carrying a per-frame offset read from the HUD tree): better, but "the reticle and
+# the distance marker are jittering when you move your head". The offset was read from the live tree on the render
+# thread while the game may already be laying out the next frame. The shrink is one fixed affine map (AKVR's root vs
+# the movie's own matrix), so each vertex of a piece that follows a point is mapped back directly:
+# p += p * cb13[4].xy + cb13[4].zw (cb13[4] = (kx - 1, ky - 1, bx, by) in clip units). Replaces 1m's per-point move
+# (1m's offset still moves the depth sample point). Row 4 zero / unbound = no change.
+$scaleMarker = '// AKVR TARGETSCALE'
+function Patch-TargetScale([string]$hash) {
+    $txt = Join-Path $dm "$hash-vs.txt"
+    $bin = Join-Path $dm "$hash-vs.bin"
+    if (-not (Test-Path $txt)) { return }
+    $s = [System.IO.File]::ReadAllText($txt)
+    if ($s.Contains($scaleMarker)) { Say "  $hash : target scale already patched"; return }
+    if (-not $s.Contains($moveMarker)) { Say "  $hash : target move (1m) not applied - target scale NOT patched" 'Red'; return }
+    $cbd = [regex]::Matches($s, '(?m)^dcl_constantbuffer CB13\[4\], immediateIndexed[ \t]*$')
+    $mv = [regex]::Match($s, '(?m)^(?<i>[ \t]*)// AKVR TARGETMOVE: the piece moves by its point''s offset[^\r\n]*\r?\n[ \t]*and (?<w>r\d+)\.xw, \k<w>\.xxxw, (?<u>r\d+)\.zzzz[ \t]*\r?\n[ \t]*add (?<p>r\d+)\.xy, \k<p>\.xyxx, \k<w>\.xwxx[ \t]*')
+    if ($cbd.Count -ne 1 -or -not $mv.Success) { Say "  $hash : 1m lines not found - target scale NOT patched" 'Red'; return }
+    $nl = if ($s.Contains("`r`n")) { "`r`n" } else { "`n" }
+    $i = $mv.Groups['i'].Value; $w = $mv.Groups['w'].Value; $u = $mv.Groups['u'].Value; $p = $mv.Groups['p'].Value
+    $new = @(
+        "$scaleMarker 2026-10-02: the piece is drawn through the movie's own layout (cb13[4] = kx-1, ky-1, bx, by)",
+        "mad $w.xw, $p.xxxy, cb13[4].xxxy, cb13[4].zzzw",
+        "and $w.xw, $w.xxxw, $u.zzzz",
+        "add $p.xy, $p.xyxx, $w.xwxx"
+    ) | ForEach-Object { $i + $_ }
+    $s = $s.Substring(0, $mv.Index) + ($new -join $nl) + $s.Substring($mv.Index + $mv.Length)
+    $s = [regex]::Replace($s, '(?m)^dcl_constantbuffer CB13\[4\], immediateIndexed', 'dcl_constantbuffer CB13[5], immediateIndexed')
+    Backup-Once $txt $bakDm
+    Backup-Once $bin $bakDm
+    [System.IO.File]::WriteAllText($txt, $s, $utf8)
+    if (Test-Path $bin) { Remove-Item $bin }
+    Say "  $hash : target scale patched (position $p)" 'Green'
+}
+
+# ---- 1o. RAINLAG: the world rain seen from the world's camera (one frame older) -------------------------------
+# JJ 2026-10-02: "Head pose delay of 2 makes the rain go rock solid ... The problem with that is that the world becomes
+# jittery." UE3's one-frame thread lag: the rain draw uses the game's newer camera, the world the older one. With
+# cb12[4].w = 1 (AKVR) each streak end X becomes X' = M X + t (cb12 rows 6-8: M row i in .xyz, t_i in .w), the point
+# the newer camera sees where the older one sees X - so the rain is drawn as the world's camera would draw it.
+# cb12 unbound / row 4 .w = 0 = unchanged. CB12 grows to nine rows.
+$rainLagMarker = '// AKVR RAINLAG'
+function Patch-RainLag {
+    $txt = Join-Path $dm "$rainVs-vs.txt"
+    $bin = Join-Path $dm "$rainVs-vs.bin"
+    if (-not (Test-Path $txt)) { Say "  $rainVs : rain shader not in the fix - rain lag NOT patched" 'Red'; return }
+    $s = [System.IO.File]::ReadAllText($txt)
+    if ($s.Contains($rainLagMarker)) { Say "  $rainVs : rain lag already patched"; return }
+    if (-not $s.Contains($stretchMarker)) { Say "  $rainVs : rain stretch (1l) not applied - rain lag NOT patched" 'Red'; return }
+    $nl = if ($s.Contains("`r`n")) { "`r`n" } else { "`n" }
+    $tail = 'mad r1.xyz, -r0.yyyy, r1.yzwy, r2.xyzx'
+    $head = 'mad r4.xyz, r4.xyzx, l(0.500000, 0.500000, 0.500000, 0.000000), r2.xyzx'
+    $cbd = 'dcl_constantbuffer CB12[6], immediateIndexed'
+    foreach ($needle in @($tail, $head, $cbd)) {
+        if (([regex]::Matches($s, [regex]::Escape($needle))).Count -ne 1) { Say "  $rainVs : '$needle' not found once - rain lag NOT patched" 'Red'; return }
+    }
+    function Lag([string]$r, [string]$what) {
+        return @(
+            "$rainLagMarker 2026-10-02: the streak's $what as the world's (one frame older) camera sees it (cb12[4].w = 1)",
+            "dp3 r14.x, cb12[6].xyzx, $r.xyzx",
+            "dp3 r14.y, cb12[7].xyzx, $r.xyzx",
+            "dp3 r14.z, cb12[8].xyzx, $r.xyzx",
+            "mov r15.x, cb12[6].w",
+            "mov r15.y, cb12[7].w",
+            "mov r15.z, cb12[8].w",
+            "add r14.xyz, r14.xyzx, r15.xyzx",
+            "eq r15.w, cb12[4].w, l(1.000000)",
+            "movc $r.xyz, r15.wwww, r14.xyzx, $r.xyzx"
+        )
+    }
+    $at = $s.IndexOf($head) + $head.Length
+    $s = $s.Substring(0, $at) + $nl + ((Lag 'r4' 'head') -join $nl) + $s.Substring($at)
+    $at = $s.IndexOf($tail) + $tail.Length
+    $s = $s.Substring(0, $at) + $nl + ((Lag 'r1' 'tail') -join $nl) + $s.Substring($at)
+    $s = $s.Replace($cbd, 'dcl_constantbuffer CB12[9], immediateIndexed')
+    Backup-Once $txt $bakDm
+    Backup-Once $bin $bakDm
+    [System.IO.File]::WriteAllText($txt, $s, $utf8)
+    if (Test-Path $bin) { Remove-Item $bin }
+    Say "  $rainVs : rain lag patched" 'Green'
+}
+
+# ---- 1p. TARGETMULTI: up to 8 on-target points (world-marker lists), in all 13 shaders -------------------------
+# JJ 2026-10-02: a HUD element (the Batmobile marker, one of a 74-marker list K4/0.0.0.0.1.0.0.0) "was moving around with
+# head movement, but not attached to the face, more like moving in the opposite direction" - a world marker hung in the
+# room. 1k compared each piece with 2 points; a list needs one point per visible marker. The point test now runs over
+# cb13 rows 1, 2 and 5-10 (x, y, radius, on; the last match wins) and the depth search point is the matched point through
+# the layout map (cb13[4], 1n) - the per-point offset row 3 (1m) is no longer read. Rows zero / unbound = no change.
+$multiMarker = '// AKVR TARGETMULTI'
+function Patch-TargetMulti([string]$hash) {
+    $txt = Join-Path $dm "$hash-vs.txt"
+    $bin = Join-Path $dm "$hash-vs.bin"
+    if (-not (Test-Path $txt)) { return }
+    $s = [System.IO.File]::ReadAllText($txt)
+    if ($s.Contains($multiMarker)) { Say "  $hash : target multi already patched"; return }
+    if (-not $s.Contains($scaleMarker)) { Say "  $hash : target scale (1n) not applied - target multi NOT patched" 'Red'; return }
+    $nl = if ($s.Contains("`r`n")) { "`r`n" } else { "`n" }
+    $cbd = [regex]::Matches($s, '(?m)^dcl_constantbuffer CB13\[5\], immediateIndexed[ \t]*$')
+    $blk = [regex]::Match($s, '(?ms)^(?<i>[ \t]*)add (?<u>r\d+)\.xy, (?<w>r\d+)\.yzyy, -cb13\[1\]\.xyxx\r?\n.*?^[ \t]*or \k<u>\.z, \k<u>\.z, \k<u>\.x[ \t]*\r?\n')
+    if ($cbd.Count -ne 1 -or -not $blk.Success) { Say "  $hash : 1k block not found - target multi NOT patched" 'Red'; return }
+    $vm = [regex]::Match($blk.Value, '(?m)^[ \t]*movc (?<v>r\d+)\.xy, ' + $blk.Groups['u'].Value + '\.zzzz, cb13\[1\]\.xyxx, cb13\[2\]\.xyxx')
+    if (-not $vm.Success -or -not $blk.Value.Contains('cb13[3]')) { Say "  $hash : 1k/1m lines not as expected - target multi NOT patched" 'Red'; return }
+    $i = $blk.Groups['i'].Value; $u = $blk.Groups['u'].Value; $w = $blk.Groups['w'].Value; $v = $vm.Groups['v'].Value
+    $lines = @(
+        "$multiMarker 2026-10-02: up to 8 on-target points (cb13 rows 1, 2, 5-10: x, y, radius, on; the last match wins);",
+        "// the depth search starts at the matched point through the movie's own layout (cb13[4]).",
+        "mov $u.z, l(0)",
+        "mov $v.xy, l(0,0,0,0)"
+    )
+    foreach ($r in @(1, 2, 5, 6, 7, 8, 9, 10)) {
+        $lines += @(
+            "add $u.xy, $w.yzyy, -cb13[$r].xyxx",
+            "dp2 $u.x, $u.xyxx, $u.xyxx",
+            "mul $u.y, cb13[$r].z, cb13[$r].z",
+            "lt $u.x, $u.x, $u.y",
+            "ne $u.y, cb13[$r].w, l(0.000000)",
+            "and $u.x, $u.x, $u.y",
+            "movc $v.xy, $u.xxxx, cb13[$r].xyxx, $v.xyxx",
+            "or $u.z, $u.z, $u.x"
+        )
+    }
+    $lines += @(
+        "mad $u.xy, $v.xyxx, cb13[4].xyxx, cb13[4].zwzz",
+        "add $v.xy, $v.xyxx, $u.xyxx"
+    )
+    $new = ($lines | ForEach-Object { $i + $_ }) -join $nl
+    $s = $s.Substring(0, $blk.Index) + $new + $nl + $s.Substring($blk.Index + $blk.Length)
+    $s = [regex]::Replace($s, '(?m)^dcl_constantbuffer CB13\[5\], immediateIndexed', 'dcl_constantbuffer CB13[11], immediateIndexed')
+    Backup-Once $txt $bakDm
+    Backup-Once $bin $bakDm
+    [System.IO.File]::WriteAllText($txt, $s, $utf8)
+    if (Test-Path $bin) { Remove-Item $bin }
+    Say "  $hash : target multi patched (point register $v)" 'Green'
+}
+
+# ---- 1l. RAINSTRETCH: optional - the world rain streaks without the per-frame camera term (cb0[12]) ----------
+# JJ 2026-10-02: isolated rain in the pause "sort of jitters a bit" when he turns his head; "it kind of follows a
+# little bit". The rain VS (after 1h) stretches each streak's head by cb0[12] * 0.5, which looks like the camera's
+# movement since the last frame; in third person a head turn swings the camera round Batman. With cb12[2].w = 1
+# (AKVR, test switch) that term is dropped. cb12 unbound / 0 = unchanged.
+$stretchMarker = '// AKVR RAINSTRETCH'
+function Patch-RainStretch {
+    $txt = Join-Path $dm "$rainVs-vs.txt"
+    $bin = Join-Path $dm "$rainVs-vs.bin"
+    if (-not (Test-Path $txt)) { Say "  $rainVs : rain shader not in the fix - rain stretch NOT patched" 'Red'; return }
+    $s = [System.IO.File]::ReadAllText($txt)
+    if ($s.Contains($stretchMarker)) { Say "  $rainVs : rain stretch already patched"; return }
+    if (-not $s.Contains($rainMarker2)) { Say "  $rainVs : near rain (1h) not applied - rain stretch NOT patched" 'Red'; return }
+    $nl = if ($s.Contains("`r`n")) { "`r`n" } else { "`n" }
+    $line = 'mul r4.xyz, r4.xxxx, cb0[12].xyzx'
+    if (([regex]::Matches($s, [regex]::Escape($line))).Count -ne 1) { Say "  $rainVs : stretch line not found once - rain stretch NOT patched" 'Red'; return }
+    $add = @(
+        "$stretchMarker 2026-10-02: cb12[2].w = 1 (AKVR) drops the per-frame camera term from the streak's head",
+        "ne r15.x, cb12[2].w, l(0.000000)",
+        "movc r4.xyz, r15.xxxx, l(0, 0, 0, 0), r4.xyzx"
+    )
+    $at = $s.IndexOf($line) + $line.Length
+    $s = $s.Substring(0, $at) + $nl + ($add -join $nl) + $s.Substring($at)
+    Backup-Once $txt $bakDm
+    Backup-Once $bin $bakDm
+    [System.IO.File]::WriteAllText($txt, $s, $utf8)
+    if (Test-Path $bin) { Remove-Item $bin }
+    Say "  $rainVs : rain stretch patched" 'Green'
+}
+
 # ---- 1d. RETSQUASH: undo the flat-sticker squash of scene-depth pieces near the view edges -----------
 # JJ 2026-09-28: the reticle squashes towards the edges. A screen-space sprite of fixed size on a flat
 # (rectilinear) picture covers a smaller angle off-centre. For a piece at tan-space (u, v) = (x tanH, y tanV)
@@ -346,6 +714,306 @@ function Patch-DepthAll([string]$hash) {
     Say "  $hash : scene-depth split patched (decision $c)" 'Green'
 }
 
+# ---- 1f. EDGEBAND: RETIRED 2026-09-29 (same night) ------------------------------------------------------
+# Top/bottom strips moved pieces to AKVR's room-fixed HUD layer by position. HUD elements straddle the strip
+# lines and are built from pieces the fix tags differently, so with the layer hung in the room one element
+# came apart into two copies (JJ). Not applied any more; FIX_CHANGES.md 1f has the text and the rollback.
+
+# ---- 1g. PARTTAG: HUD parts AKVR marks "hang in the room" never follow scene depth ---------------------
+# JJ 2026-09-30: every HUD element except the ones attached to world objects must hang, whole, on one plane in
+# the room. The fix's scene-depth decision is per PIECE (texture tags, shared atlases), so with AKVR's room-fixed
+# layer one element came apart (part layer, part picture = doubled). AKVR marks whole Scaleform parts (the panel's
+# "hang in the room") by writing a tiny negative blue ADD (-1/512, below one 8-bit step) into the part's colour
+# transform; every piece of the part inherits it. Measured (MARKREC, F2 hudmarks.csv): the mark arrives in cb0
+# exactly (-0.001953) in the FIRST row of each colour pair - the game uploads add before multiply. Two layouts:
+#   A. "mov oA.xyzw, cb0[ADD].xyzw" + "mov oB.xyzw, cb0[MUL].xyzw" at the end (7 shaders): read cb0[ADD] at the
+#      decision point (a looked-up row's index register is checked unchanged in between);
+#   B. "mad oN.xyzw, vK.xyzw, cb0[MUL], cb0[ADD]" early (4b432a87): read right there into the new temp.
+# A marked piece has the fix's decision turned off before it is used: no depth search, flat, and AKVR's split sends
+# it only to the layer. No mark = unchanged.
+# PARTTAG4 2026-09-30 (JJ: pieces over the compass stayed head-locked): the game combines a child's colour with its
+# parent's, so a tinted child scales the parent's add by its own multiply - a green icon (blue x 0) loses a blue-only
+# mark. AKVR now marks red, green and blue (-1/512 each) and a piece counts as marked when ANY of add .x/.y/.z lies in
+# -0.003..-0.0002 (the mark scaled by a tint down to ~0.1). Two new temps.
+# PARTTAG5 2026-09-30 (CBDUMP, JJ's compass pieces shown / hidden): the four stuck pieces were (a) marked TWICE - the
+# compass and the child were both ticked, and marks add up (add = -0.003906) - and (b) pieces coloured by their OWN
+# add (multiply 0, add ~0.75..0.86), where a small mark disappears inside the colour. The mark now goes into alpha
+# too (a child's own alpha add is 0), and any of add .x/.y/.z/.w in -0.02..-0.0002 counts (up to ~10 stacked marks).
+$tagMarker = '// AKVR PARTTAG'
+function Patch-PartTag([string]$hash) {
+    $txt = Join-Path $dm "$hash-vs.txt"
+    $bin = Join-Path $dm "$hash-vs.bin"
+    if (-not (Test-Path $txt)) { return }
+    $s = [System.IO.File]::ReadAllText($txt)
+    if ($s.Contains($tagMarker)) { Say "  $hash : part mark already patched"; return }
+    $nl = if ($s.Contains("`r`n")) { "`r`n" } else { "`n" }
+    $code = $s.IndexOf('// HLSL Code')
+    if ($code -lt 0) { $code = $s.Length }
+    $body = $s.Substring(0, $code)
+    $pairA = [regex]::Matches($body, '(?m)^mov o\d+\.xyzw, (?<add>cb0\[[^\]]+\])\.xyzw[ \t]*\r?\nmov o\d+\.xyzw, cb0\[[^\]]+\]\.xyzw[ \t]*$')
+    $madB = [regex]::Matches($body, '(?m)^mad o\d+\.xyzw, v\d+\.xyzw, cb0\[[^\]]+\]\.xyzw, (?<add>cb0\[[^\]]+\])\.xyzw[ \t]*$')
+    if ($pairA.Count + $madB.Count -eq 0) { Say "  $hash : no colour transform - part mark not needed"; return }
+    if ($pairA.Count + $madB.Count -ne 1) { Say "  $hash : colour transform found $($pairA.Count + $madB.Count) times - part mark NOT patched" 'Red'; return }
+    $early = $madB.Count -eq 1
+    $cx = if ($early) { $madB[0] } else { $pairA[0] }
+    $add = $cx.Groups['add'].Value
+    # Where the fix's decision is remembered (1b / 1e); the decision register comes from the next line.
+    $m = [regex]::Match($s, '(?m)^(?<i>[ \t]*)// AKVR (DEPTHALL[^\r\n]*|HUDSPLIT: remember[^\r\n]*)\r?\n[ \t]*(ine r\d+\.x, (?<d1>r\d+\.[xyzw]), l\(0\)|mov r\d+\.x, (?<d2>r\d+\.[xyzw]))[ \t]*$')
+    if (-not $m.Success) { Say "  $hash : decision (1b / 1e) not found - part mark NOT patched" 'Red'; return }
+    $dec = if ($m.Groups['d1'].Success) { $m.Groups['d1'].Value } else { $m.Groups['d2'].Value }
+    if ($early -and $cx.Index -gt $m.Index) { Say "  $hash : colour read after the decision - part mark NOT patched" 'Red'; return }
+    if (-not $early) {
+        # A looked-up row (cb0[rK.c + 0]) must hold the same index at the decision point as at the colour lines.
+        $ix = [regex]::Match($add, 'cb0\[(?<r>r\d+)\.(?<c>[xyzw]) \+ 0\]')
+        if ($ix.Success) {
+            $r = $ix.Groups['r'].Value; $c = $ix.Groups['c'].Value
+            $mid = $s.Substring($m.Index, $cx.Index - $m.Index)
+            $pre = $s.Substring(0, $m.Index)
+            $w = '(?m)^[ \t]*[a-z_0-9]+(\([^)]*\))* ' + $r + '\.[xyzw]*' + $c + '[xyzw]*,'
+            if ([regex]::IsMatch($mid, $w) -or -not [regex]::IsMatch($pre.Substring([Math]::Max(0, $pre.IndexOf('vs_5_0'))), $w)) {
+                Say "  $hash : colour row index $r.$c not stable - part mark NOT patched" 'Red'; return
+            }
+        }
+    }
+    $temps = [regex]::Match($s, '(?m)^dcl_temps (\d+)\s*$')
+    if (-not $temps.Success) { Say "  $hash : no dcl_temps - part mark NOT patched" 'Red'; return }
+    $n = [int]$temps.Groups[1].Value; $t = "r$n"; $u = "r$($n + 1)"; $i = $m.Groups['i'].Value
+    $test = @(
+        "lt $t.xyzw, $add.xyzw, l(-0.000200, -0.000200, -0.000200, -0.000200)",
+        "lt $u.xyzw, l(-0.020000, -0.020000, -0.020000, -0.020000), $add.xyzw",
+        "and $t.xyzw, $t.xyzw, $u.xyzw",
+        "or $t.xy, $t.xyxx, $t.zwzz",
+        "or $t.x, $t.y, $t.x",
+        "not $t.x, $t.x"
+    )
+    $apply = @(
+        "$tagMarker 2026-09-30: a piece of a HUD part AKVR marked 'hang in the room' (colour add .x/.y/.z/.w in -0.02..-0.0002)",
+        "// never follows scene depth: flat, and AKVR's split sends it whole to the layer."
+    )
+    if ($early) { $apply += @("and $dec, $dec, $t.x") } else { $apply += $test + @("and $dec, $dec, $t.x") }
+    # Edit from the end backwards: the decision point first (later in the file for B), then the early read.
+    $s = $s.Substring(0, $m.Index) + (($apply | ForEach-Object { $i + $_ }) -join $nl) + $nl + $s.Substring($m.Index)
+    if ($early) {
+        $at = $cx.Index + $cx.Length
+        $s = $s.Substring(0, $at) + $nl + "$tagMarker read: the part mark in this piece's colour add row" + $nl + ($test -join $nl) + $s.Substring($at)
+    }
+    $temps = [regex]::Match($s, '(?m)^dcl_temps (\d+)\s*$')
+    $s = $s.Substring(0, $temps.Index) + "dcl_temps $($n + 2)" + $s.Substring($temps.Index + $temps.Length)
+    Backup-Once $txt $bakDm
+    Backup-Once $bin $bakDm
+    [System.IO.File]::WriteAllText($txt, $s, $utf8)
+    if (Test-Path $bin) { Remove-Item $bin }
+    $kind = if ($early) { 'read early' } else { 'read at the decision' }
+    Say "  $hash : part mark patched (colour add $add, $kind, decision $dec)" 'Green'
+}
+
+# ---- 1h. NEARRAIN: the rain block the game keeps around the camera hangs in the room ------------------------
+# JJ 2026-10-01: one layer of rain "attached to the face", in 3D, moving with the head even in the pause. AKVR's draw
+# probe (DRAWPROBE4 / RAINPARTS2) found it inside the world rain draw itself: pixel shader 5d787946eda54077 with the
+# fix's vertex shader f50d1365e929b3a0, 6 vertices x 20480 instances, each streak read from a structured buffer by
+# SV_InstanceID. Cutting the instance count: the stuck streaks are the FIRST 2048 (with a few world drops among them;
+# everything past 2048 is world-fixed rain). The game places that block around its camera - in VR the head-turned one.
+# JJ: "Can't we hang them in space like the rest of them?" Edit, driven by AKVR through cb12 (bound only around the
+# rain draw; unbound it reads 0 and the shader is exactly the fix's):
+#   cb12[0] = the game camera's own forward + mode (w: 0 unchanged, 1 hang in the room, 2 hidden)
+#   cb12[1] = its right + how many streaks from the start (w), cb12[2] = its up.
+# Mode 1, right after a streak's position is read: the head-turned camera's position and axes come from this draw's
+# own view-projection (cb0[6..9]: clip.w row = forward; x / y rows minus their forward part = right / up; the camera
+# is where clip x, y and w are all 0), the streak is expressed in that camera's axes and put back with the game
+# camera's axes, so turning the head no longer turns the block. Mode 2: the final position write sends it off screen.
+# NEARRAIN2 2026-10-01 (JJ: head translation fixed, but "when rotating your head around, the rain as a complete block
+# seems to rotate"): the game may place the block with an older camera than this draw's. cb12 grows to 6 rows: with
+# cb12[3].w = 1 the shader uses the drawn camera's axes AKVR sends in cb12[3..5].xyz (from N frames back, with the game
+# camera of the same frame in cb12[0..2]) instead of the ones from its own view-projection. A NEARRAIN (v1) file is
+# first restored from akvr_fix_backup, then patched fresh.
+# NEARRAIN3 2026-10-01 (JJ: "previously the rain was attached to head position translation, and now it's attached
+# somehow to head rotation while staying mostly hanging in space"): the block follows the camera's POSITION only.
+# Mode 3: the streak position minus cb12[0].xyz (the position offset AKVR adds to the camera for the head), no turn.
+$rainVs = 'f50d1365e929b3a0'
+$rainMarker = '// AKVR NEARRAIN'
+$rainMarker2 = '// AKVR NEARRAIN3'
+function Patch-NearRain {
+    $txt = Join-Path $dm "$rainVs-vs.txt"
+    $bin = Join-Path $dm "$rainVs-vs.bin"
+    if (-not (Test-Path $txt)) { Say "  $rainVs : rain shader not in the fix - near rain NOT patched" 'Red'; return }
+    $s = [System.IO.File]::ReadAllText($txt)
+    if ($s.Contains($rainMarker2)) { Say "  $rainVs : near rain already patched"; return }
+    if ($s.Contains($rainMarker)) {
+        $orig = Join-Path $bakDm "$rainVs-vs.txt"
+        if (-not (Test-Path $orig)) { Say "  $rainVs : older near rain edit and no original in akvr_fix_backup - NOT patched" 'Red'; return }
+        $s = [System.IO.File]::ReadAllText($orig)
+        if ($s.Contains($rainMarker)) { Say "  $rainVs : the backup is not the original - NOT patched" 'Red'; return }
+        Say "  $rainVs : older near rain edit replaced (restored from akvr_fix_backup)"
+    }
+    if ($s -match '(?i)\bcb12\b') { Say "  $rainVs : already uses cb12 - near rain NOT patched" 'Red'; return }
+    $nl = if ($s.Contains("`r`n")) { "`r`n" } else { "`n" }
+    $iidM = [regex]::Match($s, '(?m)^dcl_input_sgv (?<v>v\d+)\.x, instance_id\s*$')
+    if (-not $iidM.Success) { Say "  $rainVs : no instance id input - near rain NOT patched" 'Red'; return }
+    $iid = $iidM.Groups['v'].Value
+    $ldM = [regex]::Matches($s, '(?m)^ld_structured_indexable\(structured_buffer, stride=80\)\(mixed,mixed,mixed,mixed\) (?<p>r\d+)\.xyzw, ' + $iid + '\.x, l\(48\), t0\.xyzw[ \t]*$')
+    if ($ldM.Count -ne 1) { Say "  $rainVs : streak position read found $($ldM.Count) times - near rain NOT patched" 'Red'; return }
+    $P = $ldM[0].Groups['p'].Value
+    $posDcl = [regex]::Match($s, '(?m)^dcl_output_siv (?<o>o\d+)\.xyzw, position\s*$')
+    if (-not $posDcl.Success) { Say "  $rainVs : no position output - near rain NOT patched" 'Red'; return }
+    $hits = @([regex]::Matches($s, '(?m)^mov (?<o>o\d+)\.xyzw, (?<r>r\d+)\.xyzw[ \t]*$') | Where-Object { $_.Groups['o'].Value -eq $posDcl.Groups['o'].Value })
+    if ($hits.Count -ne 1) { Say "  $rainVs : position write found $($hits.Count) times - near rain NOT patched" 'Red'; return }
+    if ($hits[0].Index -lt $ldM[0].Index) { Say "  $rainVs : position written before the streak is read - near rain NOT patched" 'Red'; return }
+    $cbDecl = [regex]::Match($s, '(?m)^dcl_constantbuffer [^\r\n]*$')
+    $temps = [regex]::Match($s, '(?m)^dcl_temps (\d+)\s*$')
+    if (-not $cbDecl.Success -or -not $temps.Success) { Say "  $rainVs : declarations not found - near rain NOT patched" 'Red'; return }
+    $n = [int]$temps.Groups[1].Value
+    $T = 0..6 | ForEach-Object { "r$($n + $_)" }
+    $t0, $t1, $t2, $t3, $t4, $t5, $t6 = $T
+    $o = $hits[0].Groups['o'].Value; $r = $hits[0].Groups['r'].Value
+    $place = @(
+        "$rainMarker2 2026-10-01: AKVR (cb12) re-places the first cb12[1].w streaks from the head-turned camera to the",
+        "// game's own camera (mode 1), or hides them (mode 2). cb12 unbound = 0 = the fix's shader unchanged.",
+        "utof $t0.y, $iid.x",
+        "lt $t0.y, $t0.y, cb12[1].w",
+        "eq $t0.w, cb12[0].w, l(1.000000)",
+        "and $t0.w, $t0.w, $t0.y",
+        "eq $t0.z, cb12[0].w, l(2.000000)",
+        "and $t0.z, $t0.z, $t0.y",
+        "eq $t6.w, cb12[0].w, l(3.000000)",
+        "and $t6.w, $t6.w, $t0.y",
+        "mov $t1.x, cb0[6].x",
+        "mov $t1.y, cb0[7].x",
+        "mov $t1.z, cb0[8].x",
+        "mov $t2.x, cb0[6].y",
+        "mov $t2.y, cb0[7].y",
+        "mov $t2.z, cb0[8].y",
+        "mov $t3.x, cb0[6].w",
+        "mov $t3.y, cb0[7].w",
+        "mov $t3.z, cb0[8].w",
+        "mul $t4.xyz, $t2.yzxy, $t3.zxyz",
+        "mad $t4.xyz, $t2.zxyz, -$t3.yzxy, $t4.xyzx",
+        "dp3 $t0.x, $t1.xyzx, $t4.xyzx",
+        "mul $t4.xyz, $t4.xyzx, cb0[9].xxxx",
+        "mul $t5.xyz, $t3.yzxy, $t1.zxyz",
+        "mad $t5.xyz, $t3.zxyz, -$t1.yzxy, $t5.xyzx",
+        "mad $t4.xyz, $t5.xyzx, cb0[9].yyyy, $t4.xyzx",
+        "mul $t5.xyz, $t1.yzxy, $t2.zxyz",
+        "mad $t5.xyz, $t1.zxyz, -$t2.yzxy, $t5.xyzx",
+        "mad $t4.xyz, $t5.xyzx, cb0[9].wwww, $t4.xyzx",
+        "div $t4.xyz, -$t4.xyzx, $t0.xxxx",
+        "dp3 $t0.y, $t3.xyzx, $t3.xyzx",
+        "rsq $t0.y, $t0.y",
+        "mul $t3.xyz, $t3.xyzx, $t0.yyyy",
+        "dp3 $t0.y, $t1.xyzx, $t3.xyzx",
+        "mad $t1.xyz, -$t3.xyzx, $t0.yyyy, $t1.xyzx",
+        "dp3 $t0.y, $t1.xyzx, $t1.xyzx",
+        "rsq $t0.y, $t0.y",
+        "mul $t1.xyz, $t1.xyzx, $t0.yyyy",
+        "dp3 $t0.y, $t2.xyzx, $t3.xyzx",
+        "mad $t2.xyz, -$t3.xyzx, $t0.yyyy, $t2.xyzx",
+        "dp3 $t0.y, $t2.xyzx, $t2.xyzx",
+        "rsq $t0.y, $t0.y",
+        "mul $t2.xyz, $t2.xyzx, $t0.yyyy",
+        "// NEARRAIN2: cb12[3].w = 1 - the drawn camera's axes from AKVR (N frames back) instead of this draw's own",
+        "eq $t0.y, cb12[3].w, l(1.000000)",
+        "movc $t3.xyz, $t0.yyyy, cb12[3].xyzx, $t3.xyzx",
+        "movc $t1.xyz, $t0.yyyy, cb12[4].xyzx, $t1.xyzx",
+        "movc $t2.xyz, $t0.yyyy, cb12[5].xyzx, $t2.xyzx",
+        "add $t5.xyz, $P.xyzx, -$t4.xyzx",
+        "dp3 $t6.x, $t1.xyzx, $t5.xyzx",
+        "dp3 $t6.y, $t2.xyzx, $t5.xyzx",
+        "dp3 $t6.z, $t3.xyzx, $t5.xyzx",
+        "mad $t5.xyz, cb12[0].xyzx, $t6.zzzz, $t4.xyzx",
+        "mad $t5.xyz, cb12[1].xyzx, $t6.xxxx, $t5.xyzx",
+        "mad $t5.xyz, cb12[2].xyzx, $t6.yyyy, $t5.xyzx",
+        "movc $P.xyz, $t0.wwww, $t5.xyzx, $P.xyzx",
+        "// NEARRAIN3 (mode 3): the head's position offset (cb12[0].xyz) taken back off, no turn",
+        "add $t5.xyz, $P.xyzx, -cb12[0].xyzx",
+        "movc $P.xyz, $t6.wwww, $t5.xyzx, $P.xyzx"
+    ) -join $nl
+    $hide = @(
+        "$rainMarker hide (mode 2): off screen. Original line: mov $o.xyzw, $r.xyzw",
+        "movc $o.xyzw, $t0.zzzz, l(-10.000000, -10.000000, 0.000000, 1.000000), $r.xyzw"
+    ) -join $nl
+    # From the end backwards: the position write, the streak read, dcl_temps, the constant buffer declaration.
+    $h = $hits[0]
+    $s = $s.Substring(0, $h.Index) + $hide + $s.Substring($h.Index + $h.Length)
+    $ld = $ldM[0]
+    $s = $s.Substring(0, $ld.Index + $ld.Length) + $nl + $place + $s.Substring($ld.Index + $ld.Length)
+    $temps = [regex]::Match($s, '(?m)^dcl_temps (\d+)\s*$')
+    $s = $s.Substring(0, $temps.Index) + "dcl_temps $($n + 7)" + $s.Substring($temps.Index + $temps.Length)
+    $cbDecl = [regex]::Match($s, '(?m)^dcl_constantbuffer [^\r\n]*$')
+    $s = $s.Substring(0, $cbDecl.Index + $cbDecl.Length) + $nl + 'dcl_constantbuffer CB12[6], immediateIndexed' + $s.Substring($cbDecl.Index + $cbDecl.Length)
+    Backup-Once $txt $bakDm
+    Backup-Once $bin $bakDm
+    [System.IO.File]::WriteAllText($txt, $s, $utf8)
+    if (Test-Path $bin) { Remove-Item $bin }
+    Say "  $rainVs : near rain patched (first streaks re-placed / hidden by AKVR, position $P, output $o)" 'Green'
+}
+
+# ---- 1i. FARRAIN: the rain simulation keeps its regions ahead of the GAME camera, not the head -----------------
+# JJ 2026-10-01: the near-rain fixes (1h) never held: a block of rain kept turning with the head. AKVR's RAINWRITER
+# capture found the shader that moves the rain: the fix's compute shader a96594b16ceb399b ("Rain haloing CS"), which
+# writes the streak buffer the rain draw reads. Its cb0[11] = the camera's forward x 512 (head turn included: the F2
+# showed it equal to the drawn camera's forward). It centres the main rain box 512 ahead of the camera, places each
+# drop relative to the camera, and (streaks 1024..2047, thread groups 4..7) pushes a DISTANT layer 2 x cb0[11] further
+# out along the view - that layer swings round the player with every head turn (JJ: "as if there's another camera
+# orbiting it"). Edit: AKVR binds cb13 around this dispatch with the game camera's own forward (w = 1); the shader then
+# uses forward x |cb0[11]| in all three places instead of cb0[11]. cb13 unbound = 0 = the fix's shader unchanged.
+$rainCs = 'a96594b16ceb399b'
+$farMarker = '// AKVR FARRAIN'
+function Patch-FarRain {
+    $txt = Join-Path $dm "$rainCs-cs.txt"
+    $bin = Join-Path $dm "$rainCs-cs.bin"
+    if (-not (Test-Path $txt)) { Say "  $rainCs : rain compute shader not in the fix - far rain NOT patched" 'Red'; return }
+    $s = [System.IO.File]::ReadAllText($txt)
+    if ($s.Contains($farMarker)) { Say "  $rainCs : far rain already patched"; return }
+    if ($s -match '(?i)\bcb13\b') { Say "  $rainCs : already uses cb13 - far rain NOT patched" 'Red'; return }
+    $nl = if ($s.Contains("`r`n")) { "`r`n" } else { "`n" }
+    $pats = @(
+        '(?m)^(?<i>[ \t]*)add (?<d>r\d+)\.xyz, cb0\[10\]\.xyzx, cb0\[11\]\.xyzx[ \t]*$',
+        '(?m)^(?<i>[ \t]*)add (?<d>r\d+)\.yzw, (?<a>r\d+)\.xxyz, cb0\[11\]\.xxyz[ \t]*$',
+        '(?m)^(?<i>[ \t]*)mad (?<d>r\d+)\.yzw, cb0\[11\]\.xxyz, l\(0\.000000, 2\.000000, 2\.000000, 2\.000000\), (?<a>r\d+)\.yyzw[ \t]*$'
+    )
+    $ms = @()
+    foreach ($p in $pats) {
+        $m = [regex]::Matches($s, $p)
+        if ($m.Count -ne 1) { Say "  $rainCs : a look-ahead line found $($m.Count) times - far rain NOT patched" 'Red'; return }
+        $ms += $m[0]
+    }
+    if (-not ($ms[0].Index -lt $ms[1].Index -and $ms[1].Index -lt $ms[2].Index)) { Say "  $rainCs : look-ahead lines out of order - far rain NOT patched" 'Red'; return }
+    $temps = [regex]::Match($s, '(?m)^dcl_temps (\d+)\s*$')
+    $cbDecl = [regex]::Match($s, '(?m)^dcl_constantbuffer [^\r\n]*$')
+    if (-not $temps.Success -or -not $cbDecl.Success) { Say "  $rainCs : declarations not found - far rain NOT patched" 'Red'; return }
+    $n = [int]$temps.Groups[1].Value; $t = "r$n"
+    $i0 = $ms[0].Groups['i'].Value
+    $calc = @(
+        "$farMarker 2026-10-01: the look-ahead (cb0[11] = camera forward x 512, head turn included) from the GAME camera",
+        "// when AKVR binds cb13 (w = 1): its forward in cb13[0].xyz, scaled to |cb0[11]|. Unbound = 0 = unchanged.",
+        "eq $t.w, cb13[0].w, l(1.000000)",
+        "dp3 $t.x, cb0[11].xyzx, cb0[11].xyzx",
+        "sqrt $t.x, $t.x",
+        "mul $t.xyz, cb13[0].xyzx, $t.xxxx",
+        "movc $t.xyz, $t.wwww, $t.xyzx, cb0[11].xyzx"
+    ) | ForEach-Object { $i0 + $_ }
+    $rep = @(
+        "$($ms[0].Groups['i'].Value)add $($ms[0].Groups['d'].Value).xyz, cb0[10].xyzx, $t.xyzx",
+        "$($ms[1].Groups['i'].Value)add $($ms[1].Groups['d'].Value).yzw, $($ms[1].Groups['a'].Value).xxyz, $t.xxyz",
+        "$($ms[2].Groups['i'].Value)mad $($ms[2].Groups['d'].Value).yzw, $t.xxyz, l(0.000000, 2.000000, 2.000000, 2.000000), $($ms[2].Groups['a'].Value).yyzw"
+    )
+    # From the end backwards so the indices stay valid; the calculation goes in front of the first use.
+    for ($k = 2; $k -ge 0; $k--) {
+        $m = $ms[$k]
+        $txtNew = $rep[$k]
+        if ($k -eq 0) { $txtNew = ($calc -join $nl) + $nl + $txtNew }
+        $s = $s.Substring(0, $m.Index) + $txtNew + $s.Substring($m.Index + $m.Length)
+    }
+    $temps = [regex]::Match($s, '(?m)^dcl_temps (\d+)\s*$')
+    $s = $s.Substring(0, $temps.Index) + "dcl_temps $($n + 1)" + $s.Substring($temps.Index + $temps.Length)
+    $cbDecl = [regex]::Match($s, '(?m)^dcl_constantbuffer [^\r\n]*$')
+    $s = $s.Substring(0, $cbDecl.Index + $cbDecl.Length) + $nl + 'dcl_constantbuffer CB13[1], immediateIndexed' + $s.Substring($cbDecl.Index + $cbDecl.Length)
+    Backup-Once $txt $bakDm
+    Backup-Once $bin $bakDm
+    [System.IO.File]::WriteAllText($txt, $s, $utf8)
+    if (Test-Path $bin) { Remove-Item $bin }
+    Say "  $rainCs : far rain patched (look-ahead from the game camera via cb13, temp $t)" 'Green'
+}
+
 # ---- 2. d3dxdm.ini --------------------------------------------------------------------------------
 $stereoKeys = [ordered]@{
     'dm_hud_detection'       = '1'
@@ -436,6 +1104,12 @@ switch ($Mode) {
             $sp = if ((Test-Path $p) -and (Get-Content $p -Raw).Contains($splitMarker)) { ', split patched' } else { '' }
             Say ("  {0} : {1}{2}" -f $h, $st, $sp)
         }
+        $rp = Join-Path $dm "$rainVs-vs.txt"
+        $rs = if (-not (Test-Path $rp)) { 'missing' } elseif ((Get-Content $rp -Raw).Contains($rainMarker2)) { 'near rain patched' } elseif ((Get-Content $rp -Raw).Contains($rainMarker)) { 'near rain patched (older v1)' } else { 'original' }
+        Say ("  {0} : {1}" -f $rainVs, $rs)
+        $fp = Join-Path $dm "$rainCs-cs.txt"
+        $fs = if (-not (Test-Path $fp)) { 'missing' } elseif ((Get-Content $fp -Raw).Contains($farMarker)) { 'far rain patched' } else { 'original' }
+        Say ("  {0} : {1}" -f $rainCs, $fs)
     }
     'apply' {
         Say 'AKVR fix patches' 'Cyan'
@@ -443,7 +1117,17 @@ switch ($Mode) {
         foreach ($h in $hudVs) { Patch-HudSplit $h }
         foreach ($h in $hudVs) { Patch-RetFlat $h }
         foreach ($h in $hudVs) { Patch-RetSquash $h }
+        foreach ($h in $hudVs) { Patch-RetNear $h }
         foreach ($h in $hudVs) { Patch-DepthAll $h }
+        foreach ($h in $hudVs) { Patch-PartTag $h }
+        foreach ($h in $hudVs) { Patch-TargetDepth $h }
+        foreach ($h in $hudVs) { Patch-TargetMove $h }
+        foreach ($h in $hudVs) { Patch-TargetScale $h }
+        foreach ($h in $hudVs) { Patch-TargetMulti $h }
+        Patch-NearRain
+        Patch-RainStretch
+        Patch-RainLag
+        Patch-FarRain
         Patch-DmIni
         if ($script:failed -gt 0) { Say "$($script:failed) edit(s) could not be applied - see the red lines above." 'Yellow'; exit 2 }
         Say 'Done. Originals are in akvr_fix_backup\.' 'Cyan'

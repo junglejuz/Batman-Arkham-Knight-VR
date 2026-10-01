@@ -1616,7 +1616,7 @@ namespace {
     }
     // NEARRAIN2: the game camera (base) and the drawn camera (base + head, the fields after the finalize) per Present,
     // so the rain correction can use the pair from k Presents ago (the game may place the block with an older camera).
-    struct CamRec { int32_t by, bp, br, fy, fp, fr; float dx, dy, dz; bool ok; };   // NEARRAIN3: + the head's position offset
+    struct CamRec { int32_t by, bp, br, fy, fp, fr; float dx, dy, dz; float px, py, pz; bool ok; };   // NEARRAIN3: + the head's position offset; FRAMEPAIR: + the drawn camera's position
     CamRec   g_camRing[16] = {};
     volatile LONG g_camHead = 0;
 }
@@ -1631,6 +1631,7 @@ void akvr_camera_record_rotators()   // once per Present, after the head update 
             rec.fy = *(int32_t*)(b + OFF_YAW); rec.fp = *(int32_t*)(b + OFF_PITCH); rec.fr = *(int32_t*)(b + OFF_ROLL);
             rec.by = *g_bYaw; rec.bp = *g_bPitch; rec.br = *g_bRoll; rec.ok = true;
             rec.dx = *g_dPosX; rec.dy = *g_dPosY; rec.dz = *g_dPosZ;   // NEARRAIN3
+            rec.px = *(float*)(b + OFF_X); rec.py = *(float*)(b + OFF_Y); rec.pz = *(float*)(b + OFF_Z);   // FRAMEPAIR
         }
         __except (EXCEPTION_EXECUTE_HANDLER) { rec.ok = false; }
     }
@@ -1663,6 +1664,20 @@ bool akvr_camera_axes_ago(int k, float bf[3], float br[3], float bu[3], float ff
     if (!rec.ok) return false;
     ue3_axes(rec.by, rec.bp, rec.br, bf, br, bu);
     ue3_axes(rec.fy, rec.fp, rec.fr, ff, fr, fu);
+    return true;
+}
+
+// FRAMEPAIR 2026-10-02 — JJ: "Head pose delay of 2 makes the rain go rock solid and stable, and it makes the [reticle]
+// and the distance HUD marker go rock solid. The problem with that is that the world becomes jittery." UE3's one-frame
+// thread lag (kept on: 44 -> 84 fps under geo-11): the world is drawn with an older camera than the one the game used
+// for the rain and the HUD markers. The drawn camera (axes + position) recorded k Presents ago.
+bool akvr_camera_pose_ago(int k, float f[3], float r[3], float u[3], float pos[3])
+{
+    if (k < 0 || k > 12) return false;
+    const CamRec rec = g_camRing[(g_camHead - k) & 15];
+    if (!rec.ok) return false;
+    ue3_axes(rec.fy, rec.fp, rec.fr, f, r, u);
+    pos[0] = rec.px; pos[1] = rec.py; pos[2] = rec.pz;
     return true;
 }
 

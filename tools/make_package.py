@@ -22,6 +22,7 @@ FILES = {  # package path -> source path (relative to akvr/)
     'Uninstall-AKVR.bat': 'install/Uninstall-AKVR.bat',
     'Uninstall-AKVR.ps1': 'install/Uninstall-AKVR.ps1',
     'AKVR-fix-patches.ps1': 'tools/AKVR-fix-patches.ps1',
+    'AKVR-Launch-VR.bat': 'install/AKVR-Launch-VR.bat',         # VRLAUNCH: the installer puts it in the game folder + shortcuts
     'dinput8.dll': 'build-dinput8/Release/dinput8.dll',
     'README.md': 'README.md',
     'files/d3d11.dll': 'install/files/d3d11.dll',

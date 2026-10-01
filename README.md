@@ -36,8 +36,10 @@ correct depth.
 - Menus shown at a comfortable size
 - The game's graphics menu no longer undoes the VR picture size
 - HUD distance you can change live, and no stutter after leaving the pause menu or map
-- A steady HUD on its own layer that hangs still in the room, while the grapple reticle and
-  target distance stay at the depth of what they point at
+- A steady HUD on its own layer that hangs still in the room, with real depth for each eye
+- The grapple reticle and the target distance stay locked to what they point at
+- Rain stays in the world when you turn your head
+- Pause: the world stays around you, a little darker, with the pause menu on top
 - Zooming (right stick click) darkens the edges of your view instead of showing the game's
   flat zoom overlay
 - Start-up logos, loading screens, pause and map shown at their own comfortable sizes
@@ -81,10 +83,18 @@ geo-11 comes with the mod, so you don't need to download it.
    it usually already is. In Virtual Desktop, the Streamer app's **OpenXR Runtime** should be
    **VDXR**. In SteamVR or the Meta Quest Link app, look for the OpenXR setting in their
    settings.
-5. **Play.** Connect your headset as you normally do and start the game from Steam (with
-   Virtual Desktop, from its view of your PC). The first start takes a few minutes while
-   geo-11 prepares its shaders, and the game may look frozen; let it finish. Press **F12** to
-   face the view forward and **F8** for the settings panel.
+5. **Play in VR.** Connect your headset as you normally do, then start the game with the
+   **Batman Arkham Knight (VR)** shortcut the installer put on your desktop and in the Start
+   menu (with Virtual Desktop, from its view of your PC). It starts the game through Steam,
+   in VR. The first VR start takes a few minutes while geo-11 prepares its shaders, and the
+   game may look frozen; let it finish. Press **F12** to face the view forward and **F8** for
+   the settings panel.
+
+**Starting the game from Steam as usual plays it normally**, on your monitor, with your own
+graphics settings: nothing of the mod runs then. The game keeps separate graphics settings
+for VR and for playing normally, and switches between them by itself. To always start in VR
+from Steam instead, add `-akvr` to the game's launch options in Steam (right-click the game,
+**Properties**, **Launch options**).
 
 The installer backs up everything it replaces into a `vrmod_backup_...` folder in the game
 folder. Run it again at any time to repair an install, or after downloading a new version of
@@ -97,14 +107,15 @@ the mod or the fix.
 | The installer stops with a red **STOPPED** message | The message says what's missing. Most often it's the wrong fix file (the 3D Vision one instead of geo-11). |
 | "could not copy the fix into the game folder" | Right-click `Install-AKVR.bat` and choose **Run as administrator**. |
 | "some HUD edits could not be applied" | The 3D fix has changed since this version of the mod. Check for a newer version of the mod. Your previous files are in the `vrmod_backup` folder. |
-| The game never goes into the headset | Connect the headset before starting the game, and check step 4. If you played another VR game before this one, restart the PC first. |
+| The game never goes into the headset | Start it with the **Batman Arkham Knight (VR)** shortcut, not from Steam. Connect the headset before starting the game, and check step 4. If you played another VR game before this one, restart the PC first. |
 | The game is flat (no 3D) after updating geo-11 or the fix by hand | Run the installer again. |
 
 ### Removing it
 
 Close the game, then double-click `Uninstall-AKVR.bat` in the game folder (the installer put
-it there). It removes the mod and the 3D fix, including your VR settings, and puts back any
-files the first install replaced. The `vrmod_backup_...` folders are left in place; delete
+it there). It removes the mod, the 3D fix and the VR shortcuts, including your VR settings,
+leaves your normal graphics settings in place, and puts back any files the first install
+replaced. The `vrmod_backup_...` folders are left in place; delete
 them yourself once you're sure you don't need them.
 
 ## Graphics settings
@@ -112,24 +123,29 @@ them yourself once you're sure you don't need them.
 The game draws everything twice, once for each eye, so it needs about twice the graphics
 power it normally would. These settings make the biggest difference.
 
-**The installer sets these once, on the first install** (the settings the mod was tested with;
-you can change them later in the game's graphics menu):
+The game keeps separate graphics settings for VR and for playing normally; your normal ones
+are never changed.
+
+**The installer sets these once for VR, on the first install** (the settings the mod was tested
+with; you can change them later in the game's graphics menu while playing in VR):
 
 - Max FPS 90. The game's own default of 60 makes head movement look blurred in the headset.
 - Texture resolution, shadow quality and level of detail High, texture filtering 2x anisotropic
 - The four NVIDIA GameWorks effects off (Enhanced Rain, Enhanced Light Shafts, Interactive
   Smoke / Fog, Interactive Paper Debris). They cost a lot, and the game is drawn twice.
 
-**The mod sets these every time the game starts:**
+**The mod sets these every time the game starts in VR:**
 
 - Windowed mode and the picture size. Don't change the display mode or resolution in the
   game's menu; the mod handles both.
 - Motion blur, chromatic aberration and film grain off (all three are uncomfortable in VR)
 - V-sync off (the headset sets the pace instead)
+- The game's frames worked out and drawn in step, so the HUD markers and the rain match the
+  world
 
 **If you turn GameWorks effects back on**, the game takes longer to draw each picture, and the
-**head-pose delay** may need changing from 3 to 2 (F8, under **Frame rate**). Try it if the
-world jitters when you turn your head.
+**head-pose delay** may need changing (F8, under **Frame rate**). Try 3 if the world jitters
+when you turn your head.
 
 **Optional:**
 
@@ -152,14 +168,8 @@ pictures and a recording, for troubleshooting.
 | Setting | What it does |
 |---|---|
 | World scale | How big the world feels. 1.00 is life size. Higher makes the world feel bigger around you; lower makes it feel like a model. **1.00** resets it. |
-| Decouple the camera pitch | Off (normal): the view tilts up and down with the game's camera, as in the normal game. On: the horizon stays level and only your head tilts the view. |
-| Right stick up/down: extra camera height | Only with the pitch decoupled: how far the right stick can raise the camera, in metres. |
 | Extra view at the sides | Draws a little past the edges of the lenses, so no black edges show when you turn quickly. |
-| Extra view top and bottom | The same for the top and bottom. Takes effect after a restart. **Same as sides** matches them. |
 | Picture height per eye | Sharpness against speed. Higher is sharper and slower. The installer's Low / Medium / High are 2016 / 2432 / 2860. Takes effect after a restart. |
-| Use each eye's full view | Shapes each eye's picture to match its lens, saving about 20% of the work. Takes effect after a restart. Still being worked on: the compass shows double with it on. |
-| Distance alignment | Only with each eye's full view: adjust until distant things look single. **Reset** goes back to the value measured from the headset. |
-| Flip eye turn | Only with each eye's full view: tick it if everything looks badly doubled. |
 | Where you stand | Moves your viewpoint left or right, down or up, back or forward. If you feel you're standing to the left of what you're looking at, move left/right to the right. **Reset position** undoes it. |
 
 ### HUD
@@ -169,12 +179,9 @@ pictures and a recording, for troubleshooting.
 | HUD size | How big the HUD is. |
 | HUD up / down | Moves the whole HUD up or down. |
 | HUD distance | How far away the HUD looks, in metres. 0 or **far away** puts it at the distance of far-off scenery. |
-| HUD on its own layer (steady HUD) | Draws the HUD separately, placed by the headset itself, so it stays steady instead of jumping with the game's frame rate. |
-| Attach UI to head movement | Off (normal): the HUD hangs still in front of you, and you can look around it; **F12** hangs it in front of you again. On: the HUD moves with your head. Needs the HUD on its own layer. |
-| Keep the reticle at the depth it points at | With the HUD layer on: reticles and markers that point at things stay at the depth of what they point at, while the rest of the HUD stays on the steady layer. |
-| Whole HUD hangs in the room | On (normal): every HUD part hangs in the room except parts ticked **stays on its target**. The grapple reticle and target distance come ticked. |
-| Menus and map use the full height | Lets menus and the map fill the view from top to bottom. |
-| Move / resize single HUD parts | Adjust the radar, compass and other parts one by one. With the HUD on screen, press **find the HUD parts**. Tick **hide** on a part to see which one it is, then open it to change its size and position. Each part also has **stays on its target** (keeps it at the depth it points at), **hang in the room** and **hide while zoomed**. **Reset** undoes a part. Your layout is remembered. |
+| Attach UI to head movement | Off (normal): the HUD hangs still in the room, and you can look around it; **F12** hangs it in front of you again. On: the HUD moves with your head. |
+| Reticle and distance marker sit on their target | On (normal): the grapple reticle and the target distance stay locked to what they point at. Turn it off only to compare. |
+| Move / resize single HUD parts | Adjust the radar, compass and other parts one by one. With the HUD on screen, press **find the HUD parts**. Tick **hide** on a part to see which one it is, then open it to change its size and position. Each part also has **stays on its target** (keeps it at the depth it points at), **hang in the room** and **hide while zoomed**. **Reset** undoes a part. Your layout is remembered; the mod comes with the tested layout. |
 
 ### Zoom vignette
 
@@ -182,23 +189,32 @@ pictures and a recording, for troubleshooting.
 |---|---|
 | Strength | How dark the edges get while you zoom. 0 turns it off. |
 | Clear centre | How much of the middle stays clear, in degrees. |
-| Zoom when the game's view is narrower than | When the vignette comes on. Leave it at 45. |
 | Preview the vignette now | Shows it without zooming, to try the settings. |
+
+### Rain test
+
+For checking that the rain hangs in the world: pause the game, tick **show only the rain**, turn
+your head, then untick it to get the picture back.
+
+| Setting | What it does |
+|---|---|
+| Show only the rain | Hides everything except the rain. |
+| Rain stays in the world when you turn your head | The rain fix. Keep it on. |
+| Test tools on | Extra recorders for **F2** captures. They can crash the game, so leave them off unless you're asked to make a capture. |
 
 ### Menus and screens
 
 | Setting | What it does |
 |---|---|
-| Float as a screen now (Pause key) | Shows the game on a flat floating screen, for example for cutscenes. **With head tracking** keeps head tracking on while it floats. |
-| Floating screen shape / size | The shape (the picture's own, 16:9 or 21:9) and size of that screen. |
+| Float as a screen now (Pause key) | Shows the game on a flat floating screen, for example for cutscenes. |
+| Floating screen size | How big that screen is. |
 | Main menu size | How big the main menu looks. |
-| Pause / map size | How big the pause menu and map look. |
+| Map size | How big the map looks. |
+| Pause menu size | How big the pause menu looks over the world, so you don't have to turn your head to read it. |
+| Pause: darken the world | How much the world around you darkens while the game is paused. |
 | Start-up screens size | How big the logos and notices at the start of the game look. |
 | Loading screens size | How big the loading screens look. |
 | Loading screens up / down | Moves the loading screens up or down, in degrees. |
-| Pause / map / loading shape | The shape of the pause menu and map (1.78 = 16:9). |
-| Main menu: live 3D, follows your head | Shows the main menu as live 3D instead of a still picture. |
-| Floating screens show a flat picture | Shows floating screens in 2D instead of 3D. |
 
 ### Frame rate
 
@@ -206,9 +222,7 @@ pictures and a recording, for troubleshooting.
 |---|---|
 | Hold the game at | Keeps the game at a steady 45, 40 or 30 frames per second, which is smoother than an uneven rate. **Off** lets the game run as fast as it can. |
 | Between game frames | What the headset shows between game frames: **repeat the frame**, or **Virtual Desktop SSW**, which makes in-between frames (Virtual Desktop only; set its SSW to Always). |
-| Head-pose delay | Leave it at 3; that value was measured as correct with the installer's graphics settings. If you turn GameWorks effects on and the world jitters when you turn your head, try 2. |
-
-**Advanced** and **Diagnostics** are for testing. Leave them alone unless asked.
+| Head-pose delay | Leave it at 2; that value was measured as correct, and it keeps the world, the HUD markers and the rain steady together. |
 
 ## Keys
 

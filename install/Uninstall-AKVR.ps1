@@ -77,8 +77,8 @@ if (Get-Process -Name 'BatmanAK' -ErrorAction SilentlyContinue) { Fail 'the game
 if (-not $Yes) {
     Write-Host ''
     Write-Host '  This removes the VR mod and the geo-11 3D fix from that folder, including your VR' -ForegroundColor White
-    Write-Host '  settings, puts back the files the first install replaced, and sets the game''s graphics' -ForegroundColor White
-    Write-Host '  settings back to the game''s defaults.' -ForegroundColor White
+    Write-Host '  settings and the "Batman Arkham Knight (VR)" shortcuts, puts back the files the first' -ForegroundColor White
+    Write-Host '  install replaced, and leaves the game with your normal (2D) graphics settings.' -ForegroundColor White
     $answer = Read-Host '  Continue? (Y/N)'
     if ($answer -notmatch '^\s*[Yy]') { Say '   Nothing was changed.' 'Yellow'; exit 0 }
 }
@@ -103,7 +103,21 @@ if ($n) { Say "   $n more fix file(s) or folder(s) removed" 'Green' }
 
 # ---- 3. the mod ---------------------------------------------------------------------------------
 Step '3. Removing the mod'
+# VRLAUNCH (2026-10-02): Steam starts the game in 2D, the VR shortcut in VR, and the mod keeps each mode's graphics
+# settings in akvr_profiles\{2d,vr}. Read which mode ran last and keep the 2D copy before akvr_* goes (step 5 uses it).
+$profLast = $null
+$prof2d = Join-Path $env:TEMP ('akvr-2d-' + [guid]::NewGuid().ToString('N').Substring(0, 8))
+$lastFile = Join-Path $GameDir 'akvr_profiles\last.txt'
+if (Test-Path -LiteralPath $lastFile) { $profLast = (Get-Content -LiteralPath $lastFile -Raw).Trim().ToLower() }
+if (Test-Path -LiteralPath (Join-Path $GameDir 'akvr_profiles\2d')) {
+    & robocopy (Join-Path $GameDir 'akvr_profiles\2d') $prof2d /E /R:1 /W:1 /NFL /NDL /NJH /NJS /NP | Out-Null
+}
+# The VR launcher and its shortcuts.
 $n = 0
+$n += Remove-IfThere (Join-Path $GameDir 'AKVR-Launch-VR.bat')
+foreach ($place in @([Environment]::GetFolderPath('Desktop'), [Environment]::GetFolderPath('Programs'))) {
+    if ($place) { $n += Remove-IfThere (Join-Path $place 'Batman Arkham Knight (VR).lnk') }
+}
 # dinput8.dll only if it is ours (the name is common to other mods).
 $proxy = Join-Path $GameDir 'dinput8.dll'
 if ((Test-Path $proxy) -and ([System.Text.Encoding]::ASCII.GetString([System.IO.File]::ReadAllBytes($proxy))).Contains('AKVR')) {
@@ -173,7 +187,20 @@ if ($cfg) {
     if (Test-Path -LiteralPath "$tmpl.akvr-original") { Copy-Item -LiteralPath "$tmpl.akvr-original" -Destination $tmpl -Force }
 }
 
-if (Test-Path -LiteralPath $gfxBackup) {
+if ($profLast -eq '2d') {
+    # The last start was from Steam (2D): the files the game holds now ARE the player's 2D settings, newer than the
+    # copy from before the first install - keep them.
+    if (Test-Path -LiteralPath $gfxBackup) { Remove-Item -LiteralPath $gfxBackup -Recurse -Force }
+    Say '   your graphics settings kept (the game was last played normally, in 2D)' 'Green'
+} elseif ($profLast -eq 'vr' -and (Test-Path -LiteralPath (Join-Path $prof2d 'BmSystemSettings.ini'))) {
+    # The last start was in VR: the game holds the VR settings; the mod kept the 2D ones it had before.
+    if ($ini) { Copy-Item -LiteralPath (Join-Path $prof2d 'BmSystemSettings.ini') -Destination $ini -Force }
+    $saved2dStore = Join-Path $prof2d 'GFXSettings.BatmanArkhamKnight.xml'
+    if (Test-Path -LiteralPath $saved2dStore) { Copy-Item -LiteralPath $saved2dStore -Destination $mainStore -Force }
+    else { foreach ($s in $stores) { [void](Remove-IfThere $s) } }   # the player had none: VR's would open a square window
+    if (Test-Path -LiteralPath $gfxBackup) { Remove-Item -LiteralPath $gfxBackup -Recurse -Force }
+    Say '   your 2D graphics settings put back (as the game had them when you last played normally)' 'Green'
+} elseif (Test-Path -LiteralPath $gfxBackup) {
     $savedIni   = Join-Path $gfxBackup 'BmSystemSettings.ini'
     $savedStore = Join-Path $gfxBackup 'GFXSettings.BatmanArkhamKnight.xml'
     if ($ini) {
@@ -203,6 +230,7 @@ if (Test-Path -LiteralPath $gfxBackup) {
     Say '   reset instead - the game starts from its own defaults; set resolution and effects in its menu' 'Yellow'
 }
 if ($cfg) { foreach ($o in Get-ChildItem -LiteralPath $cfg -File -Filter '*.akvr-original') { Remove-Item -LiteralPath $o.FullName -Force } }
+if (Test-Path -LiteralPath $prof2d) { Remove-Item -LiteralPath $prof2d -Recurse -Force }
 
 # ---- 6. the backup folders ---------------------------------------------------------------------------
 $all = @(Get-ChildItem -LiteralPath $GameDir -Directory -Filter 'vrmod_backup_*')

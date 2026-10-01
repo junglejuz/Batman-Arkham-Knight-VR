@@ -540,34 +540,72 @@ elseif (Test-Path $tested) {
         Save-Ini $doc
         Say "   picture size set: $Picture" 'Green'
     }
-    # The game's own graphics settings the mod was tested with (JJ's fresh-install test,
-    # 2026-09-29: the stock 60 fps cap and higher detail blurred head movement). First install
-    # only, so later choices in the game's menu stand. FIX_CHANGES.md section 6.
+    # VRLAUNCH (2026-10-02, JJ): Steam starts the game normally (2D); the VR shortcut starts VR. The mod keeps
+    # each mode's graphics settings (akvr_profiles\{2d,vr}) and swaps them when the mode changes, so the
+    # player's own settings stay as they are for 2D. The tested VR graphics settings (JJ's fresh-install test,
+    # 2026-09-29: the stock 60 fps cap and higher detail blurred head movement) go into the VR copy only.
+    # FIX_CHANGES.md section 6.
+    $profVr = Join-Path $GameDir 'akvr_profiles\vr'
+    New-Item -ItemType Directory -Force -Path $profVr | Out-Null
     if ($Game.GameGraphics) {
-        $cfg  = Join-Path $GameDir '..\..\BmGame\Config'
-        $gen  = Join-Path $cfg 'BmSystemSettings.ini'
-        $tmpl = Join-Path $cfg 'DefaultSystemSettings.ini'
-        # The generated file if the game has made one; before the first start, the template it is
-        # made from (editing the template once the generated file exists makes the game rebuild it).
-        $target = if (Test-Path $gen) { $gen } elseif (Test-Path $tmpl) { $tmpl } else { $null }
-        if ($target) {
-            $n = Set-SystemSettings $target $Game.GameGraphics
-            Say "   tested graphics settings applied ($n changed): Max FPS 90, High detail, 2x anisotropic filtering, GameWorks off" 'Green'
+        $gen = Join-Path $GameDir '..\..\BmGame\Config\BmSystemSettings.ini'
+        if (Test-Path $gen) {
+            $vrIni = Join-Path $profVr 'BmSystemSettings.ini'
+            Copy-Item $gen $vrIni -Force
+            $n = Set-SystemSettings $vrIni $Game.GameGraphics
+            Say "   VR graphics settings prepared ($n changed): Max FPS 90, High detail, 2x anisotropic filtering, GameWorks off" 'Green'
+        } else {
+            Say '   the game has not been started yet: its VR graphics settings are made on the first VR start' 'Yellow'
         }
     }
     if ($Game.GameStore) {
         $store = Get-GfxStoreCandidates | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
         if ($store) {
-            $n = Set-GfxStore $store $Game.GameStore
-            Say "   the same settings put in NVIDIA's settings store ($n changed)" 'Green'
+            $vrStore = Join-Path $profVr 'GFXSettings.BatmanArkhamKnight.xml'
+            Copy-Item -LiteralPath $store $vrStore -Force
+            $n = Set-GfxStore $vrStore $Game.GameStore
+            Say "   the same settings prepared for NVIDIA's settings store ($n changed)" 'Green'
         }
     }
+    # The files the game holds now are the player's (2D): that is what ran last.
+    [IO.File]::WriteAllText((Join-Path $GameDir 'akvr_profiles\last.txt'), '2d')
+    Say '   your normal graphics settings untouched (they stay for playing from Steam)' 'Green'
+}
+
+# ---- 8. starting the game in VR -----------------------------------------------------------------
+# VRLAUNCH: the launcher leaves a note the mod reads at the next start, then asks Steam to start the game;
+# a normal Steam start (no note) plays in 2D with nothing of the mod running.
+Step '8. The VR shortcut'
+$launcher = Join-Path $PSScriptRoot 'AKVR-Launch-VR.bat'
+if (Test-Path $launcher) {
+    Copy-Item $launcher (Join-Path $GameDir 'AKVR-Launch-VR.bat') -Force
+    $made = @()
+    try {
+        $shell = New-Object -ComObject WScript.Shell
+        foreach ($place in @([Environment]::GetFolderPath('Desktop'), [Environment]::GetFolderPath('Programs'))) {
+            if (-not $place) { continue }
+            $lnk = $shell.CreateShortcut((Join-Path $place 'Batman Arkham Knight (VR).lnk'))
+            $lnk.TargetPath = Join-Path $env:SystemRoot 'System32\cmd.exe'
+            $lnk.Arguments = '/c "' + (Join-Path $GameDir 'AKVR-Launch-VR.bat') + '"'
+            $lnk.WorkingDirectory = $GameDir
+            $lnk.WindowStyle = 7                                     # minimised: no console flashing up
+            $lnk.IconLocation = (Join-Path $GameDir $Game.Exe) + ',0'
+            $lnk.Description = "Start $($Game.Name) in VR (from Steam it starts normally)"
+            $lnk.Save()
+            $made += $place
+        }
+    } catch { Say "   could not make the shortcut: $($_.Exception.Message)" 'Yellow' }
+    if ($made.Count) { Say '   "Batman Arkham Knight (VR)" on your desktop and in the Start menu' 'Green' }
+    else { Say "   start VR with AKVR-Launch-VR.bat in $GameDir" 'Yellow' }
+} else {
+    Say '   AKVR-Launch-VR.bat is missing next to this script - start VR with -akvr in Steam''s launch options' 'Yellow'
 }
 
 Remove-Item $work -Recurse -Force -ErrorAction SilentlyContinue
 
 Write-Host ''
 Write-Host '  Done.' -ForegroundColor Green
-Write-Host "  Start Virtual Desktop, connect your headset, then start $($Game.Name) from Steam." -ForegroundColor White
-Write-Host "  The first start can take a few minutes while geo-11 prepares its shaders." -ForegroundColor White
+Write-Host "  To play in VR: start your headset's PC VR software, then the desktop shortcut 'Batman Arkham Knight (VR)'." -ForegroundColor White
+Write-Host "  Starting $($Game.Name) from Steam as usual plays it normally, on your monitor." -ForegroundColor White
+Write-Host "  The first VR start can take a few minutes while geo-11 prepares its shaders." -ForegroundColor White
 Write-Host ''

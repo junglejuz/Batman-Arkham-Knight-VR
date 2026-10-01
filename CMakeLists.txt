@@ -47,6 +47,7 @@ if(NOT AKVR_PROXY STREQUAL "version" AND NOT AKVR_PROXY STREQUAL "dinput8")
 endif()
 add_library(akvr SHARED
     src/dllmain.cpp
+    src/vrmode.cpp
     src/earlyres.cpp
     src/${AKVR_PROXY}_proxy.cpp
     src/hooks.cpp

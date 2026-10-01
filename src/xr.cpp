@@ -203,7 +203,7 @@ XrPosef g_layerPose{}; // pose that drew the backbuffer we're submitting NOW
 // this ring makes it a live comparison. 1 = previous behaviour.
 XrPosef g_poseHist[64]{};
 uint32_t g_poseHead = 0;
-int g_poseDelay = 1;
+int g_poseDelay = 2;   // THREADSYNC 2026-10-02: one delay for everything with OneFrameThreadLag=False (JJ: 2)
 // MENUDELAY 2026-09-29 — JJ: on the live 3D main menu Batman "jiggles" when the head moves (gameplay is fine);
 // head-pose delay 2 fixes it there, 3 stays right for gameplay. Used while the live main menu is up.
 int g_menuPoseDelay = 2;
@@ -3023,6 +3023,20 @@ bool  akvr_xr_eye_tangents(float& o, float& i, float& u, float& d) {
 void akvr_xr_native_swap_eyes_set(bool on) { g_nativeSwapEyes = on; }
 int akvr_xr_pose_delay() { return g_poseDelay; }
 int akvr_xr_pose_delay_used() { return g_usedDelay; }
+// FRAMEPAIR2 2026-10-02 — JJ: "Head pose delay of 2 makes the rain go rock solid ... and the [reticle] and the distance
+// HUD marker ... the world becomes jittery" (world steady at 3). The head poses the NEXT submit would pick at delay a
+// (the world's) and at delay b (the rain's and markers'), from the same history the delay setting reads. Call on the
+// Present thread before this Present's frame begin (the HUD draw): the next begin adds one pose first.
+bool akvr_xr_pose_pair(int a, int b, float qa[4], float qb[4]) {
+  if (a < 1 || b < 1 || a > 30 || b > 30) return false;
+  const XrPosef pa = g_poseHist[(g_poseHead + 1 - (uint32_t)a) & 63u];
+  const XrPosef pb = g_poseHist[(g_poseHead + 1 - (uint32_t)b) & 63u];
+  if (pa.orientation.w == 0.0f && pa.orientation.x == 0.0f && pa.orientation.y == 0.0f && pa.orientation.z == 0.0f) return false;
+  if (pb.orientation.w == 0.0f && pb.orientation.x == 0.0f && pb.orientation.y == 0.0f && pb.orientation.z == 0.0f) return false;
+  qa[0] = pa.orientation.x; qa[1] = pa.orientation.y; qa[2] = pa.orientation.z; qa[3] = pa.orientation.w;
+  qb[0] = pb.orientation.x; qb[1] = pb.orientation.y; qb[2] = pb.orientation.z; qb[3] = pb.orientation.w;
+  return true;
+}
 bool akvr_xr_pose_auto() { return g_poseAuto; }
 void akvr_xr_pose_auto_set(bool on) { g_poseAuto = on; }
 bool akvr_xr_pose_matched() { return g_poseMatched; }

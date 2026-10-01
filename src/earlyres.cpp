@@ -773,8 +773,11 @@ namespace {
                 strcmp(force ? force->key : "", "DefaultFullscreen=") == 0 ||
                 strcmp(force ? force->key : "", "WindowDisplayMode=") == 0 ||
                 strcmp(force ? force->key : "", "DefaultWindowDisplayMode=") == 0;
-            if (force && g_geo11 &&
-                (strcmp(force->key, "OneFrameThreadLag=") == 0 || (windowKey && !g_engH)))
+            // THREADSYNC 2026-10-02: OneFrameThreadLag is forced False under geo-11 too now. With the lag on, the world is
+            // drawn one frame behind the camera the game used for the rain and the HUD markers (they needed pose delay 2,
+            // the world 3); off, JJ: the reticle and the distance marker "look perfectly stable now. And locked to their
+            // targets". It crashed twice with the test tools on, not since they are off (FIX_CHANGES 6).
+            if (force && g_geo11 && windowKey && !g_engH)
                 force = nullptr;
 
             // A rescue key whose current value is already sane is left completely
@@ -870,7 +873,7 @@ namespace {
         g_comfortChanged = changed;
         log_add("comfort: motion blur / v-sync / chromatic aberration off, windowed on, "
                 "MaxFPS 120 — %s, %d lines flipped%s", which, changed,
-                g_geo11 ? "  [geo-11 detected: OneFrameThreadLag left alone]" : "");
+                g_geo11 ? "  [geo-11: OneFrameThreadLag forced False too (THREADSYNC)]" : "");
     }
 
     bool eng_write(void* at, const void* src, size_t n)
@@ -2760,6 +2763,17 @@ void akvr_hud_dump_viewports(const wchar_t* path)
     fclose(f);
 }
 
+// MARKFIRST 2026-10-02 — JJ: "when first entering gameplay ... some HUD elements appear attached to the face and then
+// quickly snap out to hang in space correctly". Until the first HUD-part read of a gameplay stretch (0.5 s) nothing
+// carries its room mark, so the pieces the fix gives scene depth (top band, tips) are drawn into the head-locked
+// picture. hudsplit sends the whole HUD to the room layer until the marks have had 200 ms to land.
+volatile ULONGLONG g_hudMarksAt = 0;
+bool akvr_hud_marks_ready()
+{
+    const ULONGLONG at = g_hudMarksAt;
+    return at == 1 || (at != 0 && GetTickCount64() - at > 200);
+}
+
 void akvr_hud_tick()
 {
     find_hud_scale();                      // one-shot; safe to call every frame
@@ -2822,13 +2836,14 @@ void akvr_hud_tick()
     // almost at once (JJ: "enters with the HUD elements attached to the face very briefly").
     {
         static ULONGLONG since = 0; static bool done = false, early = false;
-        if (!g_hudGameplay) { since = 0; done = false; early = false; }
+        if (!g_hudGameplay) { since = 0; done = false; early = false; g_hudMarksAt = 0; }
         else
         {
             if (!since) since = GetTickCount64();
             const bool want = akvr_hud_layer_xf_list()[0] || akvr_hud_room_all();
             if (!early && GetTickCount64() - since > 500)
-            { early = true; if (want) akvr_hud_layers_discover_quick(); }
+            { early = true; if (want) akvr_hud_layers_discover_quick(); g_hudMarksAt = GetTickCount64(); }
+            if (!want && !g_hudMarksAt) g_hudMarksAt = 1;   // MARKFIRST: nothing to mark, nothing to wait for
             if (!done && GetTickCount64() - since > 3000)
             { done = true; if (want) akvr_hud_layers_discover_quick(); }
         }
@@ -3859,6 +3874,110 @@ void  akvr_hud_layer_world_set(int i, bool on)
 }
 bool  akvr_hud_room_all() { return g_roomAll; }
 void  akvr_hud_room_all_set(bool on) { g_roomAll = on; g_autoDirty = true; }
+// TARGETDEPTH 2026-10-02 — JJ: the target-distance widget is "a combination of both sticking to its target and
+// sticking to my face"; it should be "at the depth of what's behind it, what it's pointing to". Each of its ~20
+// pieces searched scene depth at its own spot. This gives the fix's HUD shaders (step 1k) one point per "stays on
+// its target" part: from the part, down the live tree while a node has exactly one child (804 -> 813 for the
+// widget; the reticle 803 has several), then that node's origin up through its parents' matrices to the movie
+// root, whose matrix maps stage twips to pixels of the game target. Checked on JJ's F2 (2026-10-01 19:55): widget
+// predicted at 0.530 / 0.667 of the eye, its "51m" drawn at 0.530 / 0.651; reticle 0.501 / 0.243 vs 0.52 / 0.248.
+// Read on the render thread just before the HUD is drawn; a part with nothing under it gives no point.
+// TARGETSTOCK 2026-10-02 — JJ: "when my head is still yes the marker sits still but it doesn't mean they're at the
+// location that the game has put them"; before TARGETMOVE head up carried the markers up, TARGETMOVE (the whole head
+// turn undone) swung them "the opposite and more exaggerated". Cause: ROOTSHRINK draws the whole HUD movie inside the
+// HUD box (hudscale, ~60% of the view), and the game places its world markers in stage space as if the movie filled
+// the screen - so every marker is pulled toward the box centre. off (optional) = where the movie's OWN matrix
+// (view+0x110, stage twips -> buffer pixels, what the game laid it out for) puts the point, minus where it is drawn.
+// TARGETSCALE 2026-10-02 (JJ: with TARGETSTOCK the markers "are jittering when you move your head" - the per-frame
+// offset was read from the live tree while the game may lay out the next frame): xf (optional) = the fixed map from
+// AKVR's drawn HUD box back to the movie's own layout, in clip units, for the shaders to apply per vertex:
+// x' = x + x * xf[0] + xf[2], y' = y + y * xf[1] + xf[3]. Taken from the first on-target part's movie; 0 = none.
+int akvr_hud_target_points(float* xy, int max, int rtW, int rtH, float* off, float* xf)
+{
+    if (xf) xf[0] = xf[1] = xf[2] = xf[3] = 0.0f;
+    if (!xy || max <= 0 || rtW < 16 || rtH < 16) return 0;
+    struct Want { uintptr_t node, root; void* view; };
+    Want want[8]; int nWant = 0;
+    if (!TryAcquireSRWLockShared(&g_layerLock)) return 0;   // a re-read is running: skip this frame
+    for (int i = 0; i < g_nLayers && nWant < 8; ++i)
+    {
+        const Layer& L = g_layers[i];
+        if (!L.world || !L.node) continue;
+        bool top = true; int r = L.parent, guard = 0;
+        while (r >= 0 && r < i && guard++ < 32) { if (g_layers[r].world) { top = false; break; } if (g_layers[r].depth == 0) break; r = g_layers[r].parent; }
+        if (!top || r < 0 || r >= i || g_layers[r].depth != 0) continue;
+        want[nWant++] = { L.node, g_layers[r].node, g_layers[r].view };
+    }
+    ReleaseSRWLockShared(&g_layerLock);
+    // TARGETMULTI 2026-10-02 — JJ: the Batmobile marker (one of the 74-marker list K4/0.0.0.0.1.0.0.0) "was moving around
+    // with head movement ... more like moving in the opposite direction": a world marker hung in the room. A part whose
+    // node (after the one-child chain) holds 6 or more children is a LIST: each VISIBLE child on screen is its own point
+    // (the reticle has 4-5 pieces and the distance widget 2, so they stay one point each). Up to max points.
+    int n = 0;
+    // one node's origin, through its parents to the movie root, in clip units; the layout map from the first root
+    auto point_of = [&](uintptr_t node, const Want& wt, float& cx, float& cy) -> bool
+    {
+        float x = 0.0f, y = 0.0f; bool ok = false;
+        for (int up = 0; up < 40; ++up)
+        {
+            float m[12]; int fl = 0;
+            if (!node_matrix(node, m, &fl) || (fl & 0x200)) break;   // 3D nodes: no 2D point
+            if (node == wt.root && wt.view && xf && xf[0] == 0.0f && xf[1] == 0.0f)
+            {   // TARGETSCALE: drawn px = m q, the movie's own px = sm q (scale + shift) -> own = k * drawn + c
+                float sm[8]; bool stock = false;
+                __try { memcpy(sm, (uint8_t*)wt.view + 0x110, sizeof(sm)); stock = true; }
+                __except (EXCEPTION_EXECUTE_HANDLER) { stock = false; }
+                if (stock && sm[0] > 1e-4f && sm[5] > 1e-4f && m[0] > 1e-4f && m[5] > 1e-4f && fabsf(m[1]) < 1e-5f &&
+                    fabsf(m[4]) < 1e-5f && fabsf(sm[1]) < 1e-5f && fabsf(sm[4]) < 1e-5f)
+                {
+                    const float kx = sm[0] / m[0], ky = sm[5] / m[5];
+                    const float ccx = sm[3] - kx * m[3], ccy = sm[7] - ky * m[7];
+                    xf[0] = kx - 1.0f; xf[1] = ky - 1.0f;
+                    xf[2] = kx - 1.0f + 2.0f * ccx / (float)rtW;     // clip x = 2 px / W - 1
+                    xf[3] = 1.0f - ky - 2.0f * ccy / (float)rtH;     // clip y = 1 - 2 py / H
+                }
+            }
+            const float nx = m[0] * x + m[1] * y + m[3], ny = m[4] * x + m[5] * y + m[7];
+            x = nx; y = ny;
+            if (node == wt.root) { ok = true; break; }
+            uintptr_t p = 0;
+            __try { p = *(uintptr_t*)(node + 0x20); } __except (EXCEPTION_EXECUTE_HANDLER) { p = 0; }
+            if (!readable_ptr(p) || (p & 7)) break;
+            node = p;
+        }
+        if (!ok || !(x == x) || !(y == y)) return false;
+        cx = x / (float)rtW * 2.0f - 1.0f;
+        cy = 1.0f - y / (float)rtH * 2.0f;
+        return true;
+    };
+    for (int w = 0; w < nWant && n < max; ++w)
+    {
+        uintptr_t node = want[w].node, kids[96];
+        int k = node_children(node, kids, 96);
+        for (int d = 0; d < 8 && k == 1; ++d) { node = kids[0]; k = node_children(node, kids, 96); }
+        if (k == 0) continue;                                // nothing drawn under this part
+        if (k >= 6)
+        {   // a list: one point per visible child on screen
+            for (int c = 0; c < k && n < max; ++c)
+            {
+                float m[12]; int fl = 0;
+                if (!node_matrix(kids[c], m, &fl) || !(fl & 1)) continue;   // hidden marker
+                float cx = 0.0f, cy = 0.0f;
+                if (!point_of(kids[c], want[w], cx, cy) || fabsf(cx) > 1.1f || fabsf(cy) > 1.1f) continue;
+                xy[n * 2] = cx; xy[n * 2 + 1] = cy;
+                if (off) off[n * 2] = off[n * 2 + 1] = 0.0f;
+                ++n;
+            }
+            continue;
+        }
+        float cx = 0.0f, cy = 0.0f;
+        if (!point_of(node, want[w], cx, cy)) continue;
+        xy[n * 2] = cx; xy[n * 2 + 1] = cy;
+        if (off) off[n * 2] = off[n * 2 + 1] = 0.0f;
+        ++n;
+    }
+    return n;
+}
 void  akvr_hud_layer_zoomhide_set(int i, bool on)
 {
     AcquireSRWLockExclusive(&g_layerLock);

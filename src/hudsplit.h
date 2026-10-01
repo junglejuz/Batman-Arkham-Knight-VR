@@ -49,6 +49,24 @@ void        akvr_far_rain_set(bool on);
 const char* akvr_far_rain_diag();
 int         akvr_near_rain_lag();                  // NEARRAIN2: camera frames back (0 = the draw's own view)
 void        akvr_near_rain_lag_set(int k);
+void        akvr_hudsplit_targets_dump(const wchar_t* path);   // TARGETTRACE: on-target points per HUD frame (test tools)
+bool        akvr_rain_no_stretch();                // RAINSTRETCH (fix step 1l): rain streaks without the camera term
+void        akvr_rain_no_stretch_set(bool on);
+bool        akvr_rain_frame_fix();                 // RAINSPLIT: the rain's own FRAMEPAIR switch
+void        akvr_rain_frame_fix_set(bool on);
+const char* akvr_rain_frame_diag();
+bool        akvr_frame_fix();                      // FRAMEPAIR (fix step 1o): rain + markers drawn for the world's frame
+void        akvr_frame_fix_set(bool on);
+int         akvr_frame_world();                    // the world's camera, Presents back (1..6)
+void        akvr_frame_world_set(int k);
+bool        akvr_marker_head();                    // TARGETMOVE (fix step 1m): move the on-target markers by the head turn
+void        akvr_marker_head_set(bool on);
+int         akvr_marker_lag();                     // camera pair k Presents back; -1 = automatic
+void        akvr_marker_lag_set(int k);
+int         akvr_marker_hud_lag();                 // TARGETMOVE2: frames the markers trail the drawn camera (0 = off)
+void        akvr_marker_hud_lag_set(int n);
+bool        akvr_test_tools();                     // CLEANUP: testtools=1 runs the old test recorders/probes (off by default)
+void        akvr_test_tools_set(bool on);
 int         akvr_near_rain_mode();                 // NEARRAIN: 0 as the game draws it, 1 hang in the room, 2 hidden
 void        akvr_near_rain_mode_set(int m);
 const char* akvr_near_rain_diag();

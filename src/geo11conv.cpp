@@ -39,7 +39,7 @@
 #include <MinHook.h>   // HUDLIVE2: geo-11 per-frame update hook
 
 namespace {
-    constexpr float kConvAt1 = 500.0f;
+    constexpr float kConvAt1 = 500.0f / 1.1f;   // SCALE110: the convergence-only fallback rebased the same way
     // VRSEP 2026-09-27 — JJ: in VR "convergence and separation appear to do the same thing"
     // (on a monitor separation behaves differently). Correct: geo-11's shift S - S*C/w is a
     // constant slide S (separation alone, ~0.005 of the half-width at 5: invisible) plus a
@@ -47,7 +47,9 @@ namespace {
     // so only the product matters, and the far field should have (almost) no slide. World
     // scale now sets the product (kProductAt1 = 5 x 500 = scale 1.00, JJ's calibration) and
     // separation is held at kSepVR; the separation slider is gone.
-    constexpr float kProductAt1 = 2500.0f;
+    // SCALE110 2026-10-02 — JJ: "recalibrate the world scale so that 1.1, which is my current setting, is the new 1.0".
+    // Scale = kProductAt1 / (S*C), so the old 1.10 (product 2500 / 1.1) is the new 1.00.
+    constexpr float kProductAt1 = 2500.0f / 1.1f;
     constexpr float kSepVR = 1.0f;
     bool   g_tried = false, g_fileOk = false, g_userOverride = false;
     float  g_startConv = 0.0f;      // dm_convergence when this session launched

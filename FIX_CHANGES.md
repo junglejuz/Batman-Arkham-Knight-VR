@@ -417,6 +417,210 @@ off by default now (`nearrain=0`); the 1h edit stays (inert at mode 0).
 
 ---
 
+## 1j. ShaderFixesDM: a HUD piece drawn far from its origin follows the depth under itself (AKVR, RETNEAR, 2026-10-01)
+
+**Files:** `9938094af96353c0-vs.txt`, `05154232f7872d0d-vs.txt` (the two RETFLAT shaders, after 1c / 1d); `-vs.bin` deleted.
+
+**Why:** JJ: the target-distance number "floats around a general area ... when you move your head or move the game
+camera, it doesn't stay locked onto anything". Its HUD part (`K2/0.0.0.0.1.0.0.1`) sits at the stage centre with an
+identity matrix and the game draws the number away from that origin, so RETFLAT (1c) made it search scene depth at the
+middle of the view. (Assumes the number is drawn by one of these two shaders: the per-draw recorder came back empty,
+so this is inferred from the part tree, not measured.)
+
+**Edit (per file; `rT` = the RETFLAT temp, `rC` = the corner register: r1 in 9938094a, r3 in 05154232; `rU` = new
+temp, `dcl_temps` +1):** directly after RETFLAT's `movc rT.z, ...` line:
+```
+// AKVR RETNEAR 2026-10-01: a piece drawn far from its origin (a number the game places away from it) searches
+// scene depth from its own corner instead (blend from 0.15 to 0.25 clip units), so it follows what it marks.
+add rU.xy, rC.xyxx, -rT.yzyy
+dp2 rU.z, rU.xyxx, rU.xyxx
+sqrt rU.z, rU.z
+mad_sat rU.z, rU.z, l(10.000000), l(-1.500000)
+mad rT.yz, rU.zzzz, rU.xxyx, rT.yyzy
+```
+Pieces whose corners are within 0.15 clip units of their origin (the reticle rings) are unchanged.
+
+**Detect:** `// AKVR RETNEAR`. **Reference:** `Patch-RetNear` (step 1j) in `tools/AKVR-fix-patches.ps1` (practice copy: 2
+patched, second run 0). **Driver test:** both assembled (cmd_Decompiler 0.6.90 `-a`) and loaded OK in vstest.exe.
+**Applied** 2026-10-01 to JJ's game with the script (texts identical to the tested copies). Untested in the headset.
+Rollback: `akvr/diagnostics/before-RETNEAR-20261001/` (2 texts + bins, DLL, settings).
+
+---
+
+## 1k. ShaderFixesDM: the "stays on its target" parts follow scene depth as one piece, all 13 shaders (AKVR, TARGETDEPTH, 2026-10-02)
+
+**Files:** all 13 HUD `-vs.txt` (after 1, 1b, 1c, 1d, 1e, 1g, 1j); `-vs.bin` deleted.
+
+**Why:** JJ after RETNEAR: the target-distance widget is "a combination of both sticking to its target and sticking to
+my face"; it "appears wherever the world object is that it's pointing to, but it moves around when you move your head";
+it "should be at the depth of what's behind it, what it's pointing to". The widget (`K2/0.0.0.0.1.0.0.1` -> its child
+`.0`) is ~20 pieces (digits, bracket halves, lines), each searching scene depth at its own spot (RETNEAR's premise, a
+number far from its origin, was wrong). AKVR now sends one point per on-target part (earlyres `akvr_hud_target_points`,
+live tree, checked against JJ's F2 to ~0.02 of the eye).
+
+**Edit (per file; `rW`, `rU`, `rV` = three new temps, `dcl_temps` +3; `CB13[1]` -> `CB13[3]`):**
+1. After the last `dp4 rP.y, vK.xyzw, cb0[ROWY].xyzw` before the first IniParams load (EDGEBAND's position transform)
+   and its `dp4 rP.x, vK.xyzw, cb0[ROWX]`: `eq rW.x, vK.w, l(1)`, `movc rW.y, rW.x, cb0[ROWX].w, rP.x`, same for `.z` / y.
+2. Before AKVR's "remember" line (DEPTHALL `ine rN.x, rD.c, l(0)` / HUDSPLIT `mov r10.x, rD.c`): near1 / near2 = origin
+   within cb13[1].z of cb13[1].xy (and .w != 0), same for row 2; `rV.xy` = the nearer point, else the depth search's
+   own start (march x, row y); near = near1 | near2, AND IniParams x11 == 0 (gameplay), AND not room-marked (the
+   PARTTAG `and rD, rD, rM.x` register, where the shader has one); `or rD, rD, near` (follows depth).
+3. In the depth block: the row `mad ., Y, l(-0.5), l(0.5)` reads `rV.y`; the march `add o, start, step` becomes
+   `add o, step, rV.x`. The result is added to every vertex as before, so the piece moves rigidly.
+cb13 rows 1/2 zero or unbound = unchanged. AKVR sends the points only with `hudroomall=1` (radius 0.12 clip).
+
+**Detect:** `// AKVR TARGETDEPTH`. **Reference:** `Patch-TargetDepth` (step 1k) in `tools/AKVR-fix-patches.ps1`
+(practice copy: 13 patched, second run 0; per-file registers in the script's green lines). **Driver test:** 13/13
+assembled (cmd_Decompiler 0.6.90 `-a`) and loaded OK in vstest.exe. **Applied** 2026-10-02 to JJ's game with the
+script (13 texts identical to the tested copies). Untested in the headset.
+Rollback: `akvr/diagnostics/before-TARGETDEPTH-20261002/` (13 texts + bins, DLL, settings).
+
+---
+
+## 1l. ShaderFixesDM: optional - world rain streaks without the per-frame camera term (AKVR, RAINSTRETCH, 2026-10-02)
+
+**File:** `f50d1365e929b3a0-vs.txt` (after 1h); `-vs.bin` deleted.
+
+**Why:** JJ: isolated rain in the pause "sort of jitters a bit" when he turns his head, "it kind of follows a little
+bit". The rain VS projects each streak from its tail (position minus its own velocity) to its head (position +
+`cb0[12] * 0.5` when the streak's flag is set). `cb0[12]` looks like the camera's movement since the last frame; in
+third person a head turn swings the camera round Batman. Hypothesis, not measured: a test switch.
+
+**Edit:** directly after `mul r4.xyz, r4.xxxx, cb0[12].xyzx`:
+```
+// AKVR RAINSTRETCH 2026-10-02: cb12[2].w = 1 (AKVR) drops the per-frame camera term from the streak's head
+ne r15.x, cb12[2].w, l(0.000000)
+movc r4.xyz, r15.xxxx, l(0, 0, 0, 0), r4.xyzx
+```
+(r15 is free there: 1h uses it only before.) AKVR binds cb12 around the rain draw when `nearrain` != 0 OR the panel
+switch "rain streaks ignore camera movement" (`rainnostretch=1`) is on; default off = unchanged.
+
+**Detect:** `// AKVR RAINSTRETCH`. **Reference:** `Patch-RainStretch` (step 1l) in `tools/AKVR-fix-patches.ps1`
+(practice copy: patched, second run 0). **Driver test:** assembled (cmd_Decompiler 0.6.90 `-a`) and loaded OK in
+vstest.exe. **Applied** 2026-10-02 to JJ's game (identical to the tested copy). Untested in the headset.
+Rollback: `akvr/diagnostics/before-RAINSTRETCH-20261002/`.
+JJ 2026-10-02: the switch "doesn't seem to do anything" - hypothesis not supported; leave off (default).
+
+---
+
+## 1o. ShaderFixesDM: the world rain drawn for the world's camera, one frame older (AKVR, RAINLAG / FRAMEPAIR, 2026-10-02)
+
+**File:** `f50d1365e929b3a0-vs.txt` (after 1h, 1l); `-vs.bin` deleted.
+
+**Why:** JJ found it: "Head pose delay of 2 makes the rain go rock solid and stable, and it makes the [reticle] and the
+distance HUD marker go rock solid. The problem with that is that the world becomes jittery." UE3's one-frame thread lag
+(OneFrameThreadLag=True, kept: 44 -> 84 fps under geo-11) - the world is drawn with the camera one frame older than the
+one the game used for the rain draw and the HUD markers. AKVR (hudsplit `frame_pair`) takes the drawn camera of
+`frameworld` Presents back (the world, o) and one newer (n) from the camera ring (`akvr_camera_pose_ago`, axes +
+position) and sends X' = M X + t, M = An Ao^T, t = Pn - M Po: the point the newer camera sees where the older one sees X.
+
+**Edit:** `dcl_constantbuffer CB12[6]` -> `CB12[9]`; after the streak tail `mad r1.xyz, -r0.yyyy, r1.yzwy, r2.xyzx` and
+after the streak head `mad r4.xyz, r4.xyzx, l(0.5, 0.5, 0.5, 0), r2.xyzx`, for R = r1 / r4:
+```
+// AKVR RAINLAG 2026-10-02: the streak's tail/head as the world's (one frame older) camera sees it (cb12[4].w = 1)
+dp3 r14.x, cb12[6].xyzx, R.xyzx      (and .y with cb12[7], .z with cb12[8])
+mov r15.x, cb12[6].w                 (and .y / .z)
+add r14.xyz, r14.xyzx, r15.xyzx
+eq r15.w, cb12[4].w, l(1.000000)
+movc R.xyz, r15.wwww, r14.xyzx, R.xyzx
+```
+(r14 / r15 are free at both points.) AKVR binds cb12 around the rain draw while `framefix=1` (default; panel HUD "rain and
+markers match the world's frame", "timing" = `frameworld`, default 1). The HUD markers get the same one-frame shift
+(turn only, at the reticle's point) in cb13 row 4 .zw - DLL only.
+
+**Detect:** `// AKVR RAINLAG`. **Reference:** `Patch-RainLag` (step 1o) in `tools/AKVR-fix-patches.ps1` (practice copy:
+patched, second run 0). **Driver test:** assembled and loaded OK in vstest.exe. **Applied** 2026-10-02 to JJ's game
+(identical to the tested copy); `posedelay` set back to 3 in JJ's settings. Untested in the headset.
+Rollback: `akvr/diagnostics/before-FRAMEPAIR-20261002/`.
+
+---
+
+## 1m. ShaderFixesDM: the on-target parts move with the head turn the game's HUD does not know about (AKVR, TARGETMOVE, 2026-10-02)
+
+**Files:** all 13 HUD `-vs.txt` (after 1k); `-vs.bin` deleted.
+
+**Why:** JJ: "the reticle for different grappling hook points and the target distance HUD element are still following
+head movement". The game places its markers with its own camera; AKVR adds the head turn to the camera only for the
+picture, so the markers keep their screen spot while the world turns. AKVR (hudsplit `layer_begin`) takes each on-target
+point (1k), casts the ray through it from the game's camera and projects it with the drawn camera (the pair recorded
+k Presents back, `akvr_camera_axes_ago`; default k = pose delay in use - 1; tan half-angles from `akvr_xr_game_tan`),
+and sends the screen offset in cb13 row 3 (point 1 .xy, point 2 .zw). Hypothesis (HUD = camera without the head)
+not yet measured: TARGETTRACE records points, offsets and both cameras when test tools are on.
+
+**Edit (per file; `rW` / `rU` / `rV` = 1k's temps, `rP` = 1k's position register; `CB13[3]` -> `CB13[4]`):**
+1. After 1k's `movc rV.xy, rU.zzzz, cb13[1].xyxx, cb13[2].xyxx`: `movc rW.xw, rU.zzzz, cb13[3].xxxy, cb13[3].zzzw` and
+   `add rV.xy, rV.xyxx, rW.xwxx` (depth is searched at the moved point).
+2. After 1k's `or rD, rD, rU.z`: `and rW.xw, rW.xxxw, rU.zzzz` and `add rP.xy, rP.xyxx, rW.xwxx` (the piece moves; only
+   pieces that follow a point - gameplay, not room-marked).
+Row 3 zero / unbound = no change. Panel (HUD): "reticle and distance marker stay on their target when you turn your
+head" (`markerhead`, default on) and "marker timing" (`markerlag`, -1 = automatic).
+
+**Detect:** `// AKVR TARGETMOVE`. **Reference:** `Patch-TargetMove` (step 1m) in `tools/AKVR-fix-patches.ps1` (practice
+copy: 13 patched, second run 0). **Driver test:** 13/13 assembled and loaded OK in vstest.exe. **Applied** 2026-10-02 to
+JJ's game (13 texts identical to the tested copies). Untested in the headset.
+Rollback: `akvr/diagnostics/before-TARGETMOVE-20261002/` (13 texts + bins, DLL, settings).
+**2026-10-02 later (DLL only, no shader change):** the camera-based offset was wrong (JJ: "the opposite and more
+exaggerated", then the lag version "appears to do nothing"). Row 3 now carries TARGETSTOCK: the HUD shrink undone for the
+on-target points (movie's own matrix vs AKVR's shrunk root). The shader edit is unchanged.
+**Superseded for the pieces by 1n** (JJ: the TARGETSTOCK markers "are jittering when you move your head"): 1m's two
+`and` / `add rP` lines are replaced; 1m's first edit (the depth sample point `rV += row 3`) stays.
+
+---
+
+## 1n. ShaderFixesDM: on-target pieces drawn through the movie's own layout, per vertex (AKVR, TARGETSCALE, 2026-10-02)
+
+**Files:** all 13 HUD `-vs.txt` (after 1m); `-vs.bin` deleted.
+
+**Why:** the per-frame offset of 1m (TARGETSTOCK) was read from the live HUD tree on the render thread, while the game
+may lay out the next frame -> jitter on head movement. AKVR's HUD shrink is one fixed affine map (AKVR's root matrix vs
+the movie's own matrix view+0x110), so the shader maps each vertex back: x' = x + x * cb13[4].x + cb13[4].z, y' = y +
+y * cb13[4].y + cb13[4].w (row 4 = kx - 1, ky - 1, bx, by in clip units; earlyres `akvr_hud_target_points` xf). The
+markers come back at the game's own size (~1.67x the shrunk HUD).
+
+**Edit (per file):** 1m's
+```
+// AKVR TARGETMOVE: the piece moves by its point's offset (only pieces that follow the point)
+and rW.xw, rW.xxxw, rU.zzzz
+add rP.xy, rP.xyxx, rW.xwxx
+```
+becomes
+```
+// AKVR TARGETSCALE 2026-10-02: the piece is drawn through the movie's own layout (cb13[4] = kx-1, ky-1, bx, by)
+mad rW.xw, rP.xxxy, cb13[4].xxxy, cb13[4].zzzw
+and rW.xw, rW.xxxw, rU.zzzz
+add rP.xy, rP.xyxx, rW.xwxx
+```
+and `CB13[4]` -> `CB13[5]`. Row 4 zero / unbound = no change.
+
+**Detect:** `// AKVR TARGETSCALE`. **Reference:** `Patch-TargetScale` (step 1n) in `tools/AKVR-fix-patches.ps1` (practice
+copy: 13 patched, second run 0). **Driver test:** 13/13 assembled and loaded OK in vstest.exe. **Applied** 2026-10-02 to
+JJ's game (13 texts identical to the tested copies). Untested in the headset.
+Rollback: `akvr/diagnostics/before-TARGETSCALE-20261002/` (13 texts + bins, DLL, settings).
+
+---
+
+## 1p. ShaderFixesDM: up to 8 on-target points, for world-marker lists (AKVR, TARGETMULTI, 2026-10-02)
+
+**Files:** all 13 HUD `-vs.txt` (after 1n); `-vs.bin` deleted.
+
+**Why:** JJ: a HUD element (the Batmobile marker - one of the 74-marker list `K4/0.0.0.0.1.0.0.0`) "was moving around with
+head movement, but not attached to the face, more like moving in the opposite direction": a world marker placed by the
+game per frame and then hung in the room. 1k compared pieces with 2 points; a list needs a point per visible marker. AKVR
+(earlyres `akvr_hud_target_points`) now gives each VISIBLE child of a part with 6+ children its own point (up to 8).
+
+**Edit (per file):** 1k's two-point test plus 1m's offset pick (from `add rU.xy, rW.yzyy, -cb13[1].xyxx` through
+`or rU.z, rU.z, rU.x`) is replaced by `mov rU.z, l(0)`, `mov rV.xy, l(0,0,0,0)`, then for each row R in 1, 2, 5-10 the
+same distance test (`add/dp2/mul/lt/ne/and`), `movc rV.xy, rU.xxxx, cb13[R].xyxx, rV.xyxx`, `or rU.z, rU.z, rU.x` (last
+match wins), then `mad rU.xy, rV.xyxx, cb13[4].xyxx, cb13[4].zwzz` / `add rV.xy, rV.xyxx, rU.xyxx` (the depth point
+through the movie-layout map; row 3 is no longer read). `CB13[5]` -> `CB13[11]`. Rows zero / unbound = no change.
+
+**Detect:** `// AKVR TARGETMULTI`. **Reference:** `Patch-TargetMulti` (step 1p) in `tools/AKVR-fix-patches.ps1` (practice
+copy: 13 patched, second run 0). **Driver test:** 13/13 assembled and loaded OK in vstest.exe. **Applied** 2026-10-02 to
+JJ's game (identical to the tested copies). JJ's `hudlayers` got `K4/0.0.0.0.1.0.0.0` ... `:1` (stays on its target).
+Untested in the headset. Rollback: `akvr/diagnostics/before-TARGETMULTI-20261002/`.
+
+---
+
 ## 2. d3dxdm.ini
 
 | Key / section | Baseline | AKVR value | Status and reason |
@@ -502,6 +706,11 @@ Both need shader hashes. Applied by a byte-preserving script (Latin-1, CRLF kept
   layer "moves around with your head, even when the game is paused", i.e. it is drawn in screen space; a stereo
   setting cannot move it into the world. Plan: find its pixel shader in the pause (the only moving thing there) and
   skip it.
+- **RESTORED 2026-10-01 (build CLEANUP):** the rain is fixed (steps 1h/1i), so `d3dx.ini` was copied back from
+  `diagnostics/before-HUNTRAIN-20261001/d3dx.ini` (hash-checked; the diff had been the HUNTRAIN lines only:
+  `hunting=0` again, the original `marking_actions`, no `analyse_frame` / `analyse_options` lines). The HUNTRAIN copy
+  is kept as `diagnostics/before-CLEANUP-20261001/d3dx.ini`. The shader folders were NOT touched (steps 1h/1i stay).
+  Nothing of 3c remains on JJ's game; the installer never carried it.
 
 ---
 
@@ -564,6 +773,47 @@ stored there: after the uninstall JJ's game opened as a 2888x2860 window (2026-0
 game recreates defaults); JJ's copy is in `akvr/diagnostics/gfxsettings-store-20260929/`. Outside the game folder, so a
 Steam reinstall or "verify files" does not reset it.
 
+**THREADSYNC KEPT (2026-10-02):** JJ played without a crash once the test tools and the rain options were off. The mod
+now forces `OneFrameThreadLag=False` under geo-11 as well (earlyres.cpp comfort list; it used to stand down), and the
+default `posedelay` is 2. The installer's settings file needs `posedelay=2` and no `testtools`.
+
+**SCALE110 (2026-10-02), d3dxdm.ini:** `dm_convergence = 2381.0` -> `2272.7` on JJ's game (his world scale 1.1, never
+saved because a controller step does not end an edit; the mod's scale is rebased so 1.1 reads 1.00 - geo11conv.cpp
+kProductAt1 = 2500/1.1). The installer's bundled d3dxdm.ini convergence should match. Backup:
+`akvr/diagnostics/before-SCALE110-20261002/`.
+
+**VRLAUNCH (2026-10-02): VR from a shortcut, 2D from Steam, separate graphics settings per mode.** JJ: "the installer
+also needs to create a way for the game to be launched in VR, leaving launching it from Steam to just play normally in
+2D mode". The mod (dinput8.dll, src/vrmode.cpp) decides in DllMain: VR when `akvr_launch_vr.flag` in the game folder is
+under 3 minutes old (the launcher `AKVR-Launch-VR.bat` writes it, then `steam://rungameid/208650`; the note is deleted
+either way) or `-akvr` is on the command line; otherwise 2D and nothing of AKVR starts (geo-11 is `geo11.dll`, loaded
+only by the mod, so 2D is flat). On a mode change it saves the live `BmGame\Config\BmSystemSettings.ini` and
+`<Documents>\WB Games\Batman Arkham Knight\GFXSettings.BatmanArkhamKnight.xml` to `akvr_profiles\<old mode>\` and puts
+`akvr_profiles\<new mode>\` back; `akvr_profiles\last.txt` = the mode that ran last; log `akvr_mode_log.txt`. A 2D start
+with no 2D copy of a file deletes the live one (the player never had it; the game remakes its defaults - the ini from
+DefaultSystemSettings.ini) once VR's copy is saved. An install from before VRLAUNCH (no last.txt): the live files are
+taken as VR's and the 2D copies are seeded from `vrmod_graphics_backup`.
+- **Installer** (first install only): no longer edits the live ini/store. It copies both into `akvr_profiles\vr\` and
+  applies GameGraphics/GameStore to those copies, writes `last.txt` = 2d, copies the launcher into the game folder and
+  makes "Batman Arkham Knight (VR).lnk" on the Desktop and in Start menu Programs (cmd /c launcher, minimised, game icon).
+- **Uninstaller**: removes the launcher and both shortcuts; graphics: last = 2d keeps the live files; last = vr puts the
+  2D copies back (no 2D store copy: deletes the live store); otherwise the old vrmod_graphics_backup route.
+- Practice-tested 2026-10-02 (scratchpad): mode switches 2D->VR, VR->2D incl. the delete branch; packaged installer + uninstaller round
+  trip on a fake game folder (13/13 + rain shaders patched, shortcuts made and removed). JJ's real store hash unchanged.
+- **JJ's game, 2026-10-02:** new dinput8.dll, launcher, Uninstall-AKVR.ps1 and both shortcuts deployed; `testtools=0`.
+  His first start of either kind migrates (last = vr, 2D copies from vrmod_graphics_backup: fullscreen 2560x1440, 30 fps).
+  Backup of the replaced files: `akvr/diagnostics/before-VRLAUNCH-20261002/`.
+- Open: the fix's `nvapi64.dll` (geo-11's NVAPI wrapper) stays in the game folder and loads in 2D too - untested.
+
+**TEST on JJ's game only, 2026-10-02 (THREADSYNC): `OneFrameThreadLag=True` -> `False`** in
+`BmGame\Config\BmSystemSettings.ini` (line 28; one word changed, file otherwise byte-identical), and `posedelay=2` in
+`akvr_settings.ini`. **Why:** JJ: "the rain and the HUD elements need to somehow be on the same frame timing as the 3D
+elements" - with the lag on, the world is drawn one frame behind the camera the game used for the rain and the HUD
+markers (pose delay 3 vs 2). Off = one frame for all. The risk is speed (2026-09-26: True measured 44 -> 84 fps under
+geo-11, "much smoother"); the game is now held at 45 in the headset, so the cost may be smaller. NOT in the installer.
+Rollback: `akvr/diagnostics/before-THREADSYNC-20261002/` (BmSystemSettings.ini + akvr_settings.ini), or set True and
+posedelay=3.
+
 ---
 
 ## 5. RESOLVED 2026-09-29: these came from the fix's 2026-09-25 release (not AKVR)
@@ -619,3 +869,18 @@ baseline versions). Needs JJ: where the 2026-09-26 update came from, or an in-ga
 | 2026-09-30 | PARTTAG3 | 1g corrected: first colour row (add), + mad layout; 9 shaders | 1g |
 | 2026-09-30 | PARTTAG4 | 1g: mark in r/g/b, any channel -0.003..-0.0002 (tinted children) | 1g |
 | 2026-09-30 | PARTTAG5 | 1g: mark also in alpha, any channel -0.02..-0.0002 (stacked / own-add pieces) | 1g |
+| 2026-10-01 | NEARRAIN3 | world rain VS f50d1365: cb12 re-place / hide / head-offset modes (inert at nearrain=0) | 1h |
+| 2026-10-01 | FARRAIN | rain CS a96594b1: regions kept ahead of the game camera (cb13) | 1i |
+| 2026-10-01 | HUNTRAIN (temporary) | d3dx.ini hunting=2 + marking/analyse keys | 3c |
+| 2026-10-01 | CLEANUP | d3dx.ini restored from before HUNTRAIN (hunting=0) | 3c |
+| 2026-10-01 | BANDOFF (DLL only) | none - the 1c compass band is sent as 0 while hudroomall=1 | 1c |
+| 2026-10-01 | RETNEAR | 2 HUD vertex shaders: a piece drawn far from its origin searches depth from its corner | 1j |
+| 2026-10-02 | TARGETDEPTH | 13 HUD vertex shaders: pieces near an on-target point take its depth, as one piece (CB13[3]) | 1k |
+| 2026-10-02 | RAINSTRETCH | world rain VS f50d1365: optional drop of the streak's per-frame camera term (cb12[2].w) | 1l |
+| 2026-10-02 | TARGETMOVE | 13 HUD vertex shaders: on-target pieces moved by the head-turn offset (CB13[4]) | 1m |
+| 2026-10-02 | RAINLAG (FRAMEPAIR) | world rain VS f50d1365: streak ends re-placed for the world's (one frame older) camera (CB12[9]) | 1o |
+| 2026-10-02 | TARGETMULTI | 13 HUD vertex shaders: 8 on-target points (rows 1-2, 5-10), depth point through the layout map (CB13[11]) | 1p |
+| 2026-10-02 | SCALE110 | d3dxdm.ini dm_convergence 2381.0 -> 2272.7 (JJ's world scale 1.1 = the new 1.00) | 2 |
+| 2026-10-02 | THREADSYNC (mod) | BmSystemSettings OneFrameThreadLag forced False under geo-11 too (earlyres comfort list) | 6 |
+| 2026-10-02 | TARGETSCALE | 13 HUD vertex shaders: on-target pieces mapped per vertex back to the movie's own layout (CB13[5]); replaces 1m's move | 1n |
+| 2026-10-02 | VRLAUNCH (mod + installer) | VR via shortcut/flag/-akvr, Steam = 2D; BmSystemSettings.ini + GFX store swapped per mode (akvr_profiles); installer edits the VR copies only | 6 |

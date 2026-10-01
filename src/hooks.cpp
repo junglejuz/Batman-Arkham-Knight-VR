@@ -363,6 +363,12 @@ namespace
     // Declared this high because BOTH the window-proc size-ceiling override and
     // the per-frame client resync below need it.
     bool g_showAdvanced = false;    // TIDY3: advancedpanel=1 in the settings file shows Advanced
+    // MENUBLACK 2026-10-02 — JJ: "when entering the first menu screen from the title logo screens, there's a pause with
+    // just a black screen ... we're hearing audio for the menu happen before the menu appears". frames.csv: OUR Present
+    // hook took 2197 ms on that frame (and ~106 ms on the ones before): MENUSTART's synchronous picture grabs (66 MB
+    // read back each, waiting on the GPU while the menu loads), on because test tools were on. The automatic menu and
+    // start-up pictures now need menucapture=1 in the settings file (no panel switch), never just the test tools.
+    bool g_menuCapture = false;
     bool g_forceRes = true;         // settings key `forceres` — restart to apply. Default ON
                                     // 2026-09-26: keeps window + buffer at the render size in windowed mode.
     // Use the PER-USER OpenXR runtime (SteamVR here) instead of the machine-wide one
@@ -599,6 +605,20 @@ namespace
         set_client_size(g_gameHwnd, want_w, want_h);
         if (GetClientRect(g_gameHwnd, &cr))
         { g_clientW = cr.right - cr.left; g_clientH = cr.bottom - cr.top; }
+        // MENUFLICKER 2026-10-01 — JJ: "the entire rendering flickers on and off for the first 10 to 20 seconds"
+        // of the main menu. Every refused resize still makes the game rebuild its screen (a ~114 ms stall twice a
+        // second in the mode trace), and under geo-11 Windows refuses all of them (client stays 2560x1440; the render
+        // size comes from the ResX/ResY lever anyway). Two refusals in a row = stop for good.
+        static int s_refused = 0;
+        if (g_clientW == cw && g_clientH == ch)
+        {
+            if (++s_refused >= 2)
+            {
+                g_syncTries = 1000;
+                note("window resize refused twice (client %dx%d, wanted %dx%d) - stopped retrying", cw, ch, want_w, want_h);
+            }
+        }
+        else s_refused = 0;
     }
 
     // FORCE THE SIZE AT SWAPCHAIN CREATION ("the dxgi route").
@@ -821,6 +841,11 @@ namespace
         fprintf(f, "loadup=%.1f\n", akvr_xr_load_up());   // LOADUP
         fprintf(f, "pauselook=%d\npausedim=%.2f\n", akvr_xr_pause_look() ? 1 : 0, akvr_xr_pause_dim());   // PAUSELOOK / PAUSEDIM
         fprintf(f, "nearrain=%d\nnearrainlag=%d\n", akvr_near_rain_mode(), akvr_near_rain_lag());   // NEARRAIN / NEARRAIN2
+        if (akvr_test_tools()) fprintf(f, "testtools=1\n");   // CLEANUP: written only when on
+        fprintf(f, "rainnostretch=%d\n", akvr_rain_no_stretch() ? 1 : 0);   // RAINSTRETCH
+        fprintf(f, "markerhead=%d\n", akvr_marker_head() ? 1 : 0);   // TARGETMOVE / TARGETSCALE
+        fprintf(f, "framefix=%d\nframedelay=%d\nrainframefix=%d\n", akvr_frame_fix() ? 1 : 0, akvr_frame_world(), akvr_rain_frame_fix() ? 1 : 0);   // FRAMEPAIR(2) / RAINSPLIT
+        if (g_menuCapture) fprintf(f, "menucapture=1\n");             // MENUBLACK: written only when on
         fprintf(f, "farrain=%d\n", akvr_far_rain() ? 1 : 0);   // FARRAIN
         fprintf(f, "hudeyefollow=%d\npausenoback=%d\n", akvr_xr_hud_eye_follow() ? 1 : 0, akvr_xr_pause_no_back() ? 1 : 0);   // HUDEYES / PAUSENOBACK
         fprintf(f, "pausemenusize=%.2f\n", akvr_xr_pause_menu_size());   // PAUSESIZE
@@ -939,6 +964,15 @@ namespace
             else if (sscanf(line, "pauselook=%d", &iv) == 1) akvr_xr_pause_look_set(iv != 0);   // PAUSELOOK
             else if (sscanf(line, "pausedim=%f", &v) == 1) akvr_xr_pause_dim_set(v);   // PAUSEDIM
             else if (sscanf(line, "nearrain=%d", &iv) == 1) akvr_near_rain_mode_set(iv);   // NEARRAIN
+            else if (sscanf(line, "testtools=%d", &iv) == 1) akvr_test_tools_set(iv != 0);   // CLEANUP
+            else if (sscanf(line, "rainnostretch=%d", &iv) == 1) akvr_rain_no_stretch_set(iv != 0);   // RAINSTRETCH
+            else if (sscanf(line, "markerhead=%d", &iv) == 1) akvr_marker_head_set(iv != 0);   // TARGETMOVE
+            else if (sscanf(line, "markerlag=%d", &iv) == 1) akvr_marker_lag_set(iv);
+            else if (sscanf(line, "markerhudlag=%d", &iv) == 1) akvr_marker_hud_lag_set(iv);   // TARGETMOVE2
+            else if (sscanf(line, "menucapture=%d", &iv) == 1) g_menuCapture = iv != 0;   // MENUBLACK (no panel switch)
+            else if (sscanf(line, "framefix=%d", &iv) == 1) akvr_frame_fix_set(iv != 0);   // FRAMEPAIR
+            else if (sscanf(line, "framedelay=%d", &iv) == 1) akvr_frame_world_set(iv);
+            else if (sscanf(line, "rainframefix=%d", &iv) == 1) akvr_rain_frame_fix_set(iv != 0);   // RAINSPLIT   // FRAMEPAIR2 (the old frameworld key meant something else: ignored)
             else if (sscanf(line, "nearrainlag=%d", &iv) == 1) akvr_near_rain_lag_set(iv);   // NEARRAIN2
             else if (sscanf(line, "farrain=%d", &iv) == 1) akvr_far_rain_set(iv != 0);   // FARRAIN
             else if (sscanf(line, "hudeyefollow=%d", &iv) == 1) akvr_xr_hud_eye_follow_set(iv != 0);   // HUDEYES
@@ -1268,6 +1302,9 @@ namespace
     // scene however it's bound (plain OMSetRenderTargets OR the UAV variant).
     void observe_rts(UINT n, ID3D11RenderTargetView* const* rtvs, ID3D11DepthStencilView* dsv)
     {
+        // CLEANUP 2026-10-01: the scene tap is long dead (no switch left); these texture look-ups ran on every one of
+        // the game's render-target binds. Diagnostics only now, with the test tools.
+        if (!akvr_test_tools()) return;
         ++g_rtBindsCur;
         if (dsv) ++g_rtDepthCur;
         if (rtvs && n >= 1 && rtvs[0])
@@ -1478,6 +1515,7 @@ namespace
         akvr_hudsplit_dump((capture + L"hudsplit.csv").c_str());   // HUDSPLIT
         akvr_hudsplit_layer_shot((capture + L"hudlayer.bmp").c_str());   // LAYERSHOT
         akvr_hudsplit_marks_dump((capture + L"hudmarks.csv").c_str());   // MARKREC
+        if (akvr_test_tools()) akvr_hudsplit_targets_dump((capture + L"targets.csv").c_str());   // TARGETTRACE
         akvr_hud_layers_dump((capture + L"hudlayers.txt").c_str());   // HUDLAYERS phase 1
         CopyFileW((root + L"akvr_camera_trace.csv").c_str(), (capture + L"camera.csv").c_str(), TRUE);
         CopyFileW((root + L"akvr_mode_trace.csv").c_str(), (capture + L"mode.csv").c_str(), TRUE);
@@ -1840,7 +1878,7 @@ namespace
 
         ImGui::TextColored(ImVec4(1.0f, 0.85f, 0.2f, 1.0f), "Arkham Knight VR");
         ImGui::SameLine();
-        ImGui::TextDisabled("   build: RECENTERTIME  " __DATE__ " " __TIME__);   // the same tag as the status file
+        ImGui::TextDisabled("   build: VRLAUNCH  " __DATE__ " " __TIME__);   // the same tag as the status file
 
         // ---- one status line ----------------------------------------------------
         // TIDY4 2026-09-27 (JJ: "cleaned up and reformatted to be a bit more consistent with the
@@ -1883,9 +1921,14 @@ namespace
             {
                 // World scale: geo-11's separation x convergence, live (GEOLIVE / VRSEP).
                 float gs = akvr_geo11conv_scale();
+                // SCALESAVE 2026-10-02: JJ's 1.1 never reached the files (geoscale 1.05, d3dxdm convergence 2381): a
+                // controller step does not always end an edit. Any change is now saved 1 s after the last one too.
+                static ULONGLONG s_wsChanged = 0;
                 if (SliderStep(akvr_geo11conv_live() ? "world scale" : "world scale  (next launch)", &gs, 0.25f, 2.0f, "%.2f"))
-                    akvr_geo11conv_scale_set(gs);
-                if (ImGui::IsItemDeactivatedAfterEdit()) { akvr_geo11conv_commit(); settings_save(); }
+                { akvr_geo11conv_scale_set(gs); s_wsChanged = GetTickCount64(); }
+                if (ImGui::IsItemDeactivatedAfterEdit() ||
+                    (s_wsChanged && GetTickCount64() - s_wsChanged > 1000 && !ImGui::IsAnyItemActive()))
+                { akvr_geo11conv_commit(); settings_save(); s_wsChanged = 0; }
                 ImGui::SameLine();
                 if (ImGui::Button("1.00##ws")) { akvr_geo11conv_scale_set(1.0f); akvr_geo11conv_commit(); settings_save(); }
             }
@@ -2053,6 +2096,12 @@ namespace
                 // (kept for a headset app that adds quad parallax itself: VR_HUD_GUIDE section 1, "Keep a switch").
                 bool eyeF = akvr_xr_hud_eye_follow();
                 if (g_showAdvanced && ImGui::Checkbox("HUD depth follows your eyes", &eyeF)) { akvr_xr_hud_eye_follow_set(eyeF); s_hudDirty = true; }
+                // TARGETMOVE 2026-10-02 (JJ: the reticle and the distance marker "are still following head movement");
+                // TARGETSTOCK: the move undoes the HUD shrink for them (the timing sliders of TARGETMOVE2 are gone)
+                bool mh = akvr_marker_head();
+                if (ImGui::Checkbox("reticle and distance marker sit on their target  (fix - compare on / off)", &mh)) { akvr_marker_head_set(mh); s_hudDirty = true; }
+                // FRAMEPAIR / FRAMEPAIR2 panel controls removed 2026-10-02: with OneFrameThreadLag=False the world, the rain
+                // and the markers share one frame (JJ: "perfectly stable"); settings framefix / framedelay still read.
                 if (g_showAdvanced && lay && ImGui::TreeNode("HUD layer settings"))
                 {
                     // PANELTIDY 2026-09-28 (JJ: confusing for new users): placement (view space since HUDVIEW),
@@ -2140,18 +2189,28 @@ namespace
         // DRAWPROBE2 (JJ 2026-10-01: one rain row only, "there must be other rain shaders"; the step-through rows
         // are not something JJ will use - removed). The world rain particles and the draws around them, by shader pair.
         // PANELTIDY2: the rain is fixed (JJ: "I think he's fixed it") - the probe is a test tool, advanced only.
-        ImGui::SetNextItemOpen(false, ImGuiCond_Once); if (g_showAdvanced && ImGui::CollapsingHeader("RAIN LAYERS (tests)"))
+        ImGui::SetNextItemOpen(false, ImGuiCond_Once); if (ImGui::CollapsingHeader("RAIN TEST  (check the rain hangs in space)"))   // RAINCHECK 2026-10-02: JJ - the option "is gone in the overlay"; shown without advancedpanel again
         {
-            // DRAWPROBE3 (JJ: none of the rows around the rain; hiding the world rain works; the stuck rain is 3D):
-            // every see-through draw of the frame, grouped by the shader that places it.
-            ImGui::TextWrapped("In the rain: first tick the top box. If the layer stuck to your head disappears, it is "
-                               "in one of the groups: untick the top box and hide one group at a time.");
-            // FARRAIN (JJ: the rain block turning with the head - fixed where the game moves the rain)
+            // RAINTIDY 2026-10-02 — JJ: "I don't know what each older test option does or what I should be setting it to".
+            // Three controls, each explained; the rain-hunt controls are folded away (advancedpanel=1 only).
+            ImGui::TextWrapped("To check the rain: pause the game, tick the first box, turn your head. Untick it to get "
+                               "the picture back.");
             {
+                bool every = akvr_probe_every_draw();
+                if (ImGui::Checkbox("show only the rain  (everything else disappears)", &every))
+                { akvr_probe_every_draw_set(every); if (every) akvr_test_tools_set(true); }
                 bool farOn = akvr_far_rain();
-                if (ImGui::Checkbox("rain stays in the world when you turn your head  (fix)", &farOn)) { akvr_far_rain_set(farOn); settings_save(); }
-                ImGui::TextDisabled("   %s", akvr_far_rain_diag());
+                if (ImGui::Checkbox("rain stays in the world when you turn your head  (the fix - keep ON)", &farOn)) { akvr_far_rain_set(farOn); settings_save(); }
+                // THREADSYNC 2026-10-02 (OneFrameThreadLag=False + one head pose delay for everything): JJ - "rain streaks
+                // ignore camera movement" and "rain matches the world's frame" are not needed any more; removed from the
+                // panel (settings rainnostretch / rainframefix still read, default off). Test tools: the two crashes
+                // with the threads in step came with them on - say so on the box.
+                bool tt = akvr_test_tools();
+                if (ImGui::Checkbox("test tools on  (recorders for F2 - can crash the game; turn off when not testing)", &tt)) { akvr_test_tools_set(tt); settings_save(); }
             }
+            if (g_showAdvanced && ImGui::TreeNode("old rain-hunt controls (finished - leave alone)"))
+            {
+            ImGui::TextDisabled("   %s", akvr_far_rain_diag());
             // NEARRAIN (JJ: "Can't we hang them in space like the rest of them?") - earlier draw-side tests
             {
                 int nm = akvr_near_rain_mode();
@@ -2198,10 +2257,8 @@ namespace
             ImGui::SameLine();
             if (ImGui::Button("draw all##rp")) akvr_probe_rain_parts_set(-1);
             bool all = akvr_probe_all_but_rain();
-            if (ImGui::Checkbox("hide everything below except the world rain", &all)) akvr_probe_all_but_rain_set(all);
+            if (ImGui::Checkbox("hide everything below except the world rain", &all)) { akvr_probe_all_but_rain_set(all); if (all) akvr_test_tools_set(true); }   // RAINCHECK: needs the test tools
             // DRAWPROBE4 (JJ: with all see-through draws hidden the stuck rain stays): the wider tests
-            bool every = akvr_probe_every_draw();
-            if (ImGui::Checkbox("hide EVERY draw except the world rain  (the picture goes dark)", &every)) akvr_probe_every_draw_set(every);
             bool allCs = akvr_probe_all_cs();
             if (ImGui::Checkbox("hide all compute work  (effects the game calculates instead of drawing)", &allCs)) akvr_probe_all_cs_set(allCs);
             const int ncs = akvr_probe_cs_count();
@@ -2279,6 +2336,8 @@ namespace
                 ImGui::PopID();
             }
             ImGui::TextDisabled("   %s", akvr_probe_diag());
+            ImGui::TreePop();
+            }   // RAINTIDY: old rain-hunt controls
         }
 
         // ---- MENUS AND SCREENS ------------------------------------------------------
@@ -2401,7 +2460,7 @@ namespace
                 }
             }
             int poseDelay = akvr_xr_pose_delay();
-            if (ImGui::SliderInt("head-pose delay  (3 = measured correct)", &poseDelay, 0, 3))
+            if (ImGui::SliderInt("head-pose delay  (2 = measured correct)", &poseDelay, 0, 3))   // THREADSYNC: 2
             { akvr_xr_pose_delay_set(poseDelay); settings_save(); }
             int menuDelay = akvr_xr_menu_pose_delay();   // MENUDELAY (JJ: 2 stops the main-menu jiggle) - settled, PANELTIDY2
             if (g_showAdvanced && ImGui::SliderInt("head-pose delay on the main menu  (2 = right)", &menuDelay, 0, 4))
@@ -2739,7 +2798,7 @@ namespace
             float pvRatio = 0.0f, pvFov = 0.0f; int pvHits = 0;
             akvr_projvr_diag(pvRatio, pvHits, pvFov);
             fprintf(f, "\npatches:\n");
-            fprintf(f, "   build: RECENTERTIME " __DATE__ " " __TIME__ "\n");
+            fprintf(f, "   build: VRLAUNCH " __DATE__ " " __TIME__ "\n");
             fprintf(f, "   zoom vignette: %s\n", akvr_xr_vig_diag());
             fprintf(f, "   pause look: %s, %s now, main view through the player camera: %s, head writes into the paused camera: %ld, darken %.0f%%\n",
                     akvr_xr_pause_look() ? "ON" : "off", akvr_xr_pause_live() ? "LIVE" : "not live",
@@ -3000,6 +3059,17 @@ namespace
 
     void radar_rec_tick()
     {
+        // CLEANUP 2026-10-01: the radar blink is fixed; the recorder (a 1024 px copy every frame, ~380 MB of video
+        // memory) runs only with the test tools, and gives its memory back when they are switched off.
+        if (!akvr_test_tools())
+        {
+            if (g_recCount || g_rec[0])
+            {
+                for (auto& t : g_rec) if (t) { t->Release(); t = nullptr; }
+                g_recCount = 0; g_recHead = 0;
+            }
+            return;
+        }
         ID3D11Texture2D* kt = akvr_xr_katanga_texture();
         if (!kt || !g_device || !g_context || g_recFailed) return;
         D3D11_TEXTURE2D_DESC d{}; kt->GetDesc(&d);
@@ -3209,7 +3279,6 @@ namespace
             akvr_geo11conv_tick(g_device);   // GEOSCALE
             akvr_xr_eye_applied_set(akvr_geo11_eyeview_applied());
         }
-        akvr_hudprobe_tick(g_context);   // HUDPROBE: watch the HUD movie functions (radar flip)
         akvr_hudsplit_tick();            // HUDSPLIT
 
         // Framegrab. Taken here — before the ImGui panel is drawn into the backbuffer —
@@ -3220,7 +3289,7 @@ namespace
             static ULONGLONG grabFirst = 0; static bool autoGrabbed = false;
             ULONGLONG gnow = GetTickCount64();
             if (!grabFirst) grabFirst = gnow;
-            if (!autoGrabbed && gnow - grabFirst > 6000)
+            if (!autoGrabbed && gnow - grabFirst > 6000 && g_menuCapture)   // CLEANUP / MENUBLACK: no automatic picture in play
             {
                 autoGrabbed = true;   // CAPTUREDIR
                 std::wstring p = settings_path();
@@ -3262,7 +3331,8 @@ namespace
                 // after the first 3 s, PAIRS of back-to-back frames (the +1 ms entry = the very next Present) up to 20 s.
                 static const int kAt[20] = { 0, 100, 200, 350, 500, 750, 1000, 1500, 2000, 3000,
                                              5000, 5001, 8000, 8001, 12000, 12001, 16000, 16001, 20000, 20001 };
-                const unsigned long long t0 = akvr_xr_menu_start_tick();
+                // CLEANUP 2026-10-01: both questions are answered (RECENTERTIME, RESIZESTOP) - test tools only.
+                const unsigned long long t0 = g_menuCapture ? akvr_xr_menu_start_tick() : 0;   // MENUBLACK
                 if (t0 && s_ms < 0)
                 {
                     s_ms = 0; s_msT0 = t0;
@@ -3551,7 +3621,9 @@ namespace
             bool gameplay = verdict;
             akvr_xr_set_screen_hold(!verdict && goodRun > 0);   // ENTRYHOLD (xr.cpp)
             akvr_xr_set_camera_pos(camSane, cam.x, cam.y, cam.z);   // main-menu recognition (xr.cpp)
-            akvr_frameid_tick(gameplay, akvr_camera_finalize_count());   // FRAMEID discovery
+            // CLEANUP 2026-10-01: its search copies the game's data three times (a hitch ~3 s into play) - only when
+            // the automatic pose pairing that uses it is on (poseauto=1; off on JJ's game).
+            if (akvr_xr_pose_auto()) akvr_frameid_tick(gameplay, akvr_camera_finalize_count());   // FRAMEID discovery
             g_lastGameplay = gameplay;           // the HUD tick reads this next frame
 
             // Record the decision and its inputs (see ModeRec). Projection observations
@@ -3665,7 +3737,8 @@ namespace
         // be reset from the in-game menu, this cannot.
         // Test whether downstream Present produces the Katanga pair that should
         // be submitted now. Sparse before/after samples record the actual boundary.
-        ID3D11Texture2D* probeSource = akvr_xr_katanga_texture();
+        // CLEANUP 2026-10-01: the every-30-frames pixel read-back only with the test tools (the timing ring stays).
+        ID3D11Texture2D* probeSource = akvr_test_tools() ? akvr_xr_katanga_texture() : nullptr;
         akvr_present_probe_before(g_device, g_context, probeSource,
             akvr_camera_finalize_count(), submitGameplay, deferNativeSubmit, xrBeginMs, akvr_xr_wait_ms(),
             akvr_xr_pose_delay_used());

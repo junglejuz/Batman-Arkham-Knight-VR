@@ -23,6 +23,7 @@ bool         akvr_camera_main_view_live();   // PAUSELOOK: main view still drawn
 bool         akvr_camera_base_axes(float fwd[3], float right[3], float up[3]);   // NEARRAIN: game camera without the head
 void         akvr_camera_record_rotators();   // NEARRAIN2: once per Present
 bool         akvr_camera_pos_delta_ago(int k, float d[3]);   // NEARRAIN3: the head's position offset k Presents ago
+bool         akvr_camera_pose_ago(int k, float f[3], float r[3], float u[3], float pos[3]);   // FRAMEPAIR: drawn camera k Presents ago
 bool         akvr_camera_axes_ago(int k, float bf[3], float br[3], float bu[3], float ff[3], float fr[3], float fu[3]);
 long         akvr_camera_pause_writes();     // PAUSELOOK: head writes into the paused camera so far
 void         akvr_camera_shutdown(); // restore all hand-assembled patches (DLL detach / exit)
