@@ -260,6 +260,13 @@ hook or by another camera) -> MENUSTART: when the 3D menu first comes up, hooks.
 - HUDEYES eye distance measured: 63.6 mm (mode timeline "HUD eyes 63.6 mm").
 - MENUFLICKER: JJ "Batman flickers for the first ten to twenty seconds of being in the menu" - MENUSTART now also takes
   back-to-back frame pairs at 5 / 8 / 12 / 16 / 20 s (shot10..19). Compare each pair's eyes next.
+**RECENTERTIME result (menustart_20261001_182853, build RECENTERTIME):** camera height offset within -2.1..+0.9 units from
+the menu's first finalize (was 118) - the top-down Batman is gone in the data; Batman centred in the shots.
+**MENUFLICKER analysis (same capture, scratchpad pairdiff.py):** back-to-back frame pairs at 5/8/12/16/20 s: both eyes
+change by the same amount (so not an eye-order problem); ~25% of Batman's lit pixels change by >12 (max ~250), and the
+difference picture puts them on the suit's specular highlights (ears, shoulders, rims) while the menu's intro camera
+glides in for ~20 s. Reads as highlight shimmer during the camera move, which ends when it stops - matching JJ's
+"first ten to twenty seconds". Not yet known whether JJ means that sparkle or the whole figure juddering: asked.
 HUNTRAIN d3dx.ini lines (hunting=2 etc.) are still on JJ's game: restore `diagnostics/before-HUNTRAIN-20261001/d3dx.ini`
 once the rain is settled; the finder-mark dumps (5d78...-ps) were deleted.
 
