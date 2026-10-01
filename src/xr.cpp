@@ -1038,6 +1038,7 @@ bool g_hudMenuNow = false;   // MENUSIZE: the layer carries the live main menu (
 bool g_pauseLook = true;     // PAUSELOOK setting: the pause in full view (off: the old floating window)
 bool g_pauseLive = false;    // PAUSELOOK: live now
 float g_pauseDim = 0.5f;     // PAUSEDIM: 0 = no darkening, 1 = black (JJ: "just darker")
+float g_pauseMenuScale = 0.5f;   // PAUSESIZE: the pause menu on the room layer
 bool g_hudWorldOk = false;   // mode 2: anchor taken since the last recenter
 XrPosef g_hudWorldAnchor{};  // mode 2: level head pose at the recenter, LOCAL space
 // HUDLAYER5 — JJ on HUDLAYER4: the HUD distance slider still changes nothing, though the log shows the
@@ -1200,6 +1201,9 @@ bool hud_conv_build() {
   // gradient backing, on the room layer at the pause size). While the pause view is live, this variant drops pixels
   // that are partly see-through AND dark (brightest channel under 0.12 once the coverage is divided out): the backing
   // and the text's soft shadows go; text, the highlight bar and button icons stay. PAUSEDIM darkens the world instead.
+  // PAUSENOBACK2 (JJ: the black still "appears briefly", "some sort of corner element there on the top left, still
+  // present", "the text that says pause menu is not very readable"): dark pixels go whether see-through or solid (the
+  // corner piece), and anything dim but not dark is lifted so its brightest channel reaches 0.6 (the dark-grey title).
   static const char ps2[] =
       "Texture2DArray<float4> t : register(t0);"
       "float3 lin(float3 c) { return c <= 0.04045 ? c / 12.92 : pow((c + 0.055) / 1.055, 2.4); }"
@@ -1207,7 +1211,9 @@ bool hud_conv_build() {
       " float4 p = t.Load(int4(pos.xy, 0, 0));"
       " float a = saturate(p.a);"
       " float3 c = a > 0.004 ? saturate(p.rgb / a) : saturate(p.rgb);"
-      " if (a < 0.98 && max(c.r, max(c.g, c.b)) < 0.12) return float4(0, 0, 0, 0);"
+      " float m = max(c.r, max(c.g, c.b));"
+      " if (m < 0.12) return float4(0, 0, 0, 0);"
+      " if (m < 0.6) c *= 0.6 / m;"
       " float3 o = a > 0.004 ? lin(c) * a : lin(c);"
       " return float4(o, a); }";
   ID3DBlob *pb2 = nullptr, *err2 = nullptr;
@@ -1342,7 +1348,9 @@ bool hud_layer_build(XrCompositionLayerQuad &q, const XrFovf &fov) {
   g_hudViewPose.orientation = ori;
   // MENUSIZE 2026-09-30 — JJ: with the whole main menu on the layer "the menu text elements are too big". On the
   // menu the quad follows the panel's "main menu size" (the floating menu screen's own size), about its centre.
-  const float msz = g_pauseLive ? g_pauseFovScale : g_screenFovScale;   // PAUSELOOK: the pause menu at the pause size
+  // PAUSELOOK: the pause menu at its own size. PAUSESIZE 2026-10-01 — JJ: "make the whole pause screen HUD element
+  // scaled down so you don't have to turn your head to see it" - its own setting (the map keeps the pause/map size).
+  const float msz = g_pauseLive ? g_pauseMenuScale : g_screenFovScale;
   const float ms = g_hudMenuNow ? (msz < 0.1f ? 0.1f : (msz > 1.0f ? 1.0f : msz)) : 1.0f;
   g_hudViewPose.position = quat_rotate(ori, XrVector3f{ms * D * (tr + tl) * 0.5f, ms * D * (tu + td) * 0.5f, -D});
   q.layerFlags = XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT;   // premultiplied (HUD-004)
@@ -2184,14 +2192,25 @@ void akvr_xr_frame_submit(IDXGISwapChain *swapChain, float gameFovDeg,
     // once a screen has settled as a window, it stays one.
     static ULONGLONG s_lastGame = 0;
     const ULONGLONG nowMs = GetTickCount64();
-    const bool keep = g_pauseLook && !gameplay && g_anamorphic && !g_forceScreen && !akvr_xr_screen_mode() &&
+    // PAUSEFAST 2026-10-01 — JJ: "I can still see the black overlay appear briefly when I hit pause". The smoothed
+    // gameplay verdict drops ~0.2 s after the camera stops, and until then the pause menu (with its dark backing) was
+    // drawn on the gameplay HUD layer. The camera's own stop is the earlier sign: 3 Presents without a finalize.
+    static uint64_t s_pFc = 0; static int s_pStill = 0;
+    {
+      const uint64_t fc = akvr_camera_finalize_count();
+      s_pStill = fc == s_pFc ? s_pStill + 1 : 0;
+      s_pFc = fc;
+    }
+    const bool camStopped = s_pStill >= 3;
+    // ...and it ends the moment the camera runs again (the verdict would hold the dim a moment longer).
+    const bool keep = g_pauseLook && camStopped && g_anamorphic && !g_forceScreen && !akvr_xr_screen_mode() &&
                       (!g_autoMainMenu || g_menuPhase >= 2) && akvr_camera_main_view_live();
     if (!keep) {
       if (g_pauseLive) { g_pauseLive = false; mode_log("pause look off"); hud_pause_anchor(false); s_lastGame = 0; }
     } else if (!g_pauseLive && s_lastGame && nowMs - s_lastGame < 1000) {
       g_pauseLive = true; mode_log("pause look on"); hud_pause_anchor(true);
     }
-    if (gameplay && !akvr_xr_screen_mode()) s_lastGame = nowMs;
+    if (gameplay && !camStopped && !akvr_xr_screen_mode()) s_lastGame = nowMs;
   }
   // MENUFIRST 2026-10-01 — JJ: "when exiting out of the title screens and coming into the main menu, for a second or two,
   // before the three D camera calibrates, it shows Batman at the very bottom of the screen". His F2: the menu camera ran
@@ -3157,6 +3176,8 @@ int  akvr_xr_hud_colour() { return g_hudColour; }
 void akvr_xr_hud_colour_set(int v) { g_hudColour = v == 0 ? 0 : 1; }
 bool akvr_xr_hud_eye_follow() { return g_hudEyeFollow; }                    // HUDEYES
 void akvr_xr_hud_eye_follow_set(bool on) { g_hudEyeFollow = on; }
+float akvr_xr_pause_menu_size() { return g_pauseMenuScale; }                // PAUSESIZE
+void  akvr_xr_pause_menu_size_set(float v) { g_pauseMenuScale = v < 0.2f ? 0.2f : (v > 1.0f ? 1.0f : v); }
 bool akvr_xr_pause_no_back() { return g_pauseNoBack; }                      // PAUSENOBACK
 void akvr_xr_pause_no_back_set(bool on) { g_pauseNoBack = on; }
 int  akvr_xr_hud_eyes() { return g_hudEyes; }

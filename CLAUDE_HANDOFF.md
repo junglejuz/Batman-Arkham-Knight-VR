@@ -227,6 +227,20 @@ incl. the FrameAnalysis folder) moved to akvr_captures\old\. JJ: keep the game f
   frames were shown as the flat start-up screen. In menu phase 0 a 3D frame (g_anamorphic) or a running camera (3
   finalize changes within 0.5 s, newest < 150 ms) now counts as gameplay for the display only (phase detection unchanged).
   The camera trace itself showed nothing jumping (base pitch 0.3 deg throughout).
+**PANELTIDY2 + PAUSEFAST + PAUSENOBACK2 + PAUSESIZE (2026-10-01 late, deployed, untested):** JJ on HUDEYES: "much better
+when it's on" (confirmed) - switch now advanced-only. Pause: the black backing still flashed (pause view waited ~0.2 s
+for the smoothed verdict) -> pause view now starts and ends on the camera itself (3 Presents without a finalize /
+finalize ticking again). The pause colour pass drops dark pixels at ANY alpha (the top-left corner piece) and lifts dim
+pixels so the brightest channel reaches 0.6 ("PAUSE MENU" title). The pause menu has its own size (`pausemenusize`,
+default 0.5, panel "pause menu size %"); "pause / map size" is now "map size". Panel: settled / test controls shown only
+with `advancedpanel=1` (code + ini keys unchanged): decouple pitch + stick height, extra view top/bottom, each-eye view,
+HUD on its own layer, HUD depth follows your eyes, HUD layer settings, menus use full height, whole HUD in the room,
+vignette threshold, RAIN LAYERS (tests), floating-screen head tracking + shape, pause view / dark-background switches,
+pause/map/loading shape, live 3D main menu, flat floating screens, main-menu pose delay, Diagnostics. Visible: status,
+Recenter, Capture; VIEW (world scale, extra view at the sides, picture height, where you stand); HUD (size, up/down,
+distance, attach to head, HUD parts); ZOOM VIGNETTE (strength, clear centre, preview); MENUS AND SCREENS (float now,
+floating/main menu/map/pause menu sizes, pause darken, start-up/loading sizes, loading up/down); FRAME RATE (hold at,
+between frames, pose delay); Keyboard shortcuts. **README's panel tables need the same edit before the next release.**
 HUNTRAIN d3dx.ini lines (hunting=2 etc.) are still on JJ's game: restore `diagnostics/before-HUNTRAIN-20261001/d3dx.ini`
 once the rain is settled; the finder-mark dumps (5d78...-ps) were deleted.
 

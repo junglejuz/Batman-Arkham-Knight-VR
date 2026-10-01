@@ -823,6 +823,7 @@ namespace
         fprintf(f, "nearrain=%d\nnearrainlag=%d\n", akvr_near_rain_mode(), akvr_near_rain_lag());   // NEARRAIN / NEARRAIN2
         fprintf(f, "farrain=%d\n", akvr_far_rain() ? 1 : 0);   // FARRAIN
         fprintf(f, "hudeyefollow=%d\npausenoback=%d\n", akvr_xr_hud_eye_follow() ? 1 : 0, akvr_xr_pause_no_back() ? 1 : 0);   // HUDEYES / PAUSENOBACK
+        fprintf(f, "pausemenusize=%.2f\n", akvr_xr_pause_menu_size());   // PAUSESIZE
         fprintf(f, "pauseaspect=%.3f\n", akvr_xr_pause_aspect());
         fprintf(f, "automainmenu=%d\n", akvr_xr_auto_main_menu() ? 1 : 0);
         fprintf(f, "fullview=%d\n", akvr_xr_full_view() ? 1 : 0);
@@ -942,6 +943,7 @@ namespace
             else if (sscanf(line, "farrain=%d", &iv) == 1) akvr_far_rain_set(iv != 0);   // FARRAIN
             else if (sscanf(line, "hudeyefollow=%d", &iv) == 1) akvr_xr_hud_eye_follow_set(iv != 0);   // HUDEYES
             else if (sscanf(line, "pausenoback=%d", &iv) == 1) akvr_xr_pause_no_back_set(iv != 0);   // PAUSENOBACK
+            else if (sscanf(line, "pausemenusize=%f", &v) == 1) akvr_xr_pause_menu_size_set(v);   // PAUSESIZE
             else if (sscanf(line, "pauseaspect=%f", &v) == 1) akvr_xr_pause_aspect_set(v);
             else if (sscanf(line, "automainmenu=%d", &iv) == 1) akvr_xr_auto_main_menu_set(iv != 0);
             else if (sscanf(line, "fullview=%d", &iv) == 1) akvr_xr_full_view_set(iv != 0);
@@ -1838,7 +1840,7 @@ namespace
 
         ImGui::TextColored(ImVec4(1.0f, 0.85f, 0.2f, 1.0f), "Arkham Knight VR");
         ImGui::SameLine();
-        ImGui::TextDisabled("   build: VSID3b  " __DATE__ " " __TIME__);
+        ImGui::TextDisabled("   build: PANELTIDY2  " __DATE__ " " __TIME__);   // the same tag as the status file
 
         // ---- one status line ----------------------------------------------------
         // TIDY4 2026-09-27 (JJ: "cleaned up and reformatted to be a bit more consistent with the
@@ -1895,11 +1897,14 @@ namespace
                 if (ImGui::IsItemDeactivatedAfterEdit()) settings_save();
             }
 
-            // Camera pitch (TILTBOX / ROLLSIGN): follows the game's tilt by default, like UEVR.
+            // PANELTIDY2 2026-10-01 — JJ: "look through the rest of the VR overlay ... remove any other things that aren't
+            // required as options". Settled or test-only controls are shown only with advancedpanel=1 (g_showAdvanced);
+            // their settings keep working from akvr_settings.ini.
+            // Camera pitch (TILTBOX / ROLLSIGN): follows the game's tilt by default, like UEVR (JJ's settled choice).
             bool decouple = akvr_head_pitch_unlink() != 2;
-            if (ImGui::Checkbox("decouple the camera pitch  (view stays level)", &decouple))
+            if (g_showAdvanced && ImGui::Checkbox("decouple the camera pitch  (view stays level)", &decouple))
             { akvr_head_pitch_unlink_set(decouple ? 0 : 2); settings_save(); }
-            if (decouple)
+            if (g_showAdvanced && decouple)
             {
                 float sh = akvr_head_stick_height();
                 if (SliderStep("right stick up/down: extra camera height  (m)", &sh, 0.0f, 8.0f, "%.1f"))
@@ -1916,10 +1921,13 @@ namespace
                 if (SliderStep("extra view at the sides  (deg)", &ft, 0.0f, 30.0f, "%.1f"))
                 { akvr_head_fov_set(ft); shapeCh = true; }
                 float fv = g_ovV < 0.0f ? ft : g_ovV;
-                if (SliderStep("extra view top and bottom  (deg, restart)", &fv, 0.0f, 30.0f, "%.1f"))
-                { g_ovV = fv; shapeCh = true; }
-                ImGui::SameLine();
-                if (ImGui::Button("same as sides")) { g_ovV = -1.0f; shapeCh = true; }
+                if (g_showAdvanced)   // PANELTIDY2
+                {
+                    if (SliderStep("extra view top and bottom  (deg, restart)", &fv, 0.0f, 30.0f, "%.1f"))
+                    { g_ovV = fv; shapeCh = true; }
+                    ImGui::SameLine();
+                    if (ImGui::Button("same as sides")) { g_ovV = -1.0f; shapeCh = true; }
+                }
                 if (shapeCh)
                 {
                     const int calc = next_geo11_shape(g_eyeViewSaved);
@@ -1943,7 +1951,7 @@ namespace
                     ImGui::TextDisabled("   off: the game picks its own size (now %u x %u)", bbw, bbh);
             }
 
-            if (akvr_xr_native())
+            if (akvr_xr_native() && g_showAdvanced)   // PANELTIDY2: an experiment (the compass doubles with it on)
             {
                 // EYEVIEW (SKVR port): each eye's picture turned outward to match the lens.
                 bool ev = g_eyeViewSaved;
@@ -2031,7 +2039,7 @@ namespace
             // HUDLAYER: the HUD on its own head-locked headset layer (steady at 90 Hz).
             {
                 bool lay = akvr_hudsplit_layer();
-                if (ImGui::Checkbox("HUD on its own layer (steady HUD)", &lay)) { akvr_hudsplit_layer_set(lay); s_hudDirty = true; }
+                if (g_showAdvanced && ImGui::Checkbox("HUD on its own layer (steady HUD)", &lay)) { akvr_hudsplit_layer_set(lay); s_hudDirty = true; }   // PANELTIDY2
                 // HUDWORLD 2026-09-29 (JJ): the HUD hangs fixed in the room by default; this glues it to the head.
                 bool attach = akvr_xr_hud_space() == 1;
                 if (!lay) ImGui::BeginDisabled();
@@ -2040,12 +2048,12 @@ namespace
                 ImGui::TextDisabled(lay ? (attach ? "   the HUD moves with your head"
                                                   : "   the HUD stays put in the room; F12 hangs it in front of you again")
                                         : "   needs the HUD on its own layer");
-                // HUDEYES 2026-10-01 (VR_HUD_GUIDE.md section 1): off = the old shift along the HUD's own right
+                // HUDEYES 2026-10-01 (VR_HUD_GUIDE.md section 1): off = the old shift along the HUD's own right.
+                // JJ: "much better when it's on. I don't know whether we need this as an option anymore" - advanced only
+                // (kept for a headset app that adds quad parallax itself: VR_HUD_GUIDE section 1, "Keep a switch").
                 bool eyeF = akvr_xr_hud_eye_follow();
-                if (!lay) ImGui::BeginDisabled();
-                if (ImGui::Checkbox("HUD depth follows your eyes", &eyeF)) { akvr_xr_hud_eye_follow_set(eyeF); s_hudDirty = true; }
-                if (!lay) ImGui::EndDisabled();
-                if (lay && ImGui::TreeNode("HUD layer settings"))
+                if (g_showAdvanced && ImGui::Checkbox("HUD depth follows your eyes", &eyeF)) { akvr_xr_hud_eye_follow_set(eyeF); s_hudDirty = true; }
+                if (g_showAdvanced && lay && ImGui::TreeNode("HUD layer settings"))
                 {
                     // PANELTIDY 2026-09-28 (JJ: confusing for new users): placement (view space since HUDVIEW),
                     // see-through colour conversion and the per-eye distance fix are fixed in xr.cpp.
@@ -2074,7 +2082,7 @@ namespace
                 ImGui::TextColored(kAmber, "   HUD size control not found in this game build");
 
             bool menuFill = akvr_hud_menu_fill();
-            if (ImGui::Checkbox("menus and map use the full height", &menuFill))
+            if (g_showAdvanced && ImGui::Checkbox("menus and map use the full height", &menuFill))   // PANELTIDY2
             { akvr_hud_menu_fill_set(menuFill); settings_save(); }
             // HUDLAYERS (earlyres.cpp): move / resize / hide single parts inside the HUD.
             ImGui::SetNextItemOpen(false, ImGuiCond_Once);   // PARTSHUT: closed until opened
@@ -2083,7 +2091,8 @@ namespace
                 if (ImGui::Button("find the HUD parts  (with the HUD on screen)")) akvr_hud_layers_discover();
                 ImGui::TextDisabled("%s", akvr_hud_layers_diag());
                 ImGui::TextDisabled("tick 'hide' on a part to see which one it is, then open it to move or resize it.");
-                {   // ROOMALL
+                if (g_showAdvanced)
+                {   // ROOMALL (settled, PANELTIDY2)
                     bool all = akvr_hud_room_all();
                     if (ImGui::Checkbox("whole HUD hangs in the room  (tick 'stays on its target' on parts that point at the world)", &all))
                     { akvr_hud_room_all_set(all); settings_save(); }
@@ -2117,7 +2126,7 @@ namespace
             float vc = akvr_xr_vig_clear();
             if (SliderStep("clear centre  (deg)", &vc, 5.0f, 60.0f, "%.0f")) { akvr_xr_vig_clear_set(vc); s_vigDirty = true; }
             float vb = akvr_xr_vig_below();
-            if (SliderStep("zoom when the game's view is narrower than  (deg)", &vb, 0.0f, 120.0f, "%.0f")) { akvr_xr_vig_below_set(vb); s_vigDirty = true; }
+            if (g_showAdvanced && SliderStep("zoom when the game's view is narrower than  (deg)", &vb, 0.0f, 120.0f, "%.0f")) { akvr_xr_vig_below_set(vb); s_vigDirty = true; }   // PANELTIDY2
             static bool s_prev = false;
             if (ImGui::Checkbox("preview the vignette now", &s_prev)) akvr_xr_vig_preview(s_prev);
             ImGui::TextDisabled("   %s", akvr_xr_vig_diag());
@@ -2130,7 +2139,8 @@ namespace
         // (hunting=2 in the fix's d3dx.ini, FIX_CHANGES 3c) listens for numpad keys; these buttons press them.
         // DRAWPROBE2 (JJ 2026-10-01: one rain row only, "there must be other rain shaders"; the step-through rows
         // are not something JJ will use - removed). The world rain particles and the draws around them, by shader pair.
-        ImGui::SetNextItemOpen(false, ImGuiCond_Once); if (ImGui::CollapsingHeader("RAIN LAYERS"))
+        // PANELTIDY2: the rain is fixed (JJ: "I think he's fixed it") - the probe is a test tool, advanced only.
+        ImGui::SetNextItemOpen(false, ImGuiCond_Once); if (g_showAdvanced && ImGui::CollapsingHeader("RAIN LAYERS (tests)"))
         {
             // DRAWPROBE3 (JJ: none of the rows around the rain; hiding the world rain works; the stuck rain is 3D):
             // every see-through draw of the frame, grouped by the shader that places it.
@@ -2277,15 +2287,18 @@ namespace
             bool scrMode = akvr_xr_screen_mode();
             if (ImGui::Checkbox("float as a screen now  (Pause key)", &scrMode))
                 akvr_xr_screen_mode_toggle();
-            ImGui::SameLine();
-            bool scrTrack = akvr_xr_screen_track();
-            if (ImGui::Checkbox("with head tracking", &scrTrack))
-            { akvr_xr_screen_track_set(scrTrack); settings_save(); }
-            const float a = akvr_xr_screen_aspect();
-            ImGui::TextUnformatted("floating screen shape:");
-            ImGui::SameLine(); if (ImGui::RadioButton("picture", a < 0.5f)) { akvr_xr_screen_aspect_set(0.0f); settings_save(); }
-            ImGui::SameLine(); if (ImGui::RadioButton("16:9", a > 1.7f && a < 1.9f)) { akvr_xr_screen_aspect_set(1.778f); settings_save(); }
-            ImGui::SameLine(); if (ImGui::RadioButton("21:9", a > 2.2f)) { akvr_xr_screen_aspect_set(2.333f); settings_save(); }
+            if (g_showAdvanced)   // PANELTIDY2: settled (head tracking on, the picture's own shape)
+            {
+                ImGui::SameLine();
+                bool scrTrack = akvr_xr_screen_track();
+                if (ImGui::Checkbox("with head tracking", &scrTrack))
+                { akvr_xr_screen_track_set(scrTrack); settings_save(); }
+                const float a = akvr_xr_screen_aspect();
+                ImGui::TextUnformatted("floating screen shape:");
+                ImGui::SameLine(); if (ImGui::RadioButton("picture", a < 0.5f)) { akvr_xr_screen_aspect_set(0.0f); settings_save(); }
+                ImGui::SameLine(); if (ImGui::RadioButton("16:9", a > 1.7f && a < 1.9f)) { akvr_xr_screen_aspect_set(1.778f); settings_save(); }
+                ImGui::SameLine(); if (ImGui::RadioButton("21:9", a > 2.2f)) { akvr_xr_screen_aspect_set(2.333f); settings_save(); }
+            }
             float fs = akvr_xr_float_screen_scale() * 100.0f;
             if (SliderStep("floating screen size %", &fs, 10.0f, 100.0f, "%.0f"))
                 akvr_xr_float_screen_scale_set(fs / 100.0f);
@@ -2295,14 +2308,17 @@ namespace
                 akvr_xr_menu_zoom_set(scr / 100.0f);
             if (ImGui::IsItemDeactivatedAfterEdit()) settings_save();
             float pscr = akvr_xr_pause_zoom() * 100.0f;
-            if (SliderStep("pause / map size %", &pscr, 10.0f, 100.0f, "%.0f"))
+            if (SliderStep("map size %", &pscr, 10.0f, 100.0f, "%.0f"))   // PAUSESIZE: the pause menu has its own size now
                 akvr_xr_pause_zoom_set(pscr / 100.0f);
             if (ImGui::IsItemDeactivatedAfterEdit()) settings_save();
+            float pms = akvr_xr_pause_menu_size() * 100.0f;   // PAUSESIZE (JJ: "so you don't have to turn your head")
+            if (SliderStep("pause menu size %", &pms, 20.0f, 100.0f, "%.0f"))
+            { akvr_xr_pause_menu_size_set(pms / 100.0f); settings_save(); }
             bool pl = akvr_xr_pause_look();   // PAUSELOOK (JJ: the pause as in Sekiro)
-            if (ImGui::Checkbox("pause: world stays around you, menu on top  (off: a floating window)", &pl))
+            if (g_showAdvanced && ImGui::Checkbox("pause: world stays around you, menu on top  (off: a floating window)", &pl))
             { akvr_xr_pause_look_set(pl); settings_save(); }
             bool nb = akvr_xr_pause_no_back();   // PAUSENOBACK
-            if (ImGui::Checkbox("pause: leave out the menu's dark background", &nb)) { akvr_xr_pause_no_back_set(nb); settings_save(); }
+            if (g_showAdvanced && ImGui::Checkbox("pause: leave out the menu's dark background", &nb)) { akvr_xr_pause_no_back_set(nb); settings_save(); }
             float pd = akvr_xr_pause_dim() * 100.0f;   // PAUSEDIM
             if (SliderStep("pause: darken the world %", &pd, 0.0f, 90.0f, "%.0f"))
             { akvr_xr_pause_dim_set(pd / 100.0f); settings_save(); }
@@ -2315,18 +2331,21 @@ namespace
             float lup = akvr_xr_load_up();   // LOADUP (JJ: move the loading screen up and down)
             if (SliderStep("loading screens up / down (degrees)", &lup, -30.0f, 30.0f, "%.0f"))
             { akvr_xr_load_up_set(lup); settings_save(); }
-            float pa = akvr_xr_pause_aspect();
-            if (pa < 0.5f) pa = 1.0f;
-            if (SliderStep("pause / map / loading shape  (1.78 = 16:9)", &pa, 1.0f, 2.4f, "%.2f"))
-                akvr_xr_pause_aspect_set(pa <= 1.001f ? 0.0f : pa);
-            bool menuLive = akvr_xr_menu3d();
-            if (ImGui::Checkbox("main menu: live 3D, follows your head", &menuLive))
-            { akvr_xr_menu3d_set(menuLive); settings_save(); }
-            if (akvr_xr_main_menu_detected())
-            { ImGui::SameLine(); ImGui::TextColored(kGreen, "main menu detected"); }
-            bool menuFlat = akvr_xr_menu_flat();
-            if (ImGui::Checkbox("floating screens show a flat picture", &menuFlat))
-            { akvr_xr_menu_flat_set(menuFlat); settings_save(); }
+            if (g_showAdvanced)   // PANELTIDY2: settled
+            {
+                float pa = akvr_xr_pause_aspect();
+                if (pa < 0.5f) pa = 1.0f;
+                if (SliderStep("pause / map / loading shape  (1.78 = 16:9)", &pa, 1.0f, 2.4f, "%.2f"))
+                    akvr_xr_pause_aspect_set(pa <= 1.001f ? 0.0f : pa);
+                bool menuLive = akvr_xr_menu3d();
+                if (ImGui::Checkbox("main menu: live 3D, follows your head", &menuLive))
+                { akvr_xr_menu3d_set(menuLive); settings_save(); }
+                if (akvr_xr_main_menu_detected())
+                { ImGui::SameLine(); ImGui::TextColored(kGreen, "main menu detected"); }
+                bool menuFlat = akvr_xr_menu_flat();
+                if (ImGui::Checkbox("floating screens show a flat picture", &menuFlat))
+                { akvr_xr_menu_flat_set(menuFlat); settings_save(); }
+            }
         }
 
         // ---- FRAME RATE (geo-11 only) -------------------------------------------------
@@ -2384,8 +2403,8 @@ namespace
             int poseDelay = akvr_xr_pose_delay();
             if (ImGui::SliderInt("head-pose delay  (3 = measured correct)", &poseDelay, 0, 3))
             { akvr_xr_pose_delay_set(poseDelay); settings_save(); }
-            int menuDelay = akvr_xr_menu_pose_delay();   // MENUDELAY (JJ: 2 stops the main-menu jiggle)
-            if (ImGui::SliderInt("head-pose delay on the main menu  (2 = right)", &menuDelay, 0, 4))
+            int menuDelay = akvr_xr_menu_pose_delay();   // MENUDELAY (JJ: 2 stops the main-menu jiggle) - settled, PANELTIDY2
+            if (g_showAdvanced && ImGui::SliderInt("head-pose delay on the main menu  (2 = right)", &menuDelay, 0, 4))
             { akvr_xr_menu_pose_delay_set(menuDelay); settings_save(); }
         }
 
@@ -2554,7 +2573,7 @@ namespace
         }
 
         // ---- DIAGNOSTICS (folded) ------------------------------------------------
-        ImGui::SetNextItemOpen(false, ImGuiCond_Once); if (ImGui::CollapsingHeader("Diagnostics"))
+        ImGui::SetNextItemOpen(false, ImGuiCond_Once); if (g_showAdvanced && ImGui::CollapsingHeader("Diagnostics"))   // PANELTIDY2: F2 captures carry the same
         {
             float hz = akvr_xr_headset_hz();
             ImGui::TextDisabled("%.0f fps   headset %.0f Hz   VR: %s", io.Framerate, hz,
@@ -2720,7 +2739,7 @@ namespace
             float pvRatio = 0.0f, pvFov = 0.0f; int pvHits = 0;
             akvr_projvr_diag(pvRatio, pvHits, pvFov);
             fprintf(f, "\npatches:\n");
-            fprintf(f, "   build: HUDEYES " __DATE__ " " __TIME__ "\n");
+            fprintf(f, "   build: PANELTIDY2 " __DATE__ " " __TIME__ "\n");
             fprintf(f, "   zoom vignette: %s\n", akvr_xr_vig_diag());
             fprintf(f, "   pause look: %s, %s now, main view through the player camera: %s, head writes into the paused camera: %ld, darken %.0f%%\n",
                     akvr_xr_pause_look() ? "ON" : "off", akvr_xr_pause_live() ? "LIVE" : "not live",

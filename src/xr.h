@@ -54,6 +54,8 @@ bool        akvr_xr_pause_look();                  // PAUSELOOK: the setting
 void        akvr_xr_pause_look_set(bool on);
 bool        akvr_xr_hud_eye_follow();              // HUDEYES: HUD quads shifted by the real eyes' offsets
 void        akvr_xr_hud_eye_follow_set(bool on);
+float       akvr_xr_pause_menu_size();             // PAUSESIZE: the pause menu's size on the room layer (0.2..1)
+void        akvr_xr_pause_menu_size_set(float v);
 bool        akvr_xr_pause_no_back();               // PAUSENOBACK: the pause menu's dark backing left out of the layer
 void        akvr_xr_pause_no_back_set(bool on);
 float       akvr_xr_pause_dim();                   // PAUSEDIM: how much darker the paused world is (0..0.9)
