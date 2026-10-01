@@ -1039,6 +1039,7 @@ bool g_pauseLook = true;     // PAUSELOOK setting: the pause in full view (off: 
 bool g_pauseLive = false;    // PAUSELOOK: live now
 float g_pauseDim = 0.5f;     // PAUSEDIM: 0 = no darkening, 1 = black (JJ: "just darker")
 float g_pauseMenuScale = 0.5f;   // PAUSESIZE: the pause menu on the room layer
+ULONGLONG g_menuStartTick = 0;   // MENUSTART: when the 3D main menu first came up (0 = not yet)
 bool g_hudWorldOk = false;   // mode 2: anchor taken since the last recenter
 XrPosef g_hudWorldAnchor{};  // mode 2: level head pose at the recenter, LOCAL space
 // HUDLAYER5 — JJ on HUDLAYER4: the HUD distance slider still changes nothing, though the log shows the
@@ -2187,6 +2188,15 @@ void akvr_xr_frame_submit(IDXGISwapChain *swapChain, float gameFovDeg,
   // (camera.cpp: the main view's FOV = the camera's; the map draws from its own camera and keeps the old window).
   // Live: shown exactly like gameplay (full view, the head drives the paused camera, camera.cpp pause_look_write),
   // darkened (PAUSEDIM), and the whole UI on the room layer, hung in front of where you look, at the pause size.
+  // CAMRUN 2026-10-01: "the camera is running" = 3 finalize changes within 0.5 s, the newest under 150 ms old (used by
+  // PAUSELOOK's end, MENUFIRST and the fast way back into gameplay below).
+  static uint64_t s_mfFc = 0; static ULONGLONG s_mfTicks[3] = {};
+  {
+    const uint64_t fc = akvr_camera_finalize_count();
+    if (fc != s_mfFc) { s_mfFc = fc; s_mfTicks[2] = s_mfTicks[1]; s_mfTicks[1] = s_mfTicks[0]; s_mfTicks[0] = GetTickCount64(); }
+  }
+  const ULONGLONG nowMf = GetTickCount64();
+  const bool camTicking = s_mfTicks[2] && nowMf - s_mfTicks[0] < 150 && s_mfTicks[0] - s_mfTicks[2] < 500;
   {
     // It may start within 1 s of gameplay ending (the FOV check can lag the pause by a few frames), never later:
     // once a screen has settled as a window, it stays one.
@@ -2202,12 +2212,15 @@ void akvr_xr_frame_submit(IDXGISwapChain *swapChain, float gameFovDeg,
       s_pFc = fc;
     }
     const bool camStopped = s_pStill >= 3;
-    // ...and it ends the moment the camera runs again (the verdict would hold the dim a moment longer).
-    const bool keep = g_pauseLook && camStopped && g_anamorphic && !g_forceScreen && !akvr_xr_screen_mode() &&
+    const bool fits = g_pauseLook && g_anamorphic && !g_forceScreen && !akvr_xr_screen_mode() &&
                       (!g_autoMainMenu || g_menuPhase >= 2) && akvr_camera_main_view_live();
-    if (!keep) {
-      if (g_pauseLive) { g_pauseLive = false; mode_log("pause look off"); hud_pause_anchor(false); s_lastGame = 0; }
-    } else if (!g_pauseLive && s_lastGame && nowMs - s_lastGame < 1000) {
+    // UNPAUSE 2026-10-01 — JJ: "when exiting the pause menu, I'm seeing the entire thing being framed in a small window
+    // before it pops back out to the full 360". It ended on the first camera tick, but gameplay was only shown again
+    // once the camera was clearly running (or the slower verdict): a few frames fell back to the floating window.
+    // The pause now holds until the camera is clearly running; from there CAMRUN shows gameplay (below).
+    if (g_pauseLive) {
+      if (!fits || camTicking) { g_pauseLive = false; mode_log("pause look off"); hud_pause_anchor(false); s_lastGame = 0; }
+    } else if (fits && camStopped && s_lastGame && nowMs - s_lastGame < 1000) {
       g_pauseLive = true; mode_log("pause look on"); hud_pause_anchor(true);
     }
     if (gameplay && !camStopped && !akvr_xr_screen_mode()) s_lastGame = nowMs;
@@ -2217,17 +2230,16 @@ void akvr_xr_frame_submit(IDXGISwapChain *swapChain, float gameFovDeg,
   // (raw camera verdict 1 from 12.72 s) but the smoothed gameplay verdict came only at 13.23 s, so the first 3D menu
   // frames were shown as the small flat start-up screen - the menu shot drawn flat, Batman at its bottom. Before the
   // main menu is confirmed (phase 0) every start-up screen is flat, so a 3D frame can only be the menu: shown live.
-  // The camera's finalize count rising is the earliest sign (12.72 s in that F2; the 3D flag came at 13.0 s).
-  // A running camera, not the single tick at launch: 3 finalize changes within 0.5 s, the newest under 150 ms old.
-  static uint64_t s_mfFc = 0; static ULONGLONG s_mfTicks[3] = {};
-  {
-    const uint64_t fc = akvr_camera_finalize_count();
-    if (fc != s_mfFc) { s_mfFc = fc; s_mfTicks[2] = s_mfTicks[1]; s_mfTicks[1] = s_mfTicks[0]; s_mfTicks[0] = GetTickCount64(); }
-  }
-  const ULONGLONG nowMf = GetTickCount64();
-  const bool camTicking = s_mfTicks[2] && nowMf - s_mfTicks[0] < 150 && s_mfTicks[0] - s_mfTicks[2] < 500;
+  // The camera's finalize count rising is the earliest sign (12.72 s in that F2; the 3D flag came at 13.0 s): CAMRUN.
   const bool menuFirst3D = g_autoMainMenu && g_menuPhase == 0 && (g_anamorphic || camTicking) && !g_forceScreen;
-  bool effGameplay = (gameplay || g_pauseLive || menuFirst3D) && !akvr_xr_screen_mode();
+  // CAMRUN: a running camera with a 3D picture is gameplay at once (the smoothed verdict follows ~0.2-0.5 s later).
+  const bool camRun3D = camTicking && g_anamorphic && !g_forceScreen;
+  bool effGameplay = (gameplay || g_pauseLive || menuFirst3D || camRun3D) && !akvr_xr_screen_mode();
+  {   // MENUSTART: when the 3D main menu first comes up, AKVR captures it (hooks.cpp) - JJ still sees "the view of
+      // Batman from the top at the bottom of the screen" there, too briefly for F2.
+    static bool s_msDone = false;
+    if (!s_msDone && g_autoMainMenu && g_menuPhase == 0 && (g_anamorphic || camTicking)) { s_msDone = true; g_menuStartTick = GetTickCount64(); }
+  }
   // EVGAME: on only after 1.5 s of steady gameplay (JJ: the first menu "doubled up briefly, then
   // normal" - gameplay was reported for a moment before the main menu was recognised); off at once.
   {
@@ -3176,6 +3188,7 @@ int  akvr_xr_hud_colour() { return g_hudColour; }
 void akvr_xr_hud_colour_set(int v) { g_hudColour = v == 0 ? 0 : 1; }
 bool akvr_xr_hud_eye_follow() { return g_hudEyeFollow; }                    // HUDEYES
 void akvr_xr_hud_eye_follow_set(bool on) { g_hudEyeFollow = on; }
+unsigned long long akvr_xr_menu_start_tick() { return g_menuStartTick; }    // MENUSTART
 float akvr_xr_pause_menu_size() { return g_pauseMenuScale; }                // PAUSESIZE
 void  akvr_xr_pause_menu_size_set(float v) { g_pauseMenuScale = v < 0.2f ? 0.2f : (v > 1.0f ? 1.0f : v); }
 bool akvr_xr_pause_no_back() { return g_pauseNoBack; }                      // PAUSENOBACK

@@ -241,6 +241,15 @@ Recenter, Capture; VIEW (world scale, extra view at the sides, picture height, w
 distance, attach to head, HUD parts); ZOOM VIGNETTE (strength, clear centre, preview); MENUS AND SCREENS (float now,
 floating/main menu/map/pause menu sizes, pause darken, start-up/loading sizes, loading up/down); FRAME RATE (hold at,
 between frames, pose delay); Keyboard shortcuts. **README's panel tables need the same edit before the next release.**
+**CAMRUN + UNPAUSE + MENUSTART (2026-10-01 late, deployed, untested):** JJ: leaving the pause showed "the entire thing
+framed in a small window before it pops back out to the full 360" (PAUSEFAST ended the pause on the first camera tick,
+gameplay came back only with the slower verdict) -> the pause holds until the camera is clearly running (3 finalize
+changes within 0.5 s, newest < 150 ms = CAMRUN), and CAMRUN && 3D now counts as gameplay for the display everywhere.
+JJ still sees "the view of Batman from the top at the bottom of the screen" entering the main menu (MENUFIRST did not
+cure it; his earlier F2 trace showed the hooked camera level from its first tick, so the top view is drawn before the
+hook or by another camera) -> MENUSTART: when the 3D menu first comes up, hooks.cpp saves the katanga picture 10x over
+3 s plus display state (shots.txt) and the camera / mode traces into akvr_captures\menustart_<time>\. Read those next.
+(JJ's message about dialogue-choice backdrops / subtitles was about Sekiro, not AKVR - left for SKVR.)
 HUNTRAIN d3dx.ini lines (hunting=2 etc.) are still on JJ's game: restore `diagnostics/before-HUNTRAIN-20261001/d3dx.ini`
 once the rain is settled; the finder-mark dumps (5d78...-ps) were deleted.
 

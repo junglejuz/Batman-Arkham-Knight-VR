@@ -1840,7 +1840,7 @@ namespace
 
         ImGui::TextColored(ImVec4(1.0f, 0.85f, 0.2f, 1.0f), "Arkham Knight VR");
         ImGui::SameLine();
-        ImGui::TextDisabled("   build: PANELTIDY2  " __DATE__ " " __TIME__);   // the same tag as the status file
+        ImGui::TextDisabled("   build: CAMRUN  " __DATE__ " " __TIME__);   // the same tag as the status file
 
         // ---- one status line ----------------------------------------------------
         // TIDY4 2026-09-27 (JJ: "cleaned up and reformatted to be a bit more consistent with the
@@ -2739,7 +2739,7 @@ namespace
             float pvRatio = 0.0f, pvFov = 0.0f; int pvHits = 0;
             akvr_projvr_diag(pvRatio, pvHits, pvFov);
             fprintf(f, "\npatches:\n");
-            fprintf(f, "   build: PANELTIDY2 " __DATE__ " " __TIME__ "\n");
+            fprintf(f, "   build: CAMRUN " __DATE__ " " __TIME__ "\n");
             fprintf(f, "   zoom vignette: %s\n", akvr_xr_vig_diag());
             fprintf(f, "   pause look: %s, %s now, main view through the player camera: %s, head writes into the paused camera: %ld, darken %.0f%%\n",
                     akvr_xr_pause_look() ? "ON" : "off", akvr_xr_pause_live() ? "LIVE" : "not live",
@@ -3251,6 +3251,45 @@ namespace
                     // gone: JJ 2026-09-28, "that capture takes a long time".
                 }
                 radar_rec_dump(shot);
+            }
+            // MENUSTART 2026-10-01 — JJ: "still briefly seeing the view of Batman from the top at the bottom of the
+            // screen after exiting the title screens and first entering the menu screen" - too brief for F2. When the
+            // 3D main menu first comes up, the stereo picture is saved 10 times over 3 s with the headset's display
+            // state, then the camera and mode traces, into akvr_captures\menustart_<time>\.
+            {
+                static int s_ms = -1; static ULONGLONG s_msT0 = 0; static std::wstring s_msDir;
+                static const int kAt[10] = { 0, 100, 200, 350, 500, 750, 1000, 1500, 2000, 3000 };
+                const unsigned long long t0 = akvr_xr_menu_start_tick();
+                if (t0 && s_ms < 0)
+                {
+                    s_ms = 0; s_msT0 = t0;
+                    std::wstring p = settings_path();
+                    const std::wstring base = p.empty() ? L"" : p.substr(0, p.find_last_of(L"\\/") + 1);
+                    SYSTEMTIME st{}; GetLocalTime(&st);
+                    wchar_t tag[64]; swprintf_s(tag, L"menustart_%04u%02u%02u_%02u%02u%02u", st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond);
+                    CreateDirectoryW((base + L"akvr_captures").c_str(), nullptr);
+                    s_msDir = std::wstring(L"akvr_captures\\") + tag + L"\\";
+                    CreateDirectoryW((base + s_msDir).c_str(), nullptr);
+                }
+                if (s_ms >= 0 && s_ms < 10 && gnow >= s_msT0 + (ULONGLONG)kAt[s_ms])
+                {
+                    std::wstring p = settings_path();
+                    const std::wstring base = p.empty() ? L"" : p.substr(0, p.find_last_of(L"\\/") + 1);
+                    wchar_t name[200];
+                    swprintf_s(name, L"%sshot%02d_%04dms.bmp", s_msDir.c_str(), s_ms, (int)(gnow - s_msT0));
+                    if (ID3D11Texture2D* kt = akvr_xr_katanga_texture()) grab_texture(kt, name);
+                    if (FILE* lf = _wfopen((base + s_msDir + L"shots.txt").c_str(), L"a"))
+                    {
+                        fprintf(lf, "shot %02d at %4d ms: %s | %s\n", s_ms, (int)(gnow - s_msT0), akvr_xr_display_status(), akvr_xr_mode_log());
+                        fclose(lf);
+                    }
+                    ++s_ms;
+                    if (s_ms == 10)
+                    {
+                        akvr_camera_trace_dump((base + s_msDir + L"camera.csv").c_str());
+                        mode_trace_dump((base + s_msDir + L"mode.csv").c_str());
+                    }
+                }
             }
         }
 
