@@ -202,6 +202,31 @@ If the far layer still swims only during STICK turns, that is the 1-frame base-r
 shader dumps go to akvr_captures\shaders\; traces' working copies to akvr_captures\. 382 old capture items (583 MB,
 incl. the FrameAnalysis folder) moved to akvr_captures\old\. JJ: keep the game folder clean.
 **PARTSHUT:** the HUD section and "move / resize single HUD parts" no longer open themselves (JJ, while on the rain).
+**JJ on FARRAIN: "I think he's fixed it."** (rain stays in the world under head turns.)
+
+**HUDEYES + PAUSENOBACK + MENUFIRST (2026-10-01 late, deployed, untested):**
+- HUDEYES — applies **VR_HUD_GUIDE.md section 1** ("HUD depth: per-eye quads, never depth baked into the pictures";
+  SKVR HUDEYES3, skvr/SEKIRO_PLAN.md runs 107-108). `hud_eye_pair()` used to move the two quads by +-g_hudHalfIpd along
+  the quad's own right axis, i.e. fixed to the direction faced at the last recentre (the HUD is room-fixed, 4 m), so a
+  turned + tilted head gave an up/down difference between the eyes at the HUD edges. Now: eye positions from
+  `xrLocateViews` (LOCAL space, display time, position-valid only) into `g_eyeLocPos[2]`; each eye's quad = position -
+  (eye - midpoint). Only for a LOCAL-space quad (attach-to-head = view space keeps the old, exact shift). Panel "HUD depth
+  follows your eyes" (`hudeyefollow`, default on; off = old method). The measured eye distance is logged once in the mode
+  timeline ("HUD eyes NN.N mm", expect ~63) and shown on the "headset HUD layer" status line with the method in use. HUD
+  picture flat: JJ's F2s of 2026-10-01 show "HUD distance: LIVE, shift 0.00000" (geo-11 HUD shift 0 in the layer), so
+  depth comes only from the quad pair. Test with JJ: far-left / far-right HUD pieces with the head turned and tilted
+  should converge.
+- PAUSENOBACK — JJ: "remove the gradient dark HUD layer and darken the actual world instead". Pause F2 (akvr_captures\
+  20261001_173020_454): layer 46.8% covered, 46.7% see-through = the pause menu's black gradient backing on the room layer.
+  The part tree is capped (2040, PauseMenu not in it) and the draw list is ambiguous, so the HUD colour conversion has a
+  second pixel shader used only while the pause view is live: pixels with alpha < 0.98 and brightest (un-premultiplied)
+  channel < 0.12 are dropped. PAUSEDIM's view-wide dim stays the darkening. Panel "pause: leave out the menu's dark
+  background" (`pausenoback`, default on).
+- MENUFIRST — JJ: Batman at the very bottom for "a second or two" coming into the main menu. Main-menu F2 (20261001_
+  172932_977): the camera ran from 12.72 s (raw verdict 1) but the smoothed verdict came at 13.23 s, so the first 3D menu
+  frames were shown as the flat start-up screen. In menu phase 0 a 3D frame (g_anamorphic) or a running camera (3
+  finalize changes within 0.5 s, newest < 150 ms) now counts as gameplay for the display only (phase detection unchanged).
+  The camera trace itself showed nothing jumping (base pitch 0.3 deg throughout).
 HUNTRAIN d3dx.ini lines (hunting=2 etc.) are still on JJ's game: restore `diagnostics/before-HUNTRAIN-20261001/d3dx.ini`
 once the rain is settled; the finder-mark dumps (5d78...-ps) were deleted.
 

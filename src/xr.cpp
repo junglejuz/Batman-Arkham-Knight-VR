@@ -1128,11 +1128,30 @@ void hud_pause_anchor(bool on) {
   }
 }
 
+// HUDEYES 2026-10-01 (VR_HUD_GUIDE.md section 1, "HUD depth: per-eye quads"; SKVR HUDEYES3, run 108): the HUD layer
+// is fixed in the room, so the old shift along the quad's own right axis is fixed to the direction faced at the last
+// recentre - with the head turned and tilted towards an edge of the HUD it gains an up / down part between the eyes,
+// and edge pieces stop converging (Sekiro). Now each eye's quad moves by minus that eye's offset from the eye midpoint,
+// with the eyes as xrLocateViews reports them in LOCAL space at display time (the projection views carry the head
+// pose for both eyes: SKVR HUDEYES2's shift from them was zero). The HUD picture itself carries no depth (geo-11 HUD
+// shift 0 in the layer, checked in JJ's F2s of 2026-10-01). Panel switch "HUD depth follows your eyes" (hudeyefollow);
+// off = the old axis shift. Only for a room-placed quad: attached to the head (view space) the old shift is exact.
+XrVector3f g_eyeLocPos[2] = {};
+bool g_eyeLocOk = false;
+bool g_hudEyeFollow = true;
+float g_eyeLocDistMm = 0.0f;
 // HUDLAYER5: the placed quad as a left/right pair, each moved along the quad's own right axis.
 void hud_eye_pair(const XrCompositionLayerQuad &q, XrCompositionLayerQuad &l, XrCompositionLayerQuad &r) {
   l = q; r = q;
   l.eyeVisibility = XR_EYE_VISIBILITY_LEFT;
   r.eyeVisibility = XR_EYE_VISIBILITY_RIGHT;
+  if (g_hudEyeFollow && g_eyeLocOk && q.space == g_localSpace) {   // HUDEYES
+    const XrVector3f &p0 = g_eyeLocPos[0], &p1 = g_eyeLocPos[1];
+    const XrVector3f mid{(p0.x + p1.x) * 0.5f, (p0.y + p1.y) * 0.5f, (p0.z + p1.z) * 0.5f};
+    l.pose.position = {q.pose.position.x - (p0.x - mid.x), q.pose.position.y - (p0.y - mid.y), q.pose.position.z - (p0.z - mid.z)};
+    r.pose.position = {q.pose.position.x - (p1.x - mid.x), q.pose.position.y - (p1.y - mid.y), q.pose.position.z - (p1.z - mid.z)};
+    return;
+  }
   const XrVector3f s = quat_rotate(q.pose.orientation, XrVector3f{g_hudHalfIpd, 0.0f, 0.0f});
   l.pose.position = {q.pose.position.x + s.x, q.pose.position.y + s.y, q.pose.position.z + s.z};
   r.pose.position = {q.pose.position.x - s.x, q.pose.position.y - s.y, q.pose.position.z - s.z};
@@ -1141,6 +1160,8 @@ void hud_eye_pair(const XrCompositionLayerQuad &q, XrCompositionLayerQuad &l, Xr
 // Colour conversion pass (real context, our own state saved and restored).
 ID3D11VertexShader *g_hcVS = nullptr;
 ID3D11PixelShader *g_hcPS = nullptr;
+ID3D11PixelShader *g_hcPS2 = nullptr;    // PAUSENOBACK: the same, dropping dark see-through pixels
+bool g_pauseNoBack = true;               // PAUSENOBACK setting
 int g_hcState = 0;                       // 0 not built, 1 ok, -1 failed
 ID3D11ShaderResourceView *g_hcSRV = nullptr;
 ID3D11Texture2D *g_hcSRVTex = nullptr;
@@ -1174,6 +1195,26 @@ bool hud_conv_build() {
   ok = ok && SUCCEEDED(g_device->CreatePixelShader(pb->GetBufferPointer(), pb->GetBufferSize(), nullptr, &g_hcPS));
   if (vb) vb->Release();
   if (pb) pb->Release();
+  // PAUSENOBACK 2026-10-01 — JJ: "for the pause screen, remove the gradient dark HUD layer and darken the actual world
+  // instead". His pause F2: the layer was 47% covered, almost all of it see-through black (the pause menu's dark
+  // gradient backing, on the room layer at the pause size). While the pause view is live, this variant drops pixels
+  // that are partly see-through AND dark (brightest channel under 0.12 once the coverage is divided out): the backing
+  // and the text's soft shadows go; text, the highlight bar and button icons stay. PAUSEDIM darkens the world instead.
+  static const char ps2[] =
+      "Texture2DArray<float4> t : register(t0);"
+      "float3 lin(float3 c) { return c <= 0.04045 ? c / 12.92 : pow((c + 0.055) / 1.055, 2.4); }"
+      "float4 main(float4 pos : SV_Position) : SV_Target {"
+      " float4 p = t.Load(int4(pos.xy, 0, 0));"
+      " float a = saturate(p.a);"
+      " float3 c = a > 0.004 ? saturate(p.rgb / a) : saturate(p.rgb);"
+      " if (a < 0.98 && max(c.r, max(c.g, c.b)) < 0.12) return float4(0, 0, 0, 0);"
+      " float3 o = a > 0.004 ? lin(c) * a : lin(c);"
+      " return float4(o, a); }";
+  ID3DBlob *pb2 = nullptr, *err2 = nullptr;
+  if (ok && SUCCEEDED(compile(ps2, sizeof(ps2) - 1, "hudps2", nullptr, nullptr, "main", "ps_5_0", 0, 0, &pb2, &err2)) && pb2)
+    if (FAILED(g_device->CreatePixelShader(pb2->GetBufferPointer(), pb2->GetBufferSize(), nullptr, &g_hcPS2))) g_hcPS2 = nullptr;
+  if (err2) err2->Release();
+  if (pb2) pb2->Release();
   snprintf(g_hudConvDiag, sizeof(g_hudConvDiag), ok ? "colour conversion ready" : "colour shaders failed");
   g_hcState = ok ? 1 : -1;
   return ok;
@@ -1238,7 +1279,7 @@ bool hud_conv_draw(ID3D11Texture2D *src, uint32_t idx) {
   g_ctx->IASetInputLayout(nullptr);
   g_ctx->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
   g_ctx->VSSetShader(g_hcVS, nullptr, 0);
-  g_ctx->PSSetShader(g_hcPS, nullptr, 0);
+  g_ctx->PSSetShader(g_pauseLive && g_pauseNoBack && g_hcPS2 ? g_hcPS2 : g_hcPS, nullptr, 0);   // PAUSENOBACK
   g_ctx->PSSetShaderResources(0, 1, &g_hcSRV);
   g_ctx->OMSetBlendState(nullptr, nullptr, 0xffffffff);
   g_ctx->OMSetDepthStencilState(nullptr, 0);
@@ -1938,6 +1979,13 @@ void akvr_xr_frame_begin() {
         const float dz = vv[1].pose.position.z - vv[0].pose.position.z;
         const float ipd = sqrtf(dx * dx + dy * dy + dz * dz);
         if (ipd > 0.04f && ipd < 0.09f) g_hudHalfIpd = 0.5f * ipd;
+        // HUDEYES: both eyes' positions, LOCAL space, display time (for hud_eye_pair); the distance logged once
+        if (vst.viewStateFlags & XR_VIEW_STATE_POSITION_VALID_BIT) {
+          g_eyeLocPos[0] = vv[0].pose.position; g_eyeLocPos[1] = vv[1].pose.position; g_eyeLocOk = true;
+          g_eyeLocDistMm = 1000.0f * ipd;
+          static bool s_logged = false;
+          if (!s_logged) { s_logged = true; char m[48]; snprintf(m, sizeof(m), "HUD eyes %.1f mm", g_eyeLocDistMm); mode_log(m); }
+        }
       }
       float hH = ((vv[0].fov.angleRight - vv[0].fov.angleLeft) +
                   (vv[1].fov.angleRight - vv[1].fov.angleLeft)) *
@@ -2145,7 +2193,22 @@ void akvr_xr_frame_submit(IDXGISwapChain *swapChain, float gameFovDeg,
     }
     if (gameplay && !akvr_xr_screen_mode()) s_lastGame = nowMs;
   }
-  bool effGameplay = (gameplay || g_pauseLive) && !akvr_xr_screen_mode();
+  // MENUFIRST 2026-10-01 — JJ: "when exiting out of the title screens and coming into the main menu, for a second or two,
+  // before the three D camera calibrates, it shows Batman at the very bottom of the screen". His F2: the menu camera ran
+  // (raw camera verdict 1 from 12.72 s) but the smoothed gameplay verdict came only at 13.23 s, so the first 3D menu
+  // frames were shown as the small flat start-up screen - the menu shot drawn flat, Batman at its bottom. Before the
+  // main menu is confirmed (phase 0) every start-up screen is flat, so a 3D frame can only be the menu: shown live.
+  // The camera's finalize count rising is the earliest sign (12.72 s in that F2; the 3D flag came at 13.0 s).
+  // A running camera, not the single tick at launch: 3 finalize changes within 0.5 s, the newest under 150 ms old.
+  static uint64_t s_mfFc = 0; static ULONGLONG s_mfTicks[3] = {};
+  {
+    const uint64_t fc = akvr_camera_finalize_count();
+    if (fc != s_mfFc) { s_mfFc = fc; s_mfTicks[2] = s_mfTicks[1]; s_mfTicks[1] = s_mfTicks[0]; s_mfTicks[0] = GetTickCount64(); }
+  }
+  const ULONGLONG nowMf = GetTickCount64();
+  const bool camTicking = s_mfTicks[2] && nowMf - s_mfTicks[0] < 150 && s_mfTicks[0] - s_mfTicks[2] < 500;
+  const bool menuFirst3D = g_autoMainMenu && g_menuPhase == 0 && (g_anamorphic || camTicking) && !g_forceScreen;
+  bool effGameplay = (gameplay || g_pauseLive || menuFirst3D) && !akvr_xr_screen_mode();
   // EVGAME: on only after 1.5 s of steady gameplay (JJ: the first menu "doubled up briefly, then
   // normal" - gameplay was reported for a moment before the main menu was recognised); off at once.
   {
@@ -3078,11 +3141,13 @@ const char *akvr_xr_hud_layer_diag() {
   if (g_hudErr == 1) snprintf(d, sizeof(d), "headset HUD layer: no swapchain format matches the HUD image");
   else if (g_hudErr == 2) snprintf(d, sizeof(d), "headset HUD layer: could not create its swapchain");
   else if (g_hudSwap == XR_NULL_HANDLE) snprintf(d, sizeof(d), "headset HUD layer: not started");
-  else snprintf(d, sizeof(d), "headset HUD layer: %ld frames sent, %ux%u fmt %d, at %.1f m, %.2f x %.2f m, %s, %s, place fails %ld%s",
+  else snprintf(d, sizeof(d), "headset HUD layer: %ld frames sent, %ux%u fmt %d, at %.1f m, %.2f x %.2f m, %s, %s, place fails %ld, "
+                              "depth %s (eyes %.1f mm apart)%s",
                 g_hudSubmits, g_hudW, g_hudH, (int)g_hudFmt, g_hudDistUsed, g_hudSizeW, g_hudSizeH,
                 g_hudSpace == 1 ? "attached to the head" : (g_hudSpace == 2 ? "fixed in the room" : "room space, re-placed each frame"),
                 g_hudColour == 1 ? g_hudConvDiag : "raw colour copy", g_hudPlaceFails,
-                g_rpHasHud ? "" : " (not in the last frame)");
+                !g_hudEyes ? "off (one quad)" : (g_hudEyeFollow && g_eyeLocOk && g_hudSpace == 2 ? "follows the eyes (HUDEYES)" : "along the quad's right (old)"),
+                g_eyeLocDistMm, g_rpHasHud ? "" : " (not in the last frame)");
   return d;
 }
 int  akvr_xr_hud_space() { return g_hudSpace; }
@@ -3090,6 +3155,10 @@ void akvr_xr_hud_space_set(int v) { g_hudSpace = (v == 1 || v == 2) ? v : 0; g_h
 void akvr_xr_hud_reanchor() { g_hudWorldOk = false; }
 int  akvr_xr_hud_colour() { return g_hudColour; }
 void akvr_xr_hud_colour_set(int v) { g_hudColour = v == 0 ? 0 : 1; }
+bool akvr_xr_hud_eye_follow() { return g_hudEyeFollow; }                    // HUDEYES
+void akvr_xr_hud_eye_follow_set(bool on) { g_hudEyeFollow = on; }
+bool akvr_xr_pause_no_back() { return g_pauseNoBack; }                      // PAUSENOBACK
+void akvr_xr_pause_no_back_set(bool on) { g_pauseNoBack = on; }
 int  akvr_xr_hud_eyes() { return g_hudEyes; }
 void akvr_xr_hud_eyes_set(int v) { g_hudEyes = v ? 1 : 0; }
 int  akvr_xr_hud_lazy() { return g_hudLazy; }

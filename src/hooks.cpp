@@ -822,6 +822,7 @@ namespace
         fprintf(f, "pauselook=%d\npausedim=%.2f\n", akvr_xr_pause_look() ? 1 : 0, akvr_xr_pause_dim());   // PAUSELOOK / PAUSEDIM
         fprintf(f, "nearrain=%d\nnearrainlag=%d\n", akvr_near_rain_mode(), akvr_near_rain_lag());   // NEARRAIN / NEARRAIN2
         fprintf(f, "farrain=%d\n", akvr_far_rain() ? 1 : 0);   // FARRAIN
+        fprintf(f, "hudeyefollow=%d\npausenoback=%d\n", akvr_xr_hud_eye_follow() ? 1 : 0, akvr_xr_pause_no_back() ? 1 : 0);   // HUDEYES / PAUSENOBACK
         fprintf(f, "pauseaspect=%.3f\n", akvr_xr_pause_aspect());
         fprintf(f, "automainmenu=%d\n", akvr_xr_auto_main_menu() ? 1 : 0);
         fprintf(f, "fullview=%d\n", akvr_xr_full_view() ? 1 : 0);
@@ -939,6 +940,8 @@ namespace
             else if (sscanf(line, "nearrain=%d", &iv) == 1) akvr_near_rain_mode_set(iv);   // NEARRAIN
             else if (sscanf(line, "nearrainlag=%d", &iv) == 1) akvr_near_rain_lag_set(iv);   // NEARRAIN2
             else if (sscanf(line, "farrain=%d", &iv) == 1) akvr_far_rain_set(iv != 0);   // FARRAIN
+            else if (sscanf(line, "hudeyefollow=%d", &iv) == 1) akvr_xr_hud_eye_follow_set(iv != 0);   // HUDEYES
+            else if (sscanf(line, "pausenoback=%d", &iv) == 1) akvr_xr_pause_no_back_set(iv != 0);   // PAUSENOBACK
             else if (sscanf(line, "pauseaspect=%f", &v) == 1) akvr_xr_pause_aspect_set(v);
             else if (sscanf(line, "automainmenu=%d", &iv) == 1) akvr_xr_auto_main_menu_set(iv != 0);
             else if (sscanf(line, "fullview=%d", &iv) == 1) akvr_xr_full_view_set(iv != 0);
@@ -2037,6 +2040,11 @@ namespace
                 ImGui::TextDisabled(lay ? (attach ? "   the HUD moves with your head"
                                                   : "   the HUD stays put in the room; F12 hangs it in front of you again")
                                         : "   needs the HUD on its own layer");
+                // HUDEYES 2026-10-01 (VR_HUD_GUIDE.md section 1): off = the old shift along the HUD's own right
+                bool eyeF = akvr_xr_hud_eye_follow();
+                if (!lay) ImGui::BeginDisabled();
+                if (ImGui::Checkbox("HUD depth follows your eyes", &eyeF)) { akvr_xr_hud_eye_follow_set(eyeF); s_hudDirty = true; }
+                if (!lay) ImGui::EndDisabled();
                 if (lay && ImGui::TreeNode("HUD layer settings"))
                 {
                     // PANELTIDY 2026-09-28 (JJ: confusing for new users): placement (view space since HUDVIEW),
@@ -2293,6 +2301,8 @@ namespace
             bool pl = akvr_xr_pause_look();   // PAUSELOOK (JJ: the pause as in Sekiro)
             if (ImGui::Checkbox("pause: world stays around you, menu on top  (off: a floating window)", &pl))
             { akvr_xr_pause_look_set(pl); settings_save(); }
+            bool nb = akvr_xr_pause_no_back();   // PAUSENOBACK
+            if (ImGui::Checkbox("pause: leave out the menu's dark background", &nb)) { akvr_xr_pause_no_back_set(nb); settings_save(); }
             float pd = akvr_xr_pause_dim() * 100.0f;   // PAUSEDIM
             if (SliderStep("pause: darken the world %", &pd, 0.0f, 90.0f, "%.0f"))
             { akvr_xr_pause_dim_set(pd / 100.0f); settings_save(); }
@@ -2710,7 +2720,7 @@ namespace
             float pvRatio = 0.0f, pvFov = 0.0f; int pvHits = 0;
             akvr_projvr_diag(pvRatio, pvHits, pvFov);
             fprintf(f, "\npatches:\n");
-            fprintf(f, "   build: FARRAIN " __DATE__ " " __TIME__ "\n");
+            fprintf(f, "   build: HUDEYES " __DATE__ " " __TIME__ "\n");
             fprintf(f, "   zoom vignette: %s\n", akvr_xr_vig_diag());
             fprintf(f, "   pause look: %s, %s now, main view through the player camera: %s, head writes into the paused camera: %ld, darken %.0f%%\n",
                     akvr_xr_pause_look() ? "ON" : "off", akvr_xr_pause_live() ? "LIVE" : "not live",
