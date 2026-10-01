@@ -366,7 +366,7 @@ namespace {
             const DWORD n = GetModuleFileNameW(nullptr, path, MAX_PATH);
             wchar_t* slash = n ? wcsrchr(path, L'\\') : nullptr;
             if (!slash) return;
-            _snwprintf_s(slash + 1, MAX_PATH - (slash + 1 - path), _TRUNCATE, L"akvr_shader_%016llx.bin", (unsigned long long)h);
+            { wcscpy_s(slash + 1, MAX_PATH - (slash + 1 - path), L"akvr_captures"); CreateDirectoryW(path, nullptr); wcscat_s(path, L"\\shaders"); CreateDirectoryW(path, nullptr); const size_t at = wcslen(path); _snwprintf_s(path + at, MAX_PATH - at, _TRUNCATE, L"\\%016llx.bin", (unsigned long long)h); }   // CAPTUREDIR: into akvr_captures, folder shaders
             HANDLE f = CreateFileW(path, GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
             if (f == INVALID_HANDLE_VALUE) return;
             DWORD w = 0;
@@ -571,7 +571,8 @@ namespace {
     // turned back. "Hang in the room" (1) stays as an experiment.
     // NEARRAIN3 — JJ: originally the block followed the head's POSITION only; mode 1 added rotation. Mode 3 takes the
     // head's position offset back off (no rotation) and is the default.
-    volatile LONG g_nearMode = 3;
+    // FARRAIN 2026-10-01: the real cause is in the rain simulation (step 1i, g_farOn); the draw-side modes are off by default.
+    volatile LONG g_nearMode = 0;
     volatile LONG g_nearLag = 0;   // NEARRAIN2: Presents back for the camera pair (0 = the draw's own view-projection)
     volatile LONG g_nearCount = 2048;
     volatile LONG g_nearBinds = 0, g_nearNoAxes = 0;
@@ -677,7 +678,7 @@ namespace {
                 wchar_t* slash = n ? wcsrchr(path, L'\\') : nullptr;
                 if (slash)
                 {
-                    _snwprintf_s(slash + 1, MAX_PATH - (slash + 1 - path), _TRUNCATE, L"akvr_shader_%016llx.bin", (unsigned long long)h);
+                    { wcscpy_s(slash + 1, MAX_PATH - (slash + 1 - path), L"akvr_captures"); CreateDirectoryW(path, nullptr); wcscat_s(path, L"\\shaders"); CreateDirectoryW(path, nullptr); const size_t at = wcslen(path); _snwprintf_s(path + at, MAX_PATH - at, _TRUNCATE, L"\\%016llx.bin", (unsigned long long)h); }   // CAPTUREDIR: into akvr_captures, folder shaders
                     HANDLE f = CreateFileW(path, GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
                     if (f != INVALID_HANDLE_VALUE) { DWORD w = 0; WriteFile(f, g_csCode[i].p, (DWORD)g_csCode[i].n, &w, nullptr); CloseHandle(f); }
                 }
@@ -823,10 +824,11 @@ namespace {
     SRWLOCK g_csLock = SRWLOCK_INIT;
     volatile bool g_hideAllCs = false;
     void* g_ctxCs[32] = {};   // compute shader bound, by g_ctxSh index
-    bool cs_skip(ID3D11DeviceContext* c)
+    bool cs_skip(ID3D11DeviceContext* c, uint64_t* hashOut = nullptr)
     {
         CtxSh* s = ctx_sh(c, true);
         const uint64_t h = s ? sh_get(g_ctxCs[s - g_ctxSh]) : 0;
+        if (hashOut) *hashOut = h;
         rw_on_dispatch(c, h);   // RAINWRITER
         const long f = g_frameNow();
         bool hide = false;
@@ -850,11 +852,61 @@ namespace {
         if (CtxSh* s = ctx_sh(c, true)) g_ctxCs[s - g_ctxSh] = cs;
         oCSSetG(c, cs, ci, n);
     }
+    // FARRAIN 2026-10-01: around the rain simulation's dispatch (the fix's CS a96594b16ceb399b, patch step 1i), CS
+    // cb13 holds the game camera's own forward (w = 1): the shader keeps its rain regions ahead of the GAME camera, so
+    // head turns no longer swing them. Unbound = 0 = the fix's shader unchanged.
+    constexpr uint64_t kRainCs = 0xa96594b16ceb399bull;
+    ID3D11Buffer* g_farCb = nullptr;
+    volatile LONG g_farOn = 1, g_farBinds = 0, g_farNoAxes = 0;
+    ID3D11Buffer* far_cb_pre(ID3D11DeviceContext* c)
+    {
+        if (!g_farCb)
+        {
+            ID3D11Device* dev = nullptr; c->GetDevice(&dev);
+            if (!dev) return nullptr;
+            D3D11_BUFFER_DESC bd{}; bd.ByteWidth = 16; bd.Usage = D3D11_USAGE_DEFAULT; bd.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
+            ID3D11Buffer* b = nullptr;
+            if (SUCCEEDED(dev->CreateBuffer(&bd, nullptr, &b)) && b)
+                if (InterlockedCompareExchangePointer((void**)&g_farCb, b, nullptr) != nullptr) b->Release();
+            dev->Release();
+            if (!g_farCb) return nullptr;
+        }
+        float d[12] = {};
+        float* fwd = d; float* right = d + 4; float* up = d + 8;
+        bool ok = false;
+        if (g_nearLag > 0) { float ff[3], fr[3], fu[3]; ok = akvr_camera_axes_ago((int)g_nearLag, fwd, right, up, ff, fr, fu); }
+        else ok = akvr_camera_base_axes(fwd, right, up);
+        if (!ok) InterlockedIncrement(&g_farNoAxes);
+        float row[4] = { fwd[0], fwd[1], fwd[2], ok ? 1.0f : 0.0f };
+        c->UpdateSubresource(g_farCb, 0, nullptr, row, 0, 0);
+        ID3D11Buffer* old = nullptr;
+        c->CSGetConstantBuffers(13, 1, &old);
+        c->CSSetConstantBuffers(13, 1, (ID3D11Buffer* const*)&g_farCb);
+        InterlockedIncrement(&g_farBinds);
+        return old;
+    }
+    void far_cb_post(ID3D11DeviceContext* c, ID3D11Buffer* old)
+    {
+        c->CSSetConstantBuffers(13, 1, &old);
+        if (old) old->Release();
+    }
     typedef void (__stdcall* DispatchFn)(ID3D11DeviceContext*, UINT, UINT, UINT);
     DispatchFn oDispatchG = nullptr;
-    void __stdcall hkDispatchG(ID3D11DeviceContext* c, UINT x, UINT y, UINT z) { if (cs_skip(c)) return; oDispatchG(c, x, y, z); }
+    void __stdcall hkDispatchG(ID3D11DeviceContext* c, UINT x, UINT y, UINT z)
+    {
+        uint64_t h = 0;
+        if (cs_skip(c, &h)) return;
+        if (h == kRainCs && g_farOn) { ID3D11Buffer* ob = far_cb_pre(c); oDispatchG(c, x, y, z); far_cb_post(c, ob); return; }   // FARRAIN
+        oDispatchG(c, x, y, z);
+    }
     DrawIndFn oDispatchIndG = nullptr;
-    void __stdcall hkDispatchIndG(ID3D11DeviceContext* c, ID3D11Buffer* b, UINT o) { if (cs_skip(c)) return; oDispatchIndG(c, b, o); }
+    void __stdcall hkDispatchIndG(ID3D11DeviceContext* c, ID3D11Buffer* b, UINT o)
+    {
+        uint64_t h = 0;
+        if (cs_skip(c, &h)) return;
+        if (h == kRainCs && g_farOn) { ID3D11Buffer* ob = far_cb_pre(c); oDispatchIndG(c, b, o); far_cb_post(c, ob); return; }   // FARRAIN
+        oDispatchIndG(c, b, o);
+    }
     typedef HRESULT (__stdcall* CreateCSFn)(ID3D11Device*, const void*, SIZE_T, ID3D11ClassLinkage*, ID3D11ComputeShader**);
     CreateCSFn oCreateCS[3] = {};
     void* g_createCsTarget[3] = {};
@@ -2055,6 +2107,15 @@ void akvr_rainwriter_dump(FILE* f)
         }
     }
     ReleaseSRWLockShared(&g_rwLock);
+}
+bool akvr_far_rain() { return g_farOn != 0; }                            // FARRAIN
+void akvr_far_rain_set(bool on) { InterlockedExchange(&g_farOn, on ? 1 : 0); }
+const char* akvr_far_rain_diag()
+{
+    static char d[160];
+    _snprintf_s(d, sizeof(d), _TRUNCATE, "rain follows the game camera: %s, bound to %ld rain simulation runs (%ld without camera axes)",
+                g_farOn ? "ON" : "off", (long)g_farBinds, (long)g_farNoAxes);
+    return d;
 }
 int  akvr_near_rain_lag() { return (int)g_nearLag; }                    // NEARRAIN2
 void akvr_near_rain_lag_set(int k) { InterlockedExchange(&g_nearLag, k < 0 ? 0 : (k > 12 ? 12 : k)); }

@@ -578,6 +578,74 @@ function Patch-NearRain {
     Say "  $rainVs : near rain patched (first streaks re-placed / hidden by AKVR, position $P, output $o)" 'Green'
 }
 
+# ---- 1i. FARRAIN: the rain simulation keeps its regions ahead of the GAME camera, not the head -----------------
+# JJ 2026-10-01: the near-rain fixes (1h) never held: a block of rain kept turning with the head. AKVR's RAINWRITER
+# capture found the shader that moves the rain: the fix's compute shader a96594b16ceb399b ("Rain haloing CS"), which
+# writes the streak buffer the rain draw reads. Its cb0[11] = the camera's forward x 512 (head turn included: the F2
+# showed it equal to the drawn camera's forward). It centres the main rain box 512 ahead of the camera, places each
+# drop relative to the camera, and (streaks 1024..2047, thread groups 4..7) pushes a DISTANT layer 2 x cb0[11] further
+# out along the view - that layer swings round the player with every head turn (JJ: "as if there's another camera
+# orbiting it"). Edit: AKVR binds cb13 around this dispatch with the game camera's own forward (w = 1); the shader then
+# uses forward x |cb0[11]| in all three places instead of cb0[11]. cb13 unbound = 0 = the fix's shader unchanged.
+$rainCs = 'a96594b16ceb399b'
+$farMarker = '// AKVR FARRAIN'
+function Patch-FarRain {
+    $txt = Join-Path $dm "$rainCs-cs.txt"
+    $bin = Join-Path $dm "$rainCs-cs.bin"
+    if (-not (Test-Path $txt)) { Say "  $rainCs : rain compute shader not in the fix - far rain NOT patched" 'Red'; return }
+    $s = [System.IO.File]::ReadAllText($txt)
+    if ($s.Contains($farMarker)) { Say "  $rainCs : far rain already patched"; return }
+    if ($s -match '(?i)\bcb13\b') { Say "  $rainCs : already uses cb13 - far rain NOT patched" 'Red'; return }
+    $nl = if ($s.Contains("`r`n")) { "`r`n" } else { "`n" }
+    $pats = @(
+        '(?m)^(?<i>[ \t]*)add (?<d>r\d+)\.xyz, cb0\[10\]\.xyzx, cb0\[11\]\.xyzx[ \t]*$',
+        '(?m)^(?<i>[ \t]*)add (?<d>r\d+)\.yzw, (?<a>r\d+)\.xxyz, cb0\[11\]\.xxyz[ \t]*$',
+        '(?m)^(?<i>[ \t]*)mad (?<d>r\d+)\.yzw, cb0\[11\]\.xxyz, l\(0\.000000, 2\.000000, 2\.000000, 2\.000000\), (?<a>r\d+)\.yyzw[ \t]*$'
+    )
+    $ms = @()
+    foreach ($p in $pats) {
+        $m = [regex]::Matches($s, $p)
+        if ($m.Count -ne 1) { Say "  $rainCs : a look-ahead line found $($m.Count) times - far rain NOT patched" 'Red'; return }
+        $ms += $m[0]
+    }
+    if (-not ($ms[0].Index -lt $ms[1].Index -and $ms[1].Index -lt $ms[2].Index)) { Say "  $rainCs : look-ahead lines out of order - far rain NOT patched" 'Red'; return }
+    $temps = [regex]::Match($s, '(?m)^dcl_temps (\d+)\s*$')
+    $cbDecl = [regex]::Match($s, '(?m)^dcl_constantbuffer [^\r\n]*$')
+    if (-not $temps.Success -or -not $cbDecl.Success) { Say "  $rainCs : declarations not found - far rain NOT patched" 'Red'; return }
+    $n = [int]$temps.Groups[1].Value; $t = "r$n"
+    $i0 = $ms[0].Groups['i'].Value
+    $calc = @(
+        "$farMarker 2026-10-01: the look-ahead (cb0[11] = camera forward x 512, head turn included) from the GAME camera",
+        "// when AKVR binds cb13 (w = 1): its forward in cb13[0].xyz, scaled to |cb0[11]|. Unbound = 0 = unchanged.",
+        "eq $t.w, cb13[0].w, l(1.000000)",
+        "dp3 $t.x, cb0[11].xyzx, cb0[11].xyzx",
+        "sqrt $t.x, $t.x",
+        "mul $t.xyz, cb13[0].xyzx, $t.xxxx",
+        "movc $t.xyz, $t.wwww, $t.xyzx, cb0[11].xyzx"
+    ) | ForEach-Object { $i0 + $_ }
+    $rep = @(
+        "$($ms[0].Groups['i'].Value)add $($ms[0].Groups['d'].Value).xyz, cb0[10].xyzx, $t.xyzx",
+        "$($ms[1].Groups['i'].Value)add $($ms[1].Groups['d'].Value).yzw, $($ms[1].Groups['a'].Value).xxyz, $t.xxyz",
+        "$($ms[2].Groups['i'].Value)mad $($ms[2].Groups['d'].Value).yzw, $t.xxyz, l(0.000000, 2.000000, 2.000000, 2.000000), $($ms[2].Groups['a'].Value).yyzw"
+    )
+    # From the end backwards so the indices stay valid; the calculation goes in front of the first use.
+    for ($k = 2; $k -ge 0; $k--) {
+        $m = $ms[$k]
+        $txtNew = $rep[$k]
+        if ($k -eq 0) { $txtNew = ($calc -join $nl) + $nl + $txtNew }
+        $s = $s.Substring(0, $m.Index) + $txtNew + $s.Substring($m.Index + $m.Length)
+    }
+    $temps = [regex]::Match($s, '(?m)^dcl_temps (\d+)\s*$')
+    $s = $s.Substring(0, $temps.Index) + "dcl_temps $($n + 1)" + $s.Substring($temps.Index + $temps.Length)
+    $cbDecl = [regex]::Match($s, '(?m)^dcl_constantbuffer [^\r\n]*$')
+    $s = $s.Substring(0, $cbDecl.Index + $cbDecl.Length) + $nl + 'dcl_constantbuffer CB13[1], immediateIndexed' + $s.Substring($cbDecl.Index + $cbDecl.Length)
+    Backup-Once $txt $bakDm
+    Backup-Once $bin $bakDm
+    [System.IO.File]::WriteAllText($txt, $s, $utf8)
+    if (Test-Path $bin) { Remove-Item $bin }
+    Say "  $rainCs : far rain patched (look-ahead from the game camera via cb13, temp $t)" 'Green'
+}
+
 # ---- 2. d3dxdm.ini --------------------------------------------------------------------------------
 $stereoKeys = [ordered]@{
     'dm_hud_detection'       = '1'
@@ -671,6 +739,9 @@ switch ($Mode) {
         $rp = Join-Path $dm "$rainVs-vs.txt"
         $rs = if (-not (Test-Path $rp)) { 'missing' } elseif ((Get-Content $rp -Raw).Contains($rainMarker2)) { 'near rain patched' } elseif ((Get-Content $rp -Raw).Contains($rainMarker)) { 'near rain patched (older v1)' } else { 'original' }
         Say ("  {0} : {1}" -f $rainVs, $rs)
+        $fp = Join-Path $dm "$rainCs-cs.txt"
+        $fs = if (-not (Test-Path $fp)) { 'missing' } elseif ((Get-Content $fp -Raw).Contains($farMarker)) { 'far rain patched' } else { 'original' }
+        Say ("  {0} : {1}" -f $rainCs, $fs)
     }
     'apply' {
         Say 'AKVR fix patches' 'Cyan'
@@ -681,6 +752,7 @@ switch ($Mode) {
         foreach ($h in $hudVs) { Patch-DepthAll $h }
         foreach ($h in $hudVs) { Patch-PartTag $h }
         Patch-NearRain
+        Patch-FarRain
         Patch-DmIni
         if ($script:failed -gt 0) { Say "$($script:failed) edit(s) could not be applied - see the red lines above." 'Yellow'; exit 2 }
         Say 'Done. Originals are in akvr_fix_backup\.' 'Cyan'

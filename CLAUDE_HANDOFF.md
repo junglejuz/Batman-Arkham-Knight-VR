@@ -192,6 +192,16 @@ set in JJ's ini with `nearrainlag=1`): the shader subtracts the head's camera po
 Present in the camera ring) from the first 2048 streaks, no rotation. If lean still drags the block, try frames back
 0/2/3; if it swims only while moving the stick, that is the game's own look. RAINWRITER stays in the build (an F2 in
 the rain still records the buffer writer, if a deeper fix is needed).
+**FARRAIN (2026-10-01 evening, deployed + fix step 1i applied, untested):** JJ on NEARRAIN3: still turns with the
+head. His F2 (RAINWRITER) named the writer: the fix's CS a96594b16ceb399b, cb0[11] = camera forward x 512 incl. the head.
+It pushes streaks 1024..2047 (a distant layer) 2 x cb0[11] further along the view = the swinging block. Step 1i swaps
+cb0[11] for the game camera's forward x |cb0[11]| (cb13 from the mod around that dispatch) in all three uses. Panel
+"rain stays in the world when you turn your head" (`farrain`, default 1); the draw-side modes are off (`nearrain=0`).
+If the far layer still swims only during STICK turns, that is the 1-frame base-rotator lead (try "frames back").
+**CAPTUREDIR:** F2 now writes akvr_captures\<date_time>\ (status.txt, *.csv, frame/katanga/hudlayer bmp, radar\);
+shader dumps go to akvr_captures\shaders\; traces' working copies to akvr_captures\. 382 old capture items (583 MB,
+incl. the FrameAnalysis folder) moved to akvr_captures\old\. JJ: keep the game folder clean.
+**PARTSHUT:** the HUD section and "move / resize single HUD parts" no longer open themselves (JJ, while on the rain).
 HUNTRAIN d3dx.ini lines (hunting=2 etc.) are still on JJ's game: restore `diagnostics/before-HUNTRAIN-20261001/d3dx.ini`
 once the rain is settled; the finder-mark dumps (5d78...-ps) were deleted.
 

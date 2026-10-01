@@ -821,6 +821,7 @@ namespace
         fprintf(f, "loadup=%.1f\n", akvr_xr_load_up());   // LOADUP
         fprintf(f, "pauselook=%d\npausedim=%.2f\n", akvr_xr_pause_look() ? 1 : 0, akvr_xr_pause_dim());   // PAUSELOOK / PAUSEDIM
         fprintf(f, "nearrain=%d\nnearrainlag=%d\n", akvr_near_rain_mode(), akvr_near_rain_lag());   // NEARRAIN / NEARRAIN2
+        fprintf(f, "farrain=%d\n", akvr_far_rain() ? 1 : 0);   // FARRAIN
         fprintf(f, "pauseaspect=%.3f\n", akvr_xr_pause_aspect());
         fprintf(f, "automainmenu=%d\n", akvr_xr_auto_main_menu() ? 1 : 0);
         fprintf(f, "fullview=%d\n", akvr_xr_full_view() ? 1 : 0);
@@ -937,6 +938,7 @@ namespace
             else if (sscanf(line, "pausedim=%f", &v) == 1) akvr_xr_pause_dim_set(v);   // PAUSEDIM
             else if (sscanf(line, "nearrain=%d", &iv) == 1) akvr_near_rain_mode_set(iv);   // NEARRAIN
             else if (sscanf(line, "nearrainlag=%d", &iv) == 1) akvr_near_rain_lag_set(iv);   // NEARRAIN2
+            else if (sscanf(line, "farrain=%d", &iv) == 1) akvr_far_rain_set(iv != 0);   // FARRAIN
             else if (sscanf(line, "pauseaspect=%f", &v) == 1) akvr_xr_pause_aspect_set(v);
             else if (sscanf(line, "automainmenu=%d", &iv) == 1) akvr_xr_auto_main_menu_set(iv != 0);
             else if (sscanf(line, "fullview=%d", &iv) == 1) akvr_xr_full_view_set(iv != 0);
@@ -1439,22 +1441,31 @@ namespace
     // two are independent now that the UI lives in its own quad layer.
     // F2 and the panel's "save a recording" button (JJ: no more leaving VR to reach the
     // virtual keyboard): the logs, the traces and the pictures, all timestamped.
+    // CAPTUREDIR 2026-10-01 — JJ: "the game folder is filling up with many many files, this is bad file management
+    // practice". Everything a capture writes now goes into akvr_captures\<date_time>\ (one folder per F2), and the
+    // working copies of the traces into akvr_captures\. The game folder keeps only akvr_settings.ini and
+    // akvr_startup_log.txt.
+    std::wstring g_capDir;   // relative to the game folder, with a trailing backslash; the latest F2's folder
     void capture_all()
     {
         g_grabWanted = true;
         std::wstring base = settings_path();
         size_t s = base.find_last_of(L"\\/");
         if (s != std::wstring::npos) base = base.substr(0, s + 1);
-        g_traceRows = akvr_camera_trace_dump((base + L"akvr_camera_trace.csv").c_str());
-        g_modeRows  = mode_trace_dump((base + L"akvr_mode_trace.csv").c_str());
+        const std::wstring root = base + L"akvr_captures\\";
+        CreateDirectoryW(root.c_str(), nullptr);
+        g_traceRows = akvr_camera_trace_dump((root + L"akvr_camera_trace.csv").c_str());
+        g_modeRows  = mode_trace_dump((root + L"akvr_mode_trace.csv").c_str());
         // Preserve each test, including the settings/mode at the time of F1.
         write_startup_diag(true);
         SYSTEMTIME stamp{}; GetLocalTime(&stamp);
         wchar_t tag[80]{};
-        swprintf_s(tag, L"akvr_%04u%02u%02u_%02u%02u%02u_%03u_",
+        swprintf_s(tag, L"%04u%02u%02u_%02u%02u%02u_%03u",
             stamp.wYear, stamp.wMonth, stamp.wDay, stamp.wHour,
             stamp.wMinute, stamp.wSecond, stamp.wMilliseconds);
-        const std::wstring capture = base + tag;
+        g_capDir = std::wstring(L"akvr_captures\\") + tag + L"\\";
+        CreateDirectoryW((base + g_capDir).c_str(), nullptr);
+        const std::wstring capture = base + g_capDir;
         akvr_present_probe_dump((capture + L"present.csv").c_str());
         akvr_present_probe_dump_frames((capture + L"frames.csv").c_str());
         akvr_hud_dump_viewports((capture + L"viewports.csv").c_str());
@@ -1463,8 +1474,8 @@ namespace
         akvr_hudsplit_layer_shot((capture + L"hudlayer.bmp").c_str());   // LAYERSHOT
         akvr_hudsplit_marks_dump((capture + L"hudmarks.csv").c_str());   // MARKREC
         akvr_hud_layers_dump((capture + L"hudlayers.txt").c_str());   // HUDLAYERS phase 1
-        CopyFileW((base + L"akvr_camera_trace.csv").c_str(), (capture + L"camera.csv").c_str(), TRUE);
-        CopyFileW((base + L"akvr_mode_trace.csv").c_str(), (capture + L"mode.csv").c_str(), TRUE);
+        CopyFileW((root + L"akvr_camera_trace.csv").c_str(), (capture + L"camera.csv").c_str(), TRUE);
+        CopyFileW((root + L"akvr_mode_trace.csv").c_str(), (capture + L"mode.csv").c_str(), TRUE);
         CopyFileW((base + L"akvr_startup_log.txt").c_str(), (capture + L"status.txt").c_str(), TRUE);
     }
 
@@ -1993,7 +2004,8 @@ namespace
 
         // ---- HUD ----------------------------------------------------------------
         ImGui::SetNextItemOpen(false, ImGuiCond_Once);   // closed at each launch
-        if (part_hint_any()) ImGui::SetNextItemOpen(true, ImGuiCond_Once);   // PARTOPEN
+        // PARTSHUT 2026-10-01 — JJ: "the move resize single HUD parts drawer should be closed by default now while we
+        // work on the rain": the HUD section and the parts list no longer open themselves (PARTOPEN off at these two).
         if (ImGui::CollapsingHeader("HUD"))
         {
             static bool s_hudDirty = false;
@@ -2057,7 +2069,7 @@ namespace
             if (ImGui::Checkbox("menus and map use the full height", &menuFill))
             { akvr_hud_menu_fill_set(menuFill); settings_save(); }
             // HUDLAYERS (earlyres.cpp): move / resize / hide single parts inside the HUD.
-            if (part_hint_any()) ImGui::SetNextItemOpen(true, ImGuiCond_Once);   // PARTOPEN
+            ImGui::SetNextItemOpen(false, ImGuiCond_Once);   // PARTSHUT: closed until opened
             if (ImGui::TreeNode("move / resize single HUD parts  (radar, compass ...)"))
             {
                 if (ImGui::Button("find the HUD parts  (with the HUD on screen)")) akvr_hud_layers_discover();
@@ -2116,16 +2128,22 @@ namespace
             // every see-through draw of the frame, grouped by the shader that places it.
             ImGui::TextWrapped("In the rain: first tick the top box. If the layer stuck to your head disappears, it is "
                                "in one of the groups: untick the top box and hide one group at a time.");
-            // NEARRAIN (JJ: "Can't we hang them in space like the rest of them?")
+            // FARRAIN (JJ: the rain block turning with the head - fixed where the game moves the rain)
+            {
+                bool farOn = akvr_far_rain();
+                if (ImGui::Checkbox("rain stays in the world when you turn your head  (fix)", &farOn)) { akvr_far_rain_set(farOn); settings_save(); }
+                ImGui::TextDisabled("   %s", akvr_far_rain_diag());
+            }
+            // NEARRAIN (JJ: "Can't we hang them in space like the rest of them?") - earlier draw-side tests
             {
                 int nm = akvr_near_rain_mode();
-                ImGui::TextUnformatted("rain close to you:");
+                ImGui::TextUnformatted("older tests, streaks 0-2047:");
                 ImGui::SameLine();
-                bool ch = ImGui::RadioButton("follow the game camera", &nm, 3);   // NEARRAIN3: the default
+                bool ch = ImGui::RadioButton("as the game draws it", &nm, 0);   // FARRAIN: the default again
                 ImGui::SameLine();
                 ch |= ImGui::RadioButton("hidden", &nm, 2);
                 ImGui::SameLine();
-                ch |= ImGui::RadioButton("as the game draws it", &nm, 0);
+                ch |= ImGui::RadioButton("take head movement off", &nm, 3);
                 ImGui::SameLine();
                 ch |= ImGui::RadioButton("turn back (old test)", &nm, 1);
                 if (ch) { akvr_near_rain_mode_set(nm); settings_save(); }
@@ -2692,7 +2710,7 @@ namespace
             float pvRatio = 0.0f, pvFov = 0.0f; int pvHits = 0;
             akvr_projvr_diag(pvRatio, pvHits, pvFov);
             fprintf(f, "\npatches:\n");
-            fprintf(f, "   build: NEARRAIN3 " __DATE__ " " __TIME__ "\n");
+            fprintf(f, "   build: FARRAIN " __DATE__ " " __TIME__ "\n");
             fprintf(f, "   zoom vignette: %s\n", akvr_xr_vig_diag());
             fprintf(f, "   pause look: %s, %s now, main view through the player camera: %s, head writes into the paused camera: %ld, darken %.0f%%\n",
                     akvr_xr_pause_look() ? "ON" : "off", akvr_xr_pause_live() ? "LIVE" : "not live",
@@ -2701,6 +2719,7 @@ namespace
                     akvr_probe_diag(), akvr_probe_every_draw() ? 1 : 0, akvr_probe_all_cs() ? 1 : 0, akvr_probe_all_but_rain() ? 1 : 0,
                     akvr_probe_rain_parts());   // DRAWPROBE, RAINPARTS
             fprintf(f, "   %s\n", akvr_near_rain_diag());   // NEARRAIN
+            fprintf(f, "   %s\n", akvr_far_rain_diag());    // FARRAIN
             akvr_rainwriter_dump(f);   // RAINWRITER
             for (int i = 0; i < akvr_probe_cs_count(); ++i)   // DRAWPROBE4
             {
@@ -2993,13 +3012,14 @@ namespace
         std::wstring base = settings_path();
         size_t s = base.find_last_of(L"\\/");
         if (s == std::wstring::npos) return;
-        wchar_t dir[64]; swprintf_s(dir, L"akvr_radar_%02d", shot);
+        (void)shot;
+        const std::wstring dir = g_capDir + L"radar";   // CAPTUREDIR: inside this F2's folder
         CreateDirectoryW((base.substr(0, s + 1) + dir).c_str(), nullptr);
         FILE* tf = _wfopen((base.substr(0, s + 1) + dir + L"\\times.txt").c_str(), L"w");
         for (int i = 0; i < g_recCount; ++i)
         {
             const int slot = (g_recHead - g_recCount + i + kRecN) % kRecN;
-            wchar_t name[96]; swprintf_s(name, L"%s\\f%03d.bmp", dir, i);
+            wchar_t name[160]; swprintf_s(name, L"%s\\f%03d.bmp", dir.c_str(), i);
             grab_texture(g_rec[slot], name, 16384);
             if (tf) fprintf(tf, "%d %.3f\n", i, g_recT[slot]);
         }
@@ -3172,7 +3192,12 @@ namespace
             ULONGLONG gnow = GetTickCount64();
             if (!grabFirst) grabFirst = gnow;
             if (!autoGrabbed && gnow - grabFirst > 6000)
-            { autoGrabbed = true; grab_backbuffer(swapChain, L"akvr_frame_early.bmp"); }
+            {
+                autoGrabbed = true;   // CAPTUREDIR
+                std::wstring p = settings_path();
+                if (!p.empty()) CreateDirectoryW((p.substr(0, p.find_last_of(L"\\/") + 1) + L"akvr_captures").c_str(), nullptr);
+                grab_backbuffer(swapChain, L"akvr_captures\\frame_early.bmp");
+            }
             if (g_grabWanted)
             {
                 // NUMBERED, not overwritten. Comparing two head positions needs two
@@ -3182,8 +3207,8 @@ namespace
                 g_grabWanted = false;
                 static int shot = 0;
                 ++shot;
-                wchar_t name[64];
-                swprintf_s(name, L"akvr_frame_%02d.bmp", shot);
+                wchar_t name[160];
+                swprintf_s(name, L"%sframe.bmp", g_capDir.c_str());   // CAPTUREDIR: inside this F2's folder
                 grab_backbuffer(swapChain, name);
                 // ...and geo-11's shared surface beside it. The swapchain holds only the
                 // over/under preview, whose eyes are already squashed 2:1 — useless for
@@ -3191,7 +3216,7 @@ namespace
                 // full-height eye, so it shows the true shape.
                 if (ID3D11Texture2D* kt = akvr_xr_katanga_texture())
                 {
-                    swprintf_s(name, L"akvr_katanga_%02d.bmp", shot);
+                    swprintf_s(name, L"%skatanga.bmp", g_capDir.c_str());
                     grab_texture(kt, name);
                     // The full-resolution copy (~45 MB, added 2026-09-26 for the edge blur) is
                     // gone: JJ 2026-09-28, "that capture takes a long time".

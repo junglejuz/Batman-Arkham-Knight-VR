@@ -390,6 +390,33 @@ Untested in the headset.
 
 ---
 
+## 1i. ShaderFixesDM: the rain simulation keeps its regions ahead of the GAME camera (AKVR, FARRAIN, 2026-10-01)
+
+**File:** `ShaderFixesDM\a96594b16ceb399b-cs.txt` (the fix's "Rain haloing CS" - the compute shader that moves the rain
+and writes the streak buffer the rain draw reads; the `-cs.bin` is deleted).
+
+**Why:** the 1h edits (re-placing streaks in the draw) never held. AKVR's RAINWRITER capture (F2 2026-10-01 17:03) named
+this shader as the writer and recorded its cb0: [10] = camera position, [11] = camera forward x 512 WITH the head turn
+(matched the drawn camera's forward). The shader centres the main rain box at [10] + [11], places drops relative to
+the camera with [11], and pushes a distant layer (streaks 1024..2047, thread groups 4..7) a further 2 x [11] along the
+view - in VR that layer swings round the player with every head turn ("as if there's another camera orbiting it"),
+which is what JJ saw (the cut test lost it between 2048 and 1024).
+
+**Edit:** `dcl_constantbuffer CB13[1], immediateIndexed` after the first `dcl_constantbuffer`; `dcl_temps 32` -> `33`;
+in front of `add r10.xyz, cb0[10].xyzx, cb0[11].xyzx`, 7 lines behind `// AKVR FARRAIN`: with cb13[0].w = 1,
+r32.xyz = cb13[0].xyz (the game camera's own forward, from AKVR) x |cb0[11]|, else cb0[11]; that line, `add r4.yzw,
+r0.xxyz, cb0[11].xxyz` and `mad r10.yzw, cb0[11].xxyz, l(0, 2, 2, 2), r4.yyzw` then use r32 instead of cb0[11]. AKVR
+binds CS cb13 only around this dispatch (hudsplit.cpp `far_cb_pre/post`, setting `farrain`, panel "rain stays in the
+world when you turn your head"). **Unbound, cb13 reads 0 = the fix's shader, unchanged.**
+
+**Detect:** `// AKVR FARRAIN`. **Reference:** `Patch-FarRain` (step 1i) in `tools/AKVR-fix-patches.ps1`.
+**Driver test:** the original and the edited text assembled (cmd_Decompiler 0.6.90 `-a`) and loaded OK as compute
+shaders (vstest.exe now loads `-cs` files with CreateComputeShader). **Applied** 2026-10-01 to JJ's game with the
+real script (text identical to the tested copy, sha256 296884F0...). Untested in the headset. The 1h draw-side modes are
+off by default now (`nearrain=0`); the 1h edit stays (inert at mode 0).
+
+---
+
 ## 2. d3dxdm.ini
 
 | Key / section | Baseline | AKVR value | Status and reason |

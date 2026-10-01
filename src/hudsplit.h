@@ -44,6 +44,9 @@ void        akvr_probe_all_but_rain_set(bool on);
 // DRAWPROBE4: every game draw off except the world rain (and the HUD); compute shaders listed and hideable;
 // tag 64 = an indirect draw (the GPU supplies the count)
 void        akvr_rainwriter_dump(struct _iobuf* f); // RAINWRITER: who writes the rain streak buffer (F2 status)
+bool        akvr_far_rain();                       // FARRAIN: the rain simulation keeps its regions ahead of the game camera
+void        akvr_far_rain_set(bool on);
+const char* akvr_far_rain_diag();
 int         akvr_near_rain_lag();                  // NEARRAIN2: camera frames back (0 = the draw's own view)
 void        akvr_near_rain_lag_set(int k);
 int         akvr_near_rain_mode();                 // NEARRAIN: 0 as the game draws it, 1 hang in the room, 2 hidden
