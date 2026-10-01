@@ -2218,8 +2218,11 @@ void akvr_xr_frame_submit(IDXGISwapChain *swapChain, float gameFovDeg,
     // before it pops back out to the full 360". It ended on the first camera tick, but gameplay was only shown again
     // once the camera was clearly running (or the slower verdict): a few frames fell back to the floating window.
     // The pause now holds until the camera is clearly running; from there CAMRUN shows gameplay (below).
+    // UNPAUSE2 (JJ: "the pause menu has gone back to being within a smaller window. That's a regression"): camTicking
+    // still counted the LAST ticks before the pause (newest < 150 ms), so the pause ended on its next frame and could
+    // not restart. It ends only on a NEW tick (s_pStill == 0) with the camera clearly running.
     if (g_pauseLive) {
-      if (!fits || camTicking) { g_pauseLive = false; mode_log("pause look off"); hud_pause_anchor(false); s_lastGame = 0; }
+      if (!fits || (s_pStill == 0 && camTicking)) { g_pauseLive = false; mode_log("pause look off"); hud_pause_anchor(false); s_lastGame = 0; }
     } else if (fits && camStopped && s_lastGame && nowMs - s_lastGame < 1000) {
       g_pauseLive = true; mode_log("pause look on"); hud_pause_anchor(true);
     }

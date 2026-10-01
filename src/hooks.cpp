@@ -1840,7 +1840,7 @@ namespace
 
         ImGui::TextColored(ImVec4(1.0f, 0.85f, 0.2f, 1.0f), "Arkham Knight VR");
         ImGui::SameLine();
-        ImGui::TextDisabled("   build: CAMRUN  " __DATE__ " " __TIME__);   // the same tag as the status file
+        ImGui::TextDisabled("   build: RECENTERTIME  " __DATE__ " " __TIME__);   // the same tag as the status file
 
         // ---- one status line ----------------------------------------------------
         // TIDY4 2026-09-27 (JJ: "cleaned up and reformatted to be a bit more consistent with the
@@ -2739,7 +2739,7 @@ namespace
             float pvRatio = 0.0f, pvFov = 0.0f; int pvHits = 0;
             akvr_projvr_diag(pvRatio, pvHits, pvFov);
             fprintf(f, "\npatches:\n");
-            fprintf(f, "   build: CAMRUN " __DATE__ " " __TIME__ "\n");
+            fprintf(f, "   build: RECENTERTIME " __DATE__ " " __TIME__ "\n");
             fprintf(f, "   zoom vignette: %s\n", akvr_xr_vig_diag());
             fprintf(f, "   pause look: %s, %s now, main view through the player camera: %s, head writes into the paused camera: %ld, darken %.0f%%\n",
                     akvr_xr_pause_look() ? "ON" : "off", akvr_xr_pause_live() ? "LIVE" : "not live",
@@ -3258,7 +3258,10 @@ namespace
             // state, then the camera and mode traces, into akvr_captures\menustart_<time>\.
             {
                 static int s_ms = -1; static ULONGLONG s_msT0 = 0; static std::wstring s_msDir;
-                static const int kAt[10] = { 0, 100, 200, 350, 500, 750, 1000, 1500, 2000, 3000 };
+                // MENUFLICKER 2026-10-01 (JJ: "Batman flickers for the first ten to twenty seconds of being in the menu"):
+                // after the first 3 s, PAIRS of back-to-back frames (the +1 ms entry = the very next Present) up to 20 s.
+                static const int kAt[20] = { 0, 100, 200, 350, 500, 750, 1000, 1500, 2000, 3000,
+                                             5000, 5001, 8000, 8001, 12000, 12001, 16000, 16001, 20000, 20001 };
                 const unsigned long long t0 = akvr_xr_menu_start_tick();
                 if (t0 && s_ms < 0)
                 {
@@ -3271,7 +3274,7 @@ namespace
                     s_msDir = std::wstring(L"akvr_captures\\") + tag + L"\\";
                     CreateDirectoryW((base + s_msDir).c_str(), nullptr);
                 }
-                if (s_ms >= 0 && s_ms < 10 && gnow >= s_msT0 + (ULONGLONG)kAt[s_ms])
+                if (s_ms >= 0 && s_ms < 20 && gnow >= s_msT0 + (ULONGLONG)kAt[s_ms])
                 {
                     std::wstring p = settings_path();
                     const std::wstring base = p.empty() ? L"" : p.substr(0, p.find_last_of(L"\\/") + 1);
@@ -3284,7 +3287,7 @@ namespace
                         fclose(lf);
                     }
                     ++s_ms;
-                    if (s_ms == 10)
+                    if (s_ms == 20)
                     {
                         akvr_camera_trace_dump((base + s_msDir + L"camera.csv").c_str());
                         mode_trace_dump((base + s_msDir + L"mode.csv").c_str());
@@ -3637,13 +3640,19 @@ namespace
             // the floor and were reading true standing height as lean, pushing the camera
             // ~1 m up). Wait for position to have been valid for a sustained stretch
             // before taking the reference.
-            static bool s_posRecenter = false;
-            static int  s_posValidRun = 0;
+            // RECENTERTIME 2026-10-01 — JJ: entering the main menu showed "the view of Batman from the top at the bottom
+            // of the screen" until the camera "calibrates". MENUSTART capture: the camera was 118 units (lean_y 1.157 m,
+            // the head's height above the tracking origin) above the menu camera until 6.07 s, then dropped to 0: the
+            // reference was taken after 120 FRAMES, and the start-up / menu-load screens present so few frames that
+            // this took ~6 s, into the menu. Now: 1 s of steady tracking by the clock.
+            static bool      s_posRecenter = false;
+            static ULONGLONG s_posValidSince = 0;
             if (s_autoHead && !s_posRecenter)
             {
-                if (akvr_xr_head_pos_valid()) s_posValidRun++;
-                else                          s_posValidRun = 0;
-                if (s_posValidRun >= 120)     // ~1-1.3 s of steady tracking
+                const ULONGLONG tnow = GetTickCount64();
+                if (!akvr_xr_head_pos_valid()) s_posValidSince = 0;
+                else if (!s_posValidSince)     s_posValidSince = tnow;
+                if (s_posValidSince && tnow - s_posValidSince >= 1000)
                 {
                     s_posRecenter = true;
                     akvr_head_recenter();

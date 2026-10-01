@@ -250,6 +250,16 @@ cure it; his earlier F2 trace showed the hooked camera level from its first tick
 hook or by another camera) -> MENUSTART: when the 3D menu first comes up, hooks.cpp saves the katanga picture 10x over
 3 s plus display state (shots.txt) and the camera / mode traces into akvr_captures\menustart_<time>\. Read those next.
 (JJ's message about dialogue-choice backdrops / subtitles was about Sekiro, not AKVR - left for SKVR.)
+**RECENTERTIME + UNPAUSE2 + MENUFLICKER (2026-10-01 night, deployed, untested):**
+- The top-down Batman entering the main menu = the CAMERA HEIGHT, not a game shot: MENUSTART (menustart_20261001_182258)
+  showed delta_z 118 (lean_y 1.157 m = head height above the tracking origin) until 6.07 s, when the auto-recenter finally
+  fired - it waited for 120 FRAMES of valid position, and the start-up / menu-load screens present few frames. Now 1 s
+  by the clock (hooks.cpp). The pictures: Batman's head and shoulders from above at the bottom of each eye.
+- UNPAUSE2: the pause regressed to the window - CAMRUN's camTicking still counted the pre-pause ticks (newest < 150 ms)
+  and ended the pause on its next frame. It ends only on a NEW tick (s_pStill == 0) with the camera running.
+- HUDEYES eye distance measured: 63.6 mm (mode timeline "HUD eyes 63.6 mm").
+- MENUFLICKER: JJ "Batman flickers for the first ten to twenty seconds of being in the menu" - MENUSTART now also takes
+  back-to-back frame pairs at 5 / 8 / 12 / 16 / 20 s (shot10..19). Compare each pair's eyes next.
 HUNTRAIN d3dx.ini lines (hunting=2 etc.) are still on JJ's game: restore `diagnostics/before-HUNTRAIN-20261001/d3dx.ini`
 once the rain is settled; the finder-mark dumps (5d78...-ps) were deleted.
 
