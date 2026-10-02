@@ -396,7 +396,7 @@ namespace
     // MENUSIDE2: JJ - "when you move your head right the camera moves towards Batman in a weird motion" and "Batman's
     // camera needs to be fixed to how it was before": the slide rode the HEAD-turned right vector. Now the game camera's
     // own (base yaw, level) right, and 0 by default (the menu text moves instead: MENUTEXT, earlyres).
-    float g_menuSideUU = 0.0f;
+    float g_menuSideUU = -80.0f;   // MENUSIDE3: a small slide left again, now on the fixed direction
 
     // DECOUPLED PITCH — 2026-09-26 (vrframework guide 09 section 7). JJ: correct at
     // eye level, but with the camera lowered or raised high, looking left/right also

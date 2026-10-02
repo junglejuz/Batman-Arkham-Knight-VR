@@ -29,7 +29,8 @@
 #include "xr.h"   // RETSQUASH: akvr_xr_game_tan
 #include "camera.h"   // NEARRAIN: akvr_camera_base_axes
 bool akvr_hud_room_all();   // earlyres.cpp: ROOMALL (whole HUD in the room) - BANDOFF
-int  akvr_hud_target_points(float* xy, int max, int rtW, int rtH, float* off, float* xf);   // earlyres.cpp: TARGETDEPTH / TARGETSTOCK / TARGETSCALE
+int  akvr_hud_target_points(float* xy, int max, int rtW, int rtH, float* off, float* xf);   // earlyres.cpp: TARGETDEPTH / TARGETSTOCK / TARGETSCALE; off = view depth per point (TARGETDIST)
+const char* akvr_marker_dist_diag();   // earlyres.cpp: TARGETDIST
 bool akvr_hud_marks_ready();                                                              // earlyres.cpp: MARKFIRST
 #include <windows.h>
 #include <d3d11.h>
@@ -1729,7 +1730,8 @@ namespace {
             {
                 const int r = k < 2 ? k + 1 : k + 3;               // 1, 2, 5, 6, ... 10
                 float* q = rows + (r - 1) * 4;
-                q[0] = tp[k * 2]; q[1] = tp[k * 2 + 1]; q[2] = g_targetRadius; q[3] = 1.0f;
+                // TARGETDIST (fix step 1s): .w = the point's view depth in world units when known (> 1.5), else 1 = on
+                q[0] = tp[k * 2]; q[1] = tp[k * 2 + 1]; q[2] = g_targetRadius; q[3] = toff[k] > 1.5f ? toff[k] : 1.0f;
             }
             g_tgtOff[0] = g_tgtOff[1] = g_tgtOff[2] = g_tgtOff[3] = 0.0f;
             g_framePx = g_framePy = 0.0f;
@@ -2095,6 +2097,8 @@ const char* akvr_hudsplit_layer_diag()
         }
         const size_t len2 = strlen(d);
         _snprintf_s(d + len2, sizeof(d) - len2, _TRUNCATE, " | %s", akvr_rain_frame_diag());   // RAINSPLIT
+        const size_t len3 = strlen(d);
+        _snprintf_s(d + len3, sizeof(d) - len3, _TRUNCATE, " | %s", akvr_marker_dist_diag());   // TARGETDIST
     }
     return d;
 }

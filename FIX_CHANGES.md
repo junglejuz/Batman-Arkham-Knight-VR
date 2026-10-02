@@ -680,6 +680,43 @@ the tested copies). Untested in the headset. Rollback: `akvr/diagnostics/before-
 
 ---
 
+## 1s. ShaderFixesDM: an on-target piece takes its object's own distance, not what is drawn behind it (AKVR, TARGETDIST, 2026-10-02)
+
+**Files:** all 13 HUD `-vs.txt` (after 1r); `-vs.bin` deleted.
+
+**Why:** JJ: "the distance markers depth keeps changing if something kind of comes in front of it ... the Batmobile got
+close to it and ... the distance marker took on the depth of the Batmobile". The fix searches the scene depth behind the
+point. AKVR now finds the object's view depth itself: the game draws the marker where its object projects, so the rays
+from the last ~1.5 s of (moving) camera positions through the marker meet at the object (earlyres `dist_update`, least
+squares; accepted only with >= 15 units of sideways camera spread, rays missing by < 0.34 deg rms, and a predicted stereo
+error under 10% - simulated: within ~6% when accepted; a 20 cm lean or driving straight at it is rejected). Smoothed in
+1/depth; held while nothing new is accepted; 0 = unknown.
+
+**Edit (per file; `rD` = one new temp, `dcl_temps` +1):** 1p's `mov rV.xy, l(0,0,0,0)` gets `mov rD.y, l(0)`, and each of
+its 8 `movc rV.xy, rU.xxxx, cb13[R].xyxx, rV.xyxx` gets `movc rD.y, rU.x, cb13[R].w, rD.y` (the matched row's .w); after
+1r's `endif`: `mov rD.x, rU.z` (the on-target mask); in the depth block, just before the search result is added to the
+position (`add rP.x, rO.c, rP.x` / `add rP.x, rP.x, rO.c` + `endif`):
+```
+lt rD.z, l(1.500000), rD.y
+and rD.z, rD.z, rD.x
+if_nz rD.z
+  ld_indexable(buffer)(float,float,float,float) rD.zw, l(0, 0, 0, 0), t125.zwxy
+  div rD.w, rD.w, rD.y
+  add rD.w, -rD.w, l(1.000000)
+  mul rO.c, rD.z, rD.w
+endif
+```
+= separation * (1 - convergence / depth), geo-11's shift for the world at that depth (the fix's own search solves the
+same relation with depth from the depth buffer, D = z / 10). AKVR sends the depth in the point row's .w (> 1.5; 1 = on,
+unknown), only with the panel box "... at their object's own distance" on (`markerdist`, default 1).
+
+**Detect:** `// AKVR TARGETDIST`. **Reference:** `Patch-TargetDist` (step 1s). Practice copy: 13 patched, rerun 0.
+**Driver test:** 13/13 assembled and loaded OK (round-trip disassembly checked). **Applied** 2026-10-02 to JJ's game
+(identical to the tested copies). Untested in the headset; the convergence units (t125.y vs depth in world units) are an
+assumption - compare with the box off. Rollback: `akvr/diagnostics/before-TARGETDIST-20261002/`.
+
+---
+
 ## 2. d3dxdm.ini
 
 | Key / section | Baseline | AKVR value | Status and reason |
@@ -945,3 +982,4 @@ baseline versions). Needs JJ: where the 2026-09-26 update came from, or an in-ga
 | 2026-10-02 | VRLAUNCH (mod + installer) | VR via shortcut/flag/-akvr, Steam = 2D; BmSystemSettings.ini + GFX store swapped per mode (akvr_profiles); installer edits the VR copies only | 6 |
 | 2026-10-02 | TARGETFACE | 13 HUD vertex shaders: on-target pieces laid on the plane facing the eye about their point (CB13[3] = tan half-angles, on) | 1q |
 | 2026-10-02 | TARGETUP | 13 HUD vertex shaders: 1q block replaced, on-target pieces keep the world's up (CB13[11]) | 1r |
+| 2026-10-02 | TARGETDIST | 13 HUD vertex shaders: a known object distance (point row .w) replaces the depth search result | 1s |

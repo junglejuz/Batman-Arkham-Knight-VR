@@ -719,6 +719,68 @@ function Patch-TargetUp([string]$hash) {
     Say "  $hash : target up patched (position $p, point $v, temps $a / $b / $c)" 'Green'
 }
 
+# ---- 1s. TARGETDIST: an on-target piece takes its object's own distance, not what is drawn behind it ------------
+# JJ 2026-10-02: "the distance markers depth keeps changing if something kind of comes in front of it ... the Batmobile got
+# close to it and ... the distance marker took on the depth of the Batmobile". The fix searches the scene depth behind
+# the point. AKVR now finds the object's view depth itself (the marker's rays from the moving camera meet at the object;
+# earlyres TARGETDIST) and sends it in the point row's .w (> 1.5 = known; 1 = on, unknown). The matched row's .w is kept
+# (1p's loop), and inside the depth block, just before the result is added to the position, a known depth replaces the
+# search result with geo-11's own shift for that depth: separation * (1 - convergence / depth) (t125: x, y). One new temp.
+$distMarker = '// AKVR TARGETDIST'
+function Patch-TargetDist([string]$hash) {
+    $txt = Join-Path $dm "$hash-vs.txt"
+    $bin = Join-Path $dm "$hash-vs.bin"
+    if (-not (Test-Path $txt)) { return }
+    $s = [System.IO.File]::ReadAllText($txt)
+    if ($s.Contains($distMarker)) { Say "  $hash : target distance already patched"; return }
+    if (-not $s.Contains($upMarker)) { Say "  $hash : target up (1r) not applied - target distance NOT patched" 'Red'; return }
+    $nl = if ($s.Contains("`r`n")) { "`r`n" } else { "`n" }
+    $tm = [regex]::Matches($s, '(?m)^dcl_temps (?<n>\d+)[ \t]*$')
+    $init = [regex]::Matches($s, '(?m)^(?<i>[ \t]*)mov (?<v>r\d+)\.xy, l\(0,0,0,0\)[ \t]*$')
+    $up = [regex]::Match($s, '(?ms)^[ \t]*// AKVR TARGETUP 2026-10-02:.*?^[ \t]*and (?<a>r\d+)\.w, \k<a>\.w, (?<u>r\d+)\.z[ \t]*\r?\n.*?^[ \t]*div (?<p>r\d+)\.xy, \k<a>\.xyxx, cb13\[3\]\.xyxx[ \t]*\r?\n[ \t]*endif[ \t]*\r?\n')
+    if ($tm.Count -ne 1 -or -not $up.Success) { Say "  $hash : 1r lines not found - target distance NOT patched" 'Red'; return }
+    $u = $up.Groups['u'].Value; $p = $up.Groups['p'].Value
+    $rows = [regex]::Matches($s, '(?m)^(?<i>[ \t]*)movc (?<v>r\d+)\.xy, ' + $u + '\.xxxx, cb13\[(?<r>\d+)\]\.xyxx, \k<v>\.xyxx[ \t]*$')
+    $add = [regex]::Matches($s, '(?m)^(?<i>[ \t]*)add ' + $p + '\.x, (?:(?<o>r\d+)\.(?<c>[xyzw]), ' + $p + '\.x|' + $p + '\.x, (?<o2>r\d+)\.(?<c2>[xyzw]))[ \t]*\r?\n[ \t]*endif')
+    $v = if ($rows.Count -gt 0) { $rows[0].Groups['v'].Value } else { '' }
+    $vinit = @($init | Where-Object { $_.Groups['v'].Value -eq $v })
+    if ($rows.Count -ne 8 -or $add.Count -ne 1 -or $vinit.Count -ne 1) {
+        Say "  $hash : 1p rows ($($rows.Count)) / depth add ($($add.Count)) not as expected - target distance NOT patched" 'Red'; return
+    }
+    $n = [int]$tm[0].Groups['n'].Value
+    $d = "r$n"
+    $o = if ($add[0].Groups['o'].Success) { $add[0].Groups['o'].Value + '.' + $add[0].Groups['c'].Value } else { $add[0].Groups['o2'].Value + '.' + $add[0].Groups['c2'].Value }
+    # edits from the end of the text backwards, so earlier offsets stay valid
+    $ai = $add[0].Groups['i'].Value
+    $over = @(
+        "$distMarker 2026-10-02: a known object distance (the matched point's .w > 1.5, AKVR) replaces the search result",
+        "// with geo-11's own shift there: separation * (1 - convergence / distance)",
+        "lt $d.z, l(1.500000), $d.y",
+        "and $d.z, $d.z, $d.x",
+        "if_nz $d.z",
+        "  ld_indexable(buffer)(float,float,float,float) $d.zw, l(0, 0, 0, 0), t125.zwxy",
+        "  div $d.w, $d.w, $d.y",
+        "  add $d.w, -$d.w, l(1.000000)",
+        "  mul $o, $d.z, $d.w",
+        "endif"
+    ) | ForEach-Object { $ai + $_ }
+    $s = $s.Substring(0, $add[0].Index) + ($over -join $nl) + $nl + $s.Substring($add[0].Index)
+    $at = $up.Index + $up.Length
+    $s = $s.Substring(0, $at) + "${distMarker}: the on-target mask, kept for the depth block" + $nl + "mov $d.x, $u.z" + $nl + $s.Substring($at)
+    for ($k = $rows.Count - 1; $k -ge 0; $k--) {
+        $m = $rows[$k]; $at = $m.Index + $m.Length
+        $s = $s.Substring(0, $at) + $nl + $m.Groups['i'].Value + "movc $d.y, $u.x, cb13[$($m.Groups['r'].Value)].w, $d.y" + $s.Substring($at)
+    }
+    $m = $vinit[0]; $at = $m.Index + $m.Length
+    $s = $s.Substring(0, $at) + $nl + $m.Groups['i'].Value + "mov $d.y, l(0)" + $s.Substring($at)
+    $s = [regex]::Replace($s, '(?m)^dcl_temps \d+', "dcl_temps $($n + 1)")
+    Backup-Once $txt $bakDm
+    Backup-Once $bin $bakDm
+    [System.IO.File]::WriteAllText($txt, $s, $utf8)
+    if (Test-Path $bin) { Remove-Item $bin }
+    Say "  $hash : target distance patched (position $p, result $o, temp $d)" 'Green'
+}
+
 # ---- 1l. RAINSTRETCH: optional - the world rain streaks without the per-frame camera term (cb0[12]) ----------
 # JJ 2026-10-02: isolated rain in the pause "sort of jitters a bit" when he turns his head; "it kind of follows a
 # little bit". The rain VS (after 1h) stretches each streak's head by cb0[12] * 0.5, which looks like the camera's
@@ -1257,6 +1319,7 @@ switch ($Mode) {
         foreach ($h in $hudVs) { Patch-TargetMulti $h }
         foreach ($h in $hudVs) { Patch-TargetFace $h }
         foreach ($h in $hudVs) { Patch-TargetUp $h }
+        foreach ($h in $hudVs) { Patch-TargetDist $h }
         Patch-NearRain
         Patch-RainStretch
         Patch-RainLag

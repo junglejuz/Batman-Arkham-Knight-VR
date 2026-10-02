@@ -61,6 +61,8 @@ int         akvr_frame_world();                    // the world's camera, Presen
 void        akvr_frame_world_set(int k);
 bool        akvr_marker_head();                    // TARGETMOVE (fix step 1m): move the on-target markers by the head turn
 void        akvr_marker_head_set(bool on);
+bool        akvr_marker_dist();                    // TARGETDIST (earlyres.cpp, fix step 1s): markers at their object's distance
+void        akvr_marker_dist_set(bool on);
 bool        akvr_marker_face();                    // TARGETFACE (fix step 1q): the on-target markers face the eye
 void        akvr_marker_face_set(bool on);
 int         akvr_marker_up_lag();                  // TARGETUP2: 0 = the drawn frame's camera, k = k-1 Presents back

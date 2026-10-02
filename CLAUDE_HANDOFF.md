@@ -631,3 +631,16 @@ distance marker lost its fix at "a certain position" moving the head up and down
 fell back to a fixed point (0.000, 0.215), and the 199m marker (widget child .1.1) passing within 0.05 of it was dropped as
 a duplicate and took the reticle's spot and depth. Now: no point for a part with nothing moving; remembered anchors only
 if they moved in the last 2 min; duplicates merged within one part only. Rollback: `diagnostics/before-ANCHORLOST-20261002/`.
+**TARGETDIST + MENUSIDE3 (2026-10-02, build TARGETDIST + fix step 1s, deployed, untested):** JJ: ANCHORLOST "much
+better", but the distance marker "took on the depth of the Batmobile" passing in front of it (the fix searches the depth
+behind the point). earlyres `dist_update` triangulates each anchor node's object from the camera rays (camera position +
+live axes + game tan + layout map), sends the view depth in the point row's .w; fix step 1s replaces the search result with
+sep * (1 - conv / depth). Panel box "... at their object's own distance" (`markerdist`). F2 status: "marker distance: N
+units (baseline B, R rays)" (last point updated). MENUSIDE3: JJ - MENUTEXT left the menu "exactly how it was before";
+"just shift the camera over a little bit to the left without breaking anything" - menuside -80 again on the fixed (base
+camera) direction; the text slider removed (menutextleft 0). Start-up stutter (JJ: very stuttery on the first run after a
+reboot or other games, better on later runs): the game is on E:, a SATA HDD (ST8000VN004) with 33 GB free - cold UE3
+streaming from a spinning disk; later runs hit the Windows file cache. NVIDIA DXCache is 88 GB (not the limit). geo-11
+also rebuilds ShaderCacheDM after every fix-shader edit (one stuttery first run per update). Advised: Steam "Move install
+folder" to L: (P3 Plus NVMe, 95 GB free; game 63 GB), then repoint the two VR shortcuts. Rollback:
+`diagnostics/before-TARGETDIST-20261002/`.

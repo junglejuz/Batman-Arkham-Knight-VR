@@ -1043,7 +1043,7 @@ namespace {
     // So height follows width, and the vertical control is a POSITION instead.
     float  hud_eff_v() { return hud_eff(); }
     float  g_hudRaise = 0.0f;   // + = up, as a fraction of the frame height (gameplay HUD)
-    float  g_menuTextLeft = 0.10f;   // MENUTEXT: main-menu text slides left by this share of the frame width
+    float  g_menuTextLeft = 0.0f;    // MENUTEXT: main-menu text slides left by this share of the frame width
     void   menu3d_shift(int W, int H, int& dx, int& dy);
     int    hud_up_px(int H);
     // The ONE place the HUD rectangle is computed — for each movie's viewport and for
@@ -3996,6 +3996,142 @@ namespace {
     }
 }
 
+// TARGETDIST 2026-10-02 — JJ: "the distance markers depth keeps changing if something kind of comes in front of it ... the
+// Batmobile got close to it and ... the distance marker took on the depth of the Batmobile". The fix places a marker at
+// the depth of whatever is drawn behind it on screen. The marker's own object is where its rays meet: the game draws the
+// marker where the object projects, from a camera that moves (Batman, the car, the head), so the rays from the last
+// ~1.5 s of camera positions through the marker cross at the object. Least squares over those rays; the view depth goes
+// to the shaders (fix step 1s) as the point's distance, which they turn into the stereo shift geo-11 gives the world
+// there. No answer (too little sideways camera movement, or rays that do not meet: a moving target) = 0 = the fix's own
+// search, as before.
+namespace {
+    struct DistEst
+    {
+        uintptr_t node; DWORD last;
+        float c[64][3], d[64][3]; int n, head;
+        float inv; bool have;                 // smoothed 1 / view depth
+    };
+    DistEst g_dist[16] = {};
+    bool g_distOn = true;
+    char g_distDiag[200] = "";
+    DistEst* dist_slot(uintptr_t node, DWORD now)
+    {
+        DistEst* oldest = &g_dist[0];
+        for (int i = 0; i < 16; ++i)
+        {
+            if (g_dist[i].node == node) return &g_dist[i];
+            if (g_dist[i].last < oldest->last) oldest = &g_dist[i];
+        }
+        memset(oldest, 0, sizeof(*oldest));
+        oldest->node = node; oldest->last = now;
+        return oldest;
+    }
+    double det3(const double M[3][3])
+    {
+        return M[0][0] * (M[1][1] * M[2][2] - M[1][2] * M[2][1]) - M[0][1] * (M[1][0] * M[2][2] - M[1][2] * M[2][0])
+             + M[0][2] * (M[1][0] * M[2][1] - M[1][1] * M[2][0]);
+    }
+    bool solve3(const double A[3][3], const double b[3], double x[3])
+    {
+        const double det = det3(A);
+        if (fabs(det) < 1e-12) return false;
+        for (int k = 0; k < 3; ++k)
+        {
+            double M[3][3];
+            for (int i = 0; i < 3; ++i) for (int j = 0; j < 3; ++j) M[i][j] = (j == k) ? b[i] : A[i][j];
+            x[k] = det3(M) / det;
+        }
+        return true;
+    }
+    // gx, gy: the point in the game's own projection (clip units); returns the view depth (world units) or 0
+    float dist_update(uintptr_t node, float gx, float gy, DWORD now)
+    {
+        if (!g_distOn) return 0.0f;
+        float f[3], r[3], u[3], th = 0.0f, tv = 0.0f;
+        const CameraView cv = akvr_camera_read();
+        if (!cv.valid || !akvr_camera_live_axes(f, r, u)) return 0.0f;
+        akvr_xr_game_tan(th, tv);
+        if (th <= 0.0f || tv <= 0.0f) return 0.0f;
+        float d[3];
+        for (int i = 0; i < 3; ++i) d[i] = f[i] + gx * th * r[i] + gy * tv * u[i];
+        const float dl = sqrtf(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
+        if (dl < 1e-6f) return 0.0f;
+        for (int i = 0; i < 3; ++i) d[i] /= dl;
+        DistEst* e = dist_slot(node, now);
+        if (now - e->last > 500) { e->n = 0; e->head = 0; e->have = false; }   // not seen for a while: start again
+        e->last = now;
+        const int k = e->head; e->head = (e->head + 1) & 63; if (e->n < 64) ++e->n;
+        e->c[k][0] = cv.x; e->c[k][1] = cv.y; e->c[k][2] = cv.z;
+        for (int i = 0; i < 3; ++i) e->d[k][i] = d[i];
+        float out = e->have ? 1.0f / e->inv : 0.0f;
+        if (e->n < 8) return out;
+        // the sideways spread of the camera positions across the current ray: the triangulation's baseline
+        double mc[3] = {};
+        for (int q = 0; q < e->n; ++q) for (int i = 0; i < 3; ++i) mc[i] += e->c[q][i] / e->n;
+        double base2 = 0.0;
+        for (int q = 0; q < e->n; ++q)
+        {
+            double v[3] = { e->c[q][0] - mc[0], e->c[q][1] - mc[1], e->c[q][2] - mc[2] };
+            const double a = v[0] * d[0] + v[1] * d[1] + v[2] * d[2];
+            for (int i = 0; i < 3; ++i) v[i] -= a * d[i];
+            base2 += (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]) / e->n;
+        }
+        const float base = (float)sqrt(base2);
+        if (base >= 15.0f)                                     // ~15 cm of sideways movement
+        {
+            double A[3][3] = {}, b[3] = {};
+            for (int q = 0; q < e->n; ++q)
+                for (int i = 0; i < 3; ++i)
+                    for (int j = 0; j < 3; ++j)
+                    {
+                        const double m = (i == j ? 1.0 : 0.0) - (double)e->d[q][i] * e->d[q][j];
+                        A[i][j] += m; b[i] += m * e->c[q][j];
+                    }
+            double p[3];
+            if (solve3(A, b, p))
+            {
+                // the rays must really meet: the rms angle by which they miss the point
+                double miss2 = 0.0;
+                for (int q = 0; q < e->n; ++q)
+                {
+                    double v[3] = { p[0] - e->c[q][0], p[1] - e->c[q][1], p[2] - e->c[q][2] };
+                    const double L = sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
+                    if (L < 1e-3) { miss2 = 1.0; break; }
+                    const double a = (v[0] * e->d[q][0] + v[1] * e->d[q][1] + v[2] * e->d[q][2]) / L;
+                    miss2 += (1.0 - a * a) / e->n;
+                }
+                const double w = (p[0] - cv.x) * f[0] + (p[1] - cv.y) * f[1] + (p[2] - cv.z) * f[2];
+                // precise enough: the rays' miss over the baseline, in stereo terms (convergence ~2300 units), under 10%
+                const bool sharp = sqrt(miss2) * 2300.0 / (double)base < 0.10;
+                if (miss2 < 0.006 * 0.006 && sharp && w > 50.0 && w < 2.0e6)
+                {
+                    const float inv = (float)(1.0 / w);
+                    e->inv = e->have ? e->inv + 0.25f * (inv - e->inv) : inv;
+                    e->have = true;
+                    out = 1.0f / e->inv;
+                }
+                else if (miss2 >= 0.006 * 0.006)
+                {   // the target moved or changed: keep only the newest rays
+                    const int keep = 6;
+                    float c2[6][3], d2[6][3];
+                    for (int q = 0; q < keep; ++q)
+                    {
+                        const int src = (e->head - keep + q + 64) & 63;
+                        memcpy(c2[q], e->c[src], sizeof(c2[q])); memcpy(d2[q], e->d[src], sizeof(d2[q]));
+                    }
+                    memcpy(e->c, c2, sizeof(c2)); memcpy(e->d, d2, sizeof(d2));
+                    e->n = keep; e->head = keep; e->have = false; out = 0.0f;
+                }
+            }
+        }
+        _snprintf_s(g_distDiag, sizeof(g_distDiag), _TRUNCATE, "marker distance: %.0f units (baseline %.0f, %d rays)", out, base, e->n);
+        return out;
+    }
+}
+bool akvr_marker_dist() { return g_distOn; }
+void akvr_marker_dist_set(bool on) { g_distOn = on; }
+const char* akvr_marker_dist_diag() { return g_distDiag; }
+
 int akvr_hud_target_points(float* xy, int max, int rtW, int rtH, float* off, float* xf)
 {
     if (xf) xf[0] = xf[1] = xf[2] = xf[3] = 0.0f;
@@ -4057,8 +4193,8 @@ int akvr_hud_target_points(float* xy, int max, int rtW, int rtH, float* off, flo
     // TARGETANCHOR: single parts (reticle, distance widget) are collected apart and written LAST, so the shaders' "last
     // match wins" gives their pieces their own point over a nearby world-list marker's (mixed points = a marker's pieces
     // turned about two pivots by TARGETFACE). List points fill the room the single parts leave.
-    float sxy[16]; int ns = 0;
-    float lxy[16]; int nl = 0;
+    float sxy[16]; int ns = 0; uintptr_t snode[8] = {};
+    float lxy[16]; int nl = 0; uintptr_t lnode[8] = {};
     const DWORD now = GetTickCount();
     for (int w = 0; w < nWant; ++w)
     {
@@ -4080,7 +4216,7 @@ int akvr_hud_target_points(float* xy, int max, int rtW, int rtH, float* off, flo
                 if (!node_moved_recently(kids[c], m, now)) continue;
                 float cx = 0.0f, cy = 0.0f;
                 if (!point_of(kids[c], want[w], cx, cy) || fabsf(cx) > 1.1f || fabsf(cy) > 1.1f) continue;
-                lxy[nl * 2] = cx; lxy[nl * 2 + 1] = cy; ++nl;
+                lxy[nl * 2] = cx; lxy[nl * 2 + 1] = cy; lnode[nl] = kids[c]; ++nl;
             }
             continue;
         }
@@ -4095,14 +4231,23 @@ int akvr_hud_target_points(float* xy, int max, int rtW, int rtH, float* off, flo
             for (int j = partStart; j < ns && !dup; ++j)
                 dup = fabsf(sxy[j * 2] - cx) < 0.05f && fabsf(sxy[j * 2 + 1] - cy) < 0.05f;
             if (dup) continue;
-            sxy[ns * 2] = cx; sxy[ns * 2 + 1] = cy; ++ns;
+            sxy[ns * 2] = cx; sxy[ns * 2 + 1] = cy; snode[ns] = anchors[a]; ++ns;
         }
     }
     if (ns > max) ns = max;
     const int nList = nl < max - ns ? nl : max - ns;
-    for (int i = 0; i < nList; ++i) { xy[n * 2] = lxy[i * 2]; xy[n * 2 + 1] = lxy[i * 2 + 1]; ++n; }
-    for (int i = 0; i < ns; ++i) { xy[n * 2] = sxy[i * 2]; xy[n * 2 + 1] = sxy[i * 2 + 1]; ++n; }
-    if (off) for (int i = 0; i < n * 2; ++i) off[i] = 0.0f;
+    uintptr_t pnode[8] = {};
+    for (int i = 0; i < nList; ++i) { xy[n * 2] = lxy[i * 2]; xy[n * 2 + 1] = lxy[i * 2 + 1]; pnode[n] = lnode[i]; ++n; }
+    for (int i = 0; i < ns; ++i) { xy[n * 2] = sxy[i * 2]; xy[n * 2 + 1] = sxy[i * 2 + 1]; pnode[n] = snode[i]; ++n; }
+    // TARGETDIST: off[i] = point i's view depth in world units (0 = unknown). The point in the game's own projection =
+    // the drawn point through the layout map (xf).
+    if (off)
+        for (int i = 0; i < n; ++i)
+        {
+            float gx = xy[i * 2], gy = xy[i * 2 + 1];
+            if (xf && (xf[0] != 0.0f || xf[1] != 0.0f)) { gx += gx * xf[0] + xf[2]; gy += gy * xf[1] + xf[3]; }
+            off[i] = pnode[i] ? dist_update(pnode[i], gx, gy, now) : 0.0f;
+        }
     return n;
 }
 void  akvr_hud_layer_zoomhide_set(int i, bool on)

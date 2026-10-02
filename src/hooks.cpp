@@ -850,6 +850,7 @@ namespace
         fprintf(f, "markerhead=%d\n", akvr_marker_head() ? 1 : 0);   // TARGETMOVE / TARGETSCALE
         fprintf(f, "markerface=%d\n", akvr_marker_face() ? 1 : 0);   // TARGETFACE
         fprintf(f, "markeruplag=%d\n", akvr_marker_up_lag());   // TARGETUP2
+        fprintf(f, "markerdist=%d\n", akvr_marker_dist() ? 1 : 0);   // TARGETDIST
         fprintf(f, "framefix=%d\nframedelay=%d\nrainframefix=%d\n", akvr_frame_fix() ? 1 : 0, akvr_frame_world(), akvr_rain_frame_fix() ? 1 : 0);   // FRAMEPAIR(2) / RAINSPLIT
         if (g_menuCapture) fprintf(f, "menucapture=1\n");             // MENUBLACK: written only when on
         fprintf(f, "farrain=%d\n", akvr_far_rain() ? 1 : 0);   // FARRAIN
@@ -977,6 +978,7 @@ namespace
             else if (sscanf(line, "markerhead=%d", &iv) == 1) akvr_marker_head_set(iv != 0);   // TARGETMOVE
             else if (sscanf(line, "markerface=%d", &iv) == 1) akvr_marker_face_set(iv != 0);   // TARGETFACE
             else if (sscanf(line, "markeruplag=%d", &iv) == 1) akvr_marker_up_lag_set(iv);   // TARGETUP2
+            else if (sscanf(line, "markerdist=%d", &iv) == 1) akvr_marker_dist_set(iv != 0);   // TARGETDIST
             else if (sscanf(line, "markerlag=%d", &iv) == 1) akvr_marker_lag_set(iv);
             else if (sscanf(line, "markerhudlag=%d", &iv) == 1) akvr_marker_hud_lag_set(iv);   // TARGETMOVE2
             else if (sscanf(line, "menucapture=%d", &iv) == 1) g_menuCapture = iv != 0;   // MENUBLACK (no panel switch)
@@ -1888,7 +1890,7 @@ namespace
 
         ImGui::TextColored(ImVec4(1.0f, 0.85f, 0.2f, 1.0f), "Arkham Knight VR");
         ImGui::SameLine();
-        ImGui::TextDisabled("   build: ANCHORLOST  " __DATE__ " " __TIME__);   // the same tag as the status file
+        ImGui::TextDisabled("   build: TARGETDIST  " __DATE__ " " __TIME__);   // the same tag as the status file
 
         // ---- one status line ----------------------------------------------------
         // TIDY4 2026-09-27 (JJ: "cleaned up and reformatted to be a bit more consistent with the
@@ -2118,6 +2120,9 @@ namespace
                 int ul = akvr_marker_up_lag();
                 if (ImGui::SliderInt("   upright timing  (0 = the frame being drawn; try others if they still fight a head roll)", &ul, 0, 4))
                 { akvr_marker_up_lag_set(ul); s_hudDirty = true; }
+                // TARGETDIST 2026-10-02 (JJ: the distance marker took "the depth of the Batmobile" passing in front)
+                bool md = akvr_marker_dist();
+                if (ImGui::Checkbox("   ... at their object's own distance, not what passes behind them  (fix - compare on / off)", &md)) { akvr_marker_dist_set(md); s_hudDirty = true; }
                 if (!mh) ImGui::EndDisabled();
                 // FRAMEPAIR / FRAMEPAIR2 panel controls removed 2026-10-02: with OneFrameThreadLag=False the world, the rain
                 // and the markers share one frame (JJ: "perfectly stable"); settings framefix / framedelay still read.
@@ -2387,11 +2392,11 @@ namespace
             if (ImGui::IsItemDeactivatedAfterEdit()) settings_save();
             // MENUSIDE 2026-10-02 (JJ: move the main-menu camera left so Batman sits right of the menu items)
             float ms = akvr_head_menu_side();
-            if (SliderStep("main menu camera: left / right  (0 = the game's own)", &ms, -400.0f, 400.0f, "%.0f", ImGuiSliderFlags_AlwaysClamp))
+            // MENUSIDE3 2026-10-02 — JJ: MENUTEXT left the menu "exactly how it was before"; "can't we just shift the camera
+            // over a little bit to the left without breaking anything?" The slide now rides the game camera's own level
+            // right (MENUSIDE2), so head turns no longer swing it. The text slider is gone (no effect on that screen).
+            if (SliderStep("main menu camera: left / right  (minus = Batman further right, 0 = the game's own)", &ms, -400.0f, 400.0f, "%.0f", ImGuiSliderFlags_AlwaysClamp))
             { akvr_head_menu_side_set(ms); settings_save(); }
-            float mt = akvr_menu_text_left() * 100.0f;   // MENUTEXT (JJ: the menu text further left, Batman as he was)
-            if (SliderStep("main menu text: move left  (% of the view)", &mt, 0.0f, 40.0f, "%.0f", ImGuiSliderFlags_AlwaysClamp))
-            { akvr_menu_text_left_set(mt / 100.0f); settings_save(); }
             float pscr = akvr_xr_pause_zoom() * 100.0f;
             if (SliderStep("map size %", &pscr, 10.0f, 100.0f, "%.0f"))   // PAUSESIZE: the pause menu has its own size now
                 akvr_xr_pause_zoom_set(pscr / 100.0f);
@@ -2824,7 +2829,7 @@ namespace
             float pvRatio = 0.0f, pvFov = 0.0f; int pvHits = 0;
             akvr_projvr_diag(pvRatio, pvHits, pvFov);
             fprintf(f, "\npatches:\n");
-            fprintf(f, "   build: ANCHORLOST " __DATE__ " " __TIME__ "\n");
+            fprintf(f, "   build: TARGETDIST " __DATE__ " " __TIME__ "\n");
             fprintf(f, "   zoom vignette: %s\n", akvr_xr_vig_diag());
             fprintf(f, "   pause look: %s, %s now, main view through the player camera: %s, head writes into the paused camera: %ld, darken %.0f%%\n",
                     akvr_xr_pause_look() ? "ON" : "off", akvr_xr_pause_live() ? "LIVE" : "not live",

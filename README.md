@@ -107,6 +107,7 @@ the mod or the fix.
 | The installer stops with a red **STOPPED** message | The message says what's missing. Most often it's the wrong fix file (the 3D Vision one instead of geo-11). |
 | "could not copy the fix into the game folder" | Right-click `Install-AKVR.bat` and choose **Run as administrator**. |
 | "some HUD edits could not be applied" | The 3D fix has changed since this version of the mod. Check for a newer version of the mod. Your previous files are in the `vrmod_backup` folder. |
+| Stutters a lot on the first run after a restart | The game is reading from a slow drive. Moving it to an SSD (Steam: right-click the game, Properties, Installed Files, Move install folder) fixes it; run the installer again afterwards so the VR shortcut finds the new folder. |
 | The game never goes into the headset | Start it with the **Batman Arkham Knight (VR)** shortcut, not from Steam. Connect the headset before starting the game, and check step 4. If you played another VR game before this one, restart the PC first. |
 | The game is flat (no 3D) after updating geo-11 or the fix by hand | Run the installer again. |
 
@@ -182,6 +183,7 @@ pictures and a recording, for troubleshooting.
 | Attach UI to head movement | Off (normal): the HUD hangs still in the room, and you can look around it; **F12** hangs it in front of you again. On: the HUD moves with your head. |
 | Reticle and distance marker sit on their target | On (normal): the grapple reticle and the target distance stay locked to what they point at. Turn it off only to compare. |
 | ... and face you when you turn your head | On (normal): those markers keep facing you and keep their shape when they are off to the side of your view, instead of looking turned and squashed. Turn it off only to compare. |
+| ... at their object's own distance | On (normal): those markers stay at the depth of the object they point at, even when something passes behind them. Turn it off only to compare. |
 | Move / resize single HUD parts | Adjust the radar, compass and other parts one by one. With the HUD on screen, press **find the HUD parts**. Tick **hide** on a part to see which one it is, then open it to change its size and position. Each part also has **stays on its target** (keeps it at the depth it points at), **hang in the room** and **hide while zoomed**. **Reset** undoes a part. Your layout is remembered; the mod comes with the tested layout. |
 
 ### Zoom vignette
@@ -210,8 +212,7 @@ your head, then untick it to get the picture back.
 | Float as a screen now (Pause key) | Shows the game on a flat floating screen, for example for cutscenes. |
 | Floating screen size | How big that screen is. |
 | Main menu size | How big the main menu looks. |
-| Main menu text: move left | Slides the main menu's text to the left, so Batman stands clear of it. |
-| Main menu camera: left / right | Slides the main menu's camera sideways. 0 (normal) is the game's own framing. |
+| Main menu camera: left / right | Slides the main menu's camera sideways. Minus moves Batman further right, clear of the menu text; 0 is the game's own framing. |
 | Map size | How big the map looks. |
 | Pause menu size | How big the pause menu looks over the world, so you don't have to turn your head to read it. |
 | Pause: darken the world | How much the world around you darkens while the game is paused. |
