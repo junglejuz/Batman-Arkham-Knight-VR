@@ -5,7 +5,7 @@
 //
 // Arkham Knight's sound (Wwise) plays through XAudio2 2.7, which Wwise creates with CoCreateInstance. We keep that
 // IXAudio2 and, only before the main menu has been confirmed (start-up), a watcher thread pauses the audio engine
-// (IXAudio2::StopEngine) when no frame has come for 150 ms, and the next frame resumes it (StartEngine): the sound
+// (IXAudio2::StopEngine) when no frame has come for 50 ms (was 150: AUDIOSYNC2), and the next frame resumes it (StartEngine): the sound
 // carries on from where it stopped, in step with the picture. Resumed after 8 s whatever happens; never in gameplay.
 #include <windows.h>
 #include <objbase.h>
@@ -77,7 +77,7 @@ namespace {
     {
         for (;;)
         {
-            Sleep(15);
+            Sleep(5);
             if (!g_lockReady) continue;
             const ULONGLONG last = g_lastFrame;
             const ULONGLONG now = GetTickCount64();
@@ -86,7 +86,8 @@ namespace {
             {
                 if (now - g_stoppedAt > 8000 || !g_on) engine_start_locked();   // never hold longer than 8 s
             }
-            else if (g_on && g_xa && last && now - last > 150 && akvr_xr_menu_phase() == 0)
+            // AUDIOSYNC2: 50 ms (JJ: "the music starts briefly just before it pauses" - the 150 ms wait let it through)
+            else if (g_on && g_xa && last && now - last > 50 && akvr_xr_menu_phase() == 0)
                 engine_stop_locked();
             LeaveCriticalSection(&g_lock);
         }

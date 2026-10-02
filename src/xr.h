@@ -63,6 +63,8 @@ bool        akvr_xr_menu_no_back();                // MENUNOBACK: the live main 
 void        akvr_xr_menu_no_back_set(bool on);
 float       akvr_xr_menu_back_opacity();           // MENUBACK: the live main menu's dark backing, 0..1
 void        akvr_xr_menu_back_opacity_set(float v);
+float       akvr_xr_menu_back_feather();           // MENUFEATHER: soft edges of that backing, 0..1
+void        akvr_xr_menu_back_feather_set(float v);
 float       akvr_xr_pause_dim();                   // PAUSEDIM: how much darker the paused world is (0..0.9)
 void        akvr_xr_pause_dim_set(float v);
 bool        akvr_xr_screen_track();                // SCREENTRACK: head tracking in the floating screen

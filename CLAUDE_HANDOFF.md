@@ -672,3 +672,10 @@ AUDIOSYNC (src/audiosync.cpp): CoCreateInstance hooked in akvr_early_init (DllMa
 while menu phase is 0 (start-up), the next Present StartEngine (11); 8 s cap; resume on shutdown. Key `audiosync`
 (default 1), panel box + its diag ("game audio engine found / not seen", holds, ms). If the diag says "not seen", Wwise
 did not use XAudio2 2.7 (DirectSound fallback) - the feature is inert. Rollback: `diagnostics/before-AUDIOSYNC-20261002/`.
+**MENUFEATHER + AUDIOSYNC2 (2026-10-02, build MENUFEATHER, DLL only, deployed, untested):** JJ on AUDIOSYNC: better, the
+menu and audio "happen fairly close together", but "the music starts briefly just before it pauses" - the hold now starts
+after 50 ms without a frame (was 150; watcher polls every 5 ms). JJ: the menu's dark backing "is needed, but can we
+feather the edges of it": ps3 fades dark pixels by their distance to the nearest empty pixel / the image edge (8
+directions x 6 distances up to cb0.y px); `menubackfeather` 0..1 -> 0..6% of the layer width (default 0.5); panel slider
+under the opacity one. ps3 compiled offline with d3dcompiler_47 (ps_5_0) first. Rollback:
+`diagnostics/before-MENUFEATHER-20261002/`.

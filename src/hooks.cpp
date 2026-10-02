@@ -862,6 +862,7 @@ namespace
         fprintf(f, "hudeyefollow=%d\npausenoback=%d\n", akvr_xr_hud_eye_follow() ? 1 : 0, akvr_xr_pause_no_back() ? 1 : 0);   // HUDEYES / PAUSENOBACK
         fprintf(f, "menubackopacity=%.2f\n", akvr_xr_menu_back_opacity());   // MENUBACK (replaces menunoback)
         fprintf(f, "audiosync=%d\n", akvr_audiosync() ? 1 : 0);   // AUDIOSYNC
+        fprintf(f, "menubackfeather=%.2f\n", akvr_xr_menu_back_feather());   // MENUFEATHER
         fprintf(f, "pausemenusize=%.2f\n", akvr_xr_pause_menu_size());   // PAUSESIZE
         fprintf(f, "pauseaspect=%.3f\n", akvr_xr_pause_aspect());
         fprintf(f, "automainmenu=%d\n", akvr_xr_auto_main_menu() ? 1 : 0);
@@ -998,6 +999,7 @@ namespace
             else if (sscanf(line, "pausenoback=%d", &iv) == 1) akvr_xr_pause_no_back_set(iv != 0);   // PAUSENOBACK
             else if (sscanf(line, "menubackopacity=%f", &v) == 1) akvr_xr_menu_back_opacity_set(v);   // MENUBACK
             else if (sscanf(line, "audiosync=%d", &iv) == 1) akvr_audiosync_set(iv != 0);   // AUDIOSYNC
+            else if (sscanf(line, "menubackfeather=%f", &v) == 1) akvr_xr_menu_back_feather_set(v);   // MENUFEATHER
             else if (sscanf(line, "pausemenusize=%f", &v) == 1) akvr_xr_pause_menu_size_set(v);   // PAUSESIZE
             else if (sscanf(line, "pauseaspect=%f", &v) == 1) akvr_xr_pause_aspect_set(v);
             else if (sscanf(line, "automainmenu=%d", &iv) == 1) akvr_xr_auto_main_menu_set(iv != 0);
@@ -1899,7 +1901,7 @@ namespace
 
         ImGui::TextColored(ImVec4(1.0f, 0.85f, 0.2f, 1.0f), "Arkham Knight VR");
         ImGui::SameLine();
-        ImGui::TextDisabled("   build: AUDIOSYNC  " __DATE__ " " __TIME__);   // the same tag as the status file
+        ImGui::TextDisabled("   build: MENUFEATHER  " __DATE__ " " __TIME__);   // the same tag as the status file
 
         // ---- one status line ----------------------------------------------------
         // TIDY4 2026-09-27 (JJ: "cleaned up and reformatted to be a bit more consistent with the
@@ -2410,6 +2412,10 @@ namespace
             float mbo = akvr_xr_menu_back_opacity() * 100.0f;
             if (SliderStep("main menu: dark background behind the items %  (100 = the game's own)", &mbo, 0.0f, 100.0f, "%.0f", ImGuiSliderFlags_AlwaysClamp))
             { akvr_xr_menu_back_opacity_set(mbo / 100.0f); settings_save(); }
+            // MENUFEATHER (JJ: "can we feather the edges of it so it's not as noticeable when looking around?")
+            float mbf = akvr_xr_menu_back_feather() * 100.0f;
+            if (SliderStep("main menu: soften the dark background's edges %", &mbf, 0.0f, 100.0f, "%.0f", ImGuiSliderFlags_AlwaysClamp))
+            { akvr_xr_menu_back_feather_set(mbf / 100.0f); settings_save(); }
             // AUDIOSYNC (JJ: "maybe we need to pause the audio so it syncs up with ... the menu screen appearing")
             bool as = akvr_audiosync();
             if (ImGui::Checkbox("start-up: hold the sound while the game loads the menu", &as)) { akvr_audiosync_set(as); settings_save(); }
@@ -2846,7 +2852,7 @@ namespace
             float pvRatio = 0.0f, pvFov = 0.0f; int pvHits = 0;
             akvr_projvr_diag(pvRatio, pvHits, pvFov);
             fprintf(f, "\npatches:\n");
-            fprintf(f, "   build: AUDIOSYNC " __DATE__ " " __TIME__ "\n");
+            fprintf(f, "   build: MENUFEATHER " __DATE__ " " __TIME__ "\n");
             fprintf(f, "   zoom vignette: %s\n", akvr_xr_vig_diag());
             fprintf(f, "   %s\n", akvr_audiosync_diag());   // AUDIOSYNC
             fprintf(f, "   pause look: %s, %s now, main view through the player camera: %s, head writes into the paused camera: %ld, darken %.0f%%\n",

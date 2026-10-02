@@ -214,6 +214,7 @@ your head, then untick it to get the picture back.
 | Main menu size | How big the main menu looks. |
 | Main menu camera: left / right | Slides the main menu's camera sideways. Minus moves Batman further right, clear of the menu text; 0 is the game's own framing. |
 | Main menu: dark background behind the items | How dark the panel behind the main menu items is. 100% is the game's own; lower fades it, so it floats less like a flat square in front of you. |
+| Main menu: soften the dark background's edges | How gradually that panel fades out at its edges, so no hard square outline shows when you look around. |
 | Start-up: hold the sound while the game loads the menu | On (normal): while the game pauses to load the main menu, its sound waits too, so the menu's sound effect plays as the menu appears. |
 | Map size | How big the map looks. |
 | Pause menu size | How big the pause menu looks over the world, so you don't have to turn your head to read it. |

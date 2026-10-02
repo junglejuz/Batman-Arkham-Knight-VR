@@ -1173,6 +1173,7 @@ bool g_menuNoBack = true;
 // wants it back with "a slider for opacity". The live main menu's dark pixels are drawn at this opacity (1 = the game's
 // own look, 0 = gone); text and highlights untouched. Replaces MENUNOBACK's on/off.
 float g_menuBackOpacity = 1.0f;
+float g_menuBackFeather = 0.5f;   // MENUFEATHER: 0..1 -> radius 0..6% of the layer image's width
 int g_hcState = 0;                       // 0 not built, 1 ok, -1 failed
 ID3D11ShaderResourceView *g_hcSRV = nullptr;
 ID3D11Texture2D *g_hcSRVTex = nullptr;
@@ -1233,17 +1234,36 @@ bool hud_conv_build() {
   if (pb2) pb2->Release();
   // MENUBACK: the plain conversion, with dark pixels (brightest channel under ~0.12, eased over 0.08-0.16 so the text's
   // soft edges do not step) scaled by cb0.x. At 1 it is exactly the plain shader.
+  // MENUFEATHER 2026-10-02 — JJ: "The black element, I think, is needed, but can we feather the edges of it so it's not as
+  // noticeable when looking around?" cb0.y = a radius in pixels: a dark pixel fades with its distance to the nearest
+  // empty pixel (or the picture's edge), looked for in 8 directions at 6 distances up to that radius. Compiled offline
+  // with d3dcompiler_47 before it went in (ps_5_0, no errors).
   static const char ps3[] =
       "Texture2DArray<float4> t : register(t0);"
       "cbuffer K : register(b0) { float4 k; };"
       "float3 lin(float3 c) { return c <= 0.04045 ? c / 12.92 : pow((c + 0.055) / 1.055, 2.4); }"
+      "float empty(int2 q, int2 sz) {"
+      " if (q.x < 0 || q.y < 0 || q.x >= sz.x || q.y >= sz.y) return 1.0;"
+      " return t.Load(int4(q, 0, 0)).a < 0.02 ? 1.0 : 0.0; }"
       "float4 main(float4 pos : SV_Position) : SV_Target {"
       " float4 p = t.Load(int4(pos.xy, 0, 0));"
       " float a = saturate(p.a);"
       " float3 c = a > 0.004 ? saturate(p.rgb / a) : saturate(p.rgb);"
       " float m = max(c.r, max(c.g, c.b));"
       " float3 o = a > 0.004 ? lin(c) * a : lin(c);"
-      " float f = lerp(saturate(k.x), 1.0, smoothstep(0.08, 0.16, m));"
+      " float dark = saturate(k.x);"
+      " if (k.y > 0.5 && m < 0.16 && a > 0.004) {"
+      "  uint w, h, e; t.GetDimensions(w, h, e);"
+      "  int2 sz = int2(w, h); int2 P = int2(pos.xy);"
+      "  float dmin = k.y;"
+      "  [loop] for (int i = 1; i <= 6; ++i) {"
+      "   float r = k.y * i / 6.0;"
+      "   [unroll] for (int j = 0; j < 8; ++j) {"
+      "    float an = j * 0.7853982;"
+      "    int2 q = P + int2(round(cos(an) * r), round(sin(an) * r));"
+      "    if (empty(q, sz) > 0.5) dmin = min(dmin, r); } }"
+      "  dark *= smoothstep(0.0, 1.0, dmin / k.y); }"
+      " float f = lerp(dark, 1.0, smoothstep(0.08, 0.16, m));"
       " return float4(o, a) * f; }";
   ID3DBlob *pb3 = nullptr, *err3 = nullptr;
   if (ok && SUCCEEDED(compile(ps3, sizeof(ps3) - 1, "hudps3", nullptr, nullptr, "main", "ps_5_0", 0, 0, &pb3, &err3)) && pb3)
@@ -1322,11 +1342,12 @@ bool hud_conv_draw(ID3D11Texture2D *src, uint32_t idx) {
   g_ctx->VSSetShader(g_hcVS, nullptr, 0);
   // PAUSENOBACK for the pause; MENUBACK (opacity) for the live main menu
   const bool noBack = g_pauseLive && g_pauseNoBack;
-  const bool menuBack = g_hudMenuNow && !g_pauseLive && g_hcPS3 && g_hcCB && g_menuBackOpacity < 0.999f;
+  const bool menuBack = g_hudMenuNow && !g_pauseLive && g_hcPS3 && g_hcCB &&
+                        (g_menuBackOpacity < 0.999f || g_menuBackFeather > 0.001f);   // MENUFEATHER
   ID3D11Buffer *oCB = nullptr;
   if (menuBack) {
     g_ctx->PSGetConstantBuffers(0, 1, &oCB);
-    const float kk[4] = { g_menuBackOpacity, 0.0f, 0.0f, 0.0f };
+    const float kk[4] = { g_menuBackOpacity, g_menuBackFeather * 0.06f * (float)g_hudW, 0.0f, 0.0f };
     g_ctx->UpdateSubresource(g_hcCB, 0, nullptr, kk, 0, 0);
     g_ctx->PSSetConstantBuffers(0, 1, &g_hcCB);
   }
@@ -3268,6 +3289,8 @@ float akvr_xr_pause_menu_size() { return g_pauseMenuScale; }                // P
 void  akvr_xr_pause_menu_size_set(float v) { g_pauseMenuScale = v < 0.2f ? 0.2f : (v > 1.0f ? 1.0f : v); }
 bool akvr_xr_pause_no_back() { return g_pauseNoBack; }                      // PAUSENOBACK
 void akvr_xr_pause_no_back_set(bool on) { g_pauseNoBack = on; }
+float akvr_xr_menu_back_feather() { return g_menuBackFeather; }             // MENUFEATHER
+void  akvr_xr_menu_back_feather_set(float v) { g_menuBackFeather = v < 0.0f ? 0.0f : (v > 1.0f ? 1.0f : v); }
 float akvr_xr_menu_back_opacity() { return g_menuBackOpacity; }             // MENUBACK
 void  akvr_xr_menu_back_opacity_set(float v) { g_menuBackOpacity = v < 0.0f ? 0.0f : (v > 1.0f ? 1.0f : v); }
 bool akvr_xr_menu_no_back() { return g_menuNoBack; }                        // MENUNOBACK
