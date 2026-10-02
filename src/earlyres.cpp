@@ -2843,7 +2843,12 @@ void akvr_hud_tick()
     // almost at once (JJ: "enters with the HUD elements attached to the face very briefly").
     {
         static ULONGLONG since = 0; static bool done = false, early = false;
-        if (!g_hudGameplay) { since = 0; done = false; early = false; g_hudMarksAt = 0; }
+        // PAUSEEDGE 2026-10-03: a pause is not a new gameplay stretch - the HUD movies and their room marks stay, so the
+        // HUD is not hidden for the ~0.7 s mark wait (HUDWAIT) after every pause (JJ: a flicker leaving the pause).
+        static ULONGLONG s_pauseAt = 0;
+        if (akvr_xr_pause_live()) s_pauseAt = GetTickCount64();
+        const bool pauseGap = s_pauseAt && GetTickCount64() - s_pauseAt < 1500;
+        if (!g_hudGameplay) { if (!pauseGap) { since = 0; done = false; early = false; g_hudMarksAt = 0; } }
         else
         {
             if (!since) since = GetTickCount64();

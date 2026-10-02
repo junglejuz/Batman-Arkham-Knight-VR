@@ -1547,7 +1547,8 @@ namespace {
         g_pauseStill = fc == g_pauseFc ? g_pauseStill + 1 : 0;
         g_pauseFc = fc;
         const uintptr_t b = cam_base();
-        if (!akvr_xr_pause_live() || g_pauseStill < 2 || !b) { g_pauseWriting = false; return; }
+        // PAUSEEDGE: from the first Present without a finalize (it was 2), whenever a pause could be starting
+        if (!(akvr_xr_pause_live() || akvr_xr_pause_candidate()) || g_pauseStill < 1 || !b) { g_pauseWriting = false; return; }
         __try
         {
             if (!g_pauseWriting)

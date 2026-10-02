@@ -1037,6 +1037,8 @@ int g_hudSpace = 2;          // 0 LOCAL (re-placed per frame), 1 VIEW (attached 
 bool g_hudMenuNow = false;   // MENUSIZE: the layer carries the live main menu (xr.cpp's menuLive)
 bool g_pauseLook = true;     // PAUSELOOK setting: the pause in full view (off: the old floating window)
 bool g_pauseLive = false;    // PAUSELOOK: live now
+bool g_pauseCand = false;    // PAUSEEDGE: a pause could start now (the pause look fits, gameplay within 1 s)
+int  g_stillPresents = 0;    // PAUSEEDGE: Presents in a row without a camera finalize
 float g_pauseDim = 0.5f;     // PAUSEDIM: 0 = no darkening, 1 = black (JJ: "just darker")
 float g_pauseMenuScale = 0.5f;   // PAUSESIZE: the pause menu on the room layer
 ULONGLONG g_menuStartTick = 0;   // MENUSTART: when the 3D main menu first came up (0 = not yet)
@@ -2366,7 +2368,12 @@ void akvr_xr_frame_submit(IDXGISwapChain *swapChain, float gameFovDeg,
       s_pStill = fc == s_pFc ? s_pStill + 1 : 0;
       s_pFc = fc;
     }
-    const bool camStopped = s_pStill >= 3;
+    // PAUSEEDGE 2026-10-03 - JJ: "there's a flicker when entering and exiting pause". F2 01:08:54 (mode.csv 51.33 s):
+    // the first paused frames were drawn from the camera CAMRESTORE had handed back (no head, the game's 57 deg FOV)
+    // until the pause look started 3 Presents later. Now camera.cpp writes the drawn camera from the first Present
+    // without a finalize (g_pauseCand), the pause look starts after 2, and the picture of the first 2 is held.
+    g_stillPresents = s_pStill;
+    const bool camStopped = s_pStill >= 2;
     const bool fits = g_pauseLook && g_anamorphic && !g_forceScreen && !akvr_xr_screen_mode() &&
                       (!g_autoMainMenu || g_menuPhase >= 2) && akvr_camera_main_view_live();
     // UNPAUSE 2026-10-01 — JJ: "when exiting the pause menu, I'm seeing the entire thing being framed in a small window
@@ -2382,6 +2389,7 @@ void akvr_xr_frame_submit(IDXGISwapChain *swapChain, float gameFovDeg,
       g_pauseLive = true; mode_log("pause look on"); hud_pause_anchor(true);
     }
     if (gameplay && !camStopped && !akvr_xr_screen_mode()) s_lastGame = nowMs;
+    g_pauseCand = g_pauseLive || (fits && s_lastGame && nowMs - s_lastGame < 1000);
   }
   // MENUFIRST 2026-10-01 — JJ: "when exiting out of the title screens and coming into the main menu, for a second or two,
   // before the three D camera calibrates, it shows Batman at the very bottom of the screen". His F2: the menu camera ran
@@ -2450,7 +2458,9 @@ void akvr_xr_frame_submit(IDXGISwapChain *swapChain, float gameFovDeg,
   // Copy the finished game frame into ONLY the current eye's swapchain (AER);
   // the other eye keeps its previous frame. g_submitEye is the eye this
   // backbuffer was rendered for (its camera was offset that way last Present).
-  const bool holdScreen = g_holdScreen && !effGameplay && g_swapInit[0] && g_swapInit[1];
+  // PAUSEEDGE: the first 2 Presents without a finalize show a picture drawn from the handed-back camera: keep the last one
+  const bool pauseHold = g_pauseCand && g_stillPresents >= 1 && g_stillPresents <= 2;
+  const bool holdScreen = ((g_holdScreen && !effGameplay) || pauseHold) && g_swapInit[0] && g_swapInit[1];
   if (g_shouldRender && swapChain && g_ctx && !holdScreen) {
     ID3D11Texture2D *backBuffer = nullptr;
     bool ownBackBuffer = false;
@@ -3051,6 +3061,7 @@ void akvr_xr_screen_aspect_set(float a) { g_screenAspect = (a > 0.5f && a < 4.0f
 bool akvr_xr_screen_track() { return g_screenTrack; }
 void akvr_xr_screen_track_set(bool on) { g_screenTrack = on; }
 bool akvr_xr_pause_live() { return g_pauseLive; }
+bool akvr_xr_pause_candidate() { return g_pauseCand; }   // PAUSEEDGE
 bool akvr_xr_pause_look() { return g_pauseLook; }
 void akvr_xr_pause_look_set(bool on) { g_pauseLook = on; }
 float akvr_xr_pause_dim() { return g_pauseDim; }

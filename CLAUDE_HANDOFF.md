@@ -795,3 +795,17 @@ in circles". STOP patching copies.
   so "nothing else for 0.6 s" never held. main_view_live = a match within 300 ms only. RISK: if the MAP also draws
   the player view, the map now gets the pause look too - ask JJ to open the map.
 Rollback: `diagnostics/before-AIMTRIGGER-20261003/`.
+**AIMTRIGGER result (JJ):** "Much better" on the Batmobile exit. Pause look now starts (timeline: pause look on/off at
+every pause), but "a flicker when entering and exiting pause".
+**PAUSEEDGE (2026-10-03, build PAUSEEDGE, DLL only, deployed, untested):** F2s 01:08:41 / 01:08:54 / 01:09:16.
+- Entering: mode.csv 51.33-51.36 s - the 3 Presents between the camera stop and "pause look on" drew the world from the
+  camera CAMRESTORE had handed back (game's own rotation, no head, field FOV 57.2 instead of 104). Now camera.cpp's
+  pause write starts on the FIRST Present without a finalize whenever a pause could start (xr g_pauseCand = pause look
+  fits + gameplay within 1 s), the pause look starts after 2 still Presents (was 3), and xr holds the eye picture
+  (no copy, old eye pose) for still Presents 1-2. Side effect: any 1-2 Present game hitch also repeats the last picture.
+- HUD: the smoothed verdict drops ~0.2 s into the pause and returns ~0.1 s after it; earlyres reset the HUD part marks
+  on that drop, so after every pause the HUD was hidden ~0.7 s (HUDWAIT) and re-found; the pause menu's layout also
+  switched mid-fade-in. Now akvr_hud_gameplay = verdict && !pause live, and the mark reset is skipped within 1.5 s of
+  a live pause. Exit flicker cause is INFERRED (no per-frame HUD log); if it remains, ask JJ what flickers (world or
+  menu/HUD) and take an F2 right after unpausing.
+Rollback: `diagnostics/before-PAUSEEDGE-20261003/`.

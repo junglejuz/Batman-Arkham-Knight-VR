@@ -50,6 +50,7 @@ void        akvr_xr_screen_mode_toggle(); // F6: force the image to float world-
 bool        akvr_xr_screen_mode();
 bool        akvr_xr_screen_frozen();               // screen mode AND the camera ignores the head
 bool        akvr_xr_pause_live();                  // PAUSELOOK: paused, shown in full view, head drives the camera
+bool        akvr_xr_pause_candidate();             // PAUSEEDGE: a pause could start now (or is live)
 bool        akvr_xr_pause_look();                  // PAUSELOOK: the setting
 void        akvr_xr_pause_look_set(bool on);
 bool        akvr_xr_hud_eye_follow();              // HUDEYES: HUD quads shifted by the real eyes' offsets
