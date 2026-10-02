@@ -338,6 +338,12 @@ namespace
     int32_t*  g_bYaw = nullptr, * g_bPitch = nullptr, * g_bRoll = nullptr;   // pure base (saved by stub)
     float*    g_dPosX = nullptr, * g_dPosY = nullptr, * g_dPosZ = nullptr;
     float*    g_dFov = nullptr;
+    // FOVABS 2026-10-02: the FOV is now WRITTEN, not added. F2 (Batmobile entry, 22:52): the game widened its FOV by
+    // ~34 deg on the transition's first frame; the additive delta (computed from the frame before) let one frame through
+    // at 138 deg. The stub saves the game's own FOV (g_bFov, for ZOOMVIG) and writes g_aFov when g_fovAbs is 1.
+    float*    g_bFov = nullptr;
+    float*    g_aFov = nullptr;
+    int32_t*  g_fovAbs = nullptr;
     float     g_refQx = 0, g_refQy = 0, g_refQz = 0, g_refQw = 1;  // recenter reference orientation
     // Recenter is YAW-ONLY. OpenXR's LOCAL space is gravity-aligned, so head pitch
     // and roll are already absolute and must pass through untouched; only the
@@ -379,6 +385,7 @@ namespace
     // ZOOMVIG 2026-09-29: the game's OWN FOV this frame (before our lock), read by xr.cpp's zoom
     // vignette - the right-stick-click zoom narrows it, but our lock cancels the magnification.
     volatile float g_gameFov = 0.0f;
+    bool g_testNoRot = false, g_testNoPos = false, g_testKeepFov = false;   // CAMTEST (not saved)
 
     // AER stereo: which eye we're rendering this frame (0=left, 1=right, set by xr),
     // and the half eye-separation in world units (depth strength). Tunable ([ / ]).
@@ -1090,6 +1097,9 @@ bool akvr_head_install()
     g_dPosY  = (float*)  (cave + 0x94);
     g_dPosZ  = (float*)  (cave + 0x98);
     g_dFov   = (float*)  (cave + 0x9C);
+    g_bFov   = (float*)  (cave + 0xB0);   // FOVABS (0xAC is the enable byte; the stub starts at 0x100)
+    g_aFov   = (float*)  (cave + 0xB4);
+    g_fovAbs = (int32_t*)(cave + 0xB8);
     g_bYaw   = (int32_t*)(cave + 0xA0);
     g_bPitch = (int32_t*)(cave + 0xA4);
     g_bRoll  = (int32_t*)(cave + 0xA8);
@@ -1097,6 +1107,7 @@ bool akvr_head_install()
     *g_bYaw = *g_bPitch = *g_bRoll = 0;
     *g_dPosX = *g_dPosY = *g_dPosZ = 0.0f;
     *g_dFov = 0.0f;
+    *g_bFov = 0.0f; *g_aFov = 0.0f; *g_fovAbs = 0;   // FOVABS
     g_htEnable = (uint8_t*)(cave + 0xAC);   // free slot after g_bRoll(0xA8..0xAC)
     *g_htEnable = 0;                        // start disabled; the byte gates the stub body
 
@@ -1140,7 +1151,15 @@ bool akvr_head_install()
     emit_pos(g_dPosX, OFF_X);
     emit_pos(g_dPosY, OFF_Y);
     emit_pos(g_dPosZ, OFF_Z);
-    emit_pos(g_dFov,  OFF_FOV);                                    // FOV += our offset
+    emit_pos(g_dFov,  OFF_FOV);                                    // FOV += our offset (0 while FOVABS writes it)
+    // FOVABS: save the game's own FOV, then (when g_fovAbs) write the headset's
+    *p++ = 0x8B; *p++ = 0x83; *(uint32_t*)p = OFF_FOV; p += 4;          // mov eax,[rbx+OFF_FOV]
+    *p++ = 0xA3; *(uint64_t*)p = (uint64_t)g_bFov; p += 8;            // mov [g_bFov],eax
+    *p++ = 0xA1; *(uint64_t*)p = (uint64_t)g_fovAbs; p += 8;          // mov eax,[g_fovAbs]
+    *p++ = 0x85; *p++ = 0xC0;                                         // test eax,eax
+    *p++ = 0x74; *p++ = 15;                                           // jz +15 (skip the next two)
+    *p++ = 0xA1; *(uint64_t*)p = (uint64_t)g_aFov; p += 8;            // mov eax,[g_aFov]   (9 bytes)
+    *p++ = 0x89; *p++ = 0x83; *(uint32_t*)p = OFF_FOV; p += 4;        // mov [rbx+OFF_FOV],eax (6 bytes)
     *p++ = 0x0F; *p++ = 0x10; *p++ = 0x04; *p++ = 0x24;            // movups xmm0,[rsp]
     *p++ = 0x48; *p++ = 0x83; *p++ = 0xC4; *p++ = 0x10;            // add rsp,0x10
 
@@ -1219,7 +1238,7 @@ void akvr_head_toggle()
         }
         *g_dYaw = *g_dPitch = *g_dRoll = 0;   // ORBITFIX: delta slots, zero = game's own angle
         *g_dPosX = *g_dPosY = *g_dPosZ = 0.0f;
-        *g_dFov = 0.0f;
+        *g_dFov = 0.0f; if (g_fovAbs) *g_fovAbs = 0;   // FOVABS
         head_apply(true);
         g_htOn = true;
     }
@@ -1231,7 +1250,7 @@ void akvr_head_toggle()
         // offset slot is set to 0 below, which makes the patch a no-op — the game
         // gets exactly the zero jitter it would have written itself. The patch only
         // comes out at process shutdown.
-        if (g_dYaw) { *g_dYaw = *g_dPitch = *g_dRoll = 0; *g_dPosX = *g_dPosY = *g_dPosZ = 0.0f; *g_dFov = 0.0f; }
+        if (g_dYaw) { *g_dYaw = *g_dPitch = *g_dRoll = 0; *g_dPosX = *g_dPosY = *g_dPosZ = 0.0f; *g_dFov = 0.0f; if (g_fovAbs) *g_fovAbs = 0; }
         g_htOn = false;
         proj_refresh_jitter();   // g_htOn now false -> writes 0 into the cave slot
     }
@@ -1288,7 +1307,7 @@ void akvr_head_update()
         // no-op) and drop the additive lean/fov — never write 0 rotation or the
         // stub would snap the camera to a zero orientation.
         *g_dYaw = *g_dPitch = *g_dRoll = 0;   // ORBITFIX: zero delta = the game's own angle
-        *g_dPosX = *g_dPosY = *g_dPosZ = 0.0f; *g_dFov = 0.0f; g_pauseWriting = false; return; }
+        *g_dPosX = *g_dPosY = *g_dPosZ = 0.0f; *g_dFov = 0.0f; if (g_fovAbs) *g_fovAbs = 0; g_pauseWriting = false; return; }
 
     float y, p, r, px, py, pz; akvr_xr_head_pose(y, p, r, px, py, pz);
     float qx, qy, qz, qw; akvr_xr_head_quat(qx, qy, qz, qw);
@@ -1597,15 +1616,24 @@ void akvr_head_update()
     // additive — recover the game's own FOV, then add exactly the delta to hit the
     // target. If the headset FOV isn't known yet, add nothing (leave game default).
     float target = akvr_head_render_hfov();
-    if (target > 10.0f)
+    // FOVABS: written by the stub, so a sudden FOV change by the game never shows for a frame.
+    if (target > 10.0f && !g_testKeepFov)
     {
-        float cur  = akvr_camera_read().fov;   // = game_base + our previous delta
-        float base = cur - *g_dFov;            // recover the game's own FOV
-        g_gameFov = base;                      // ZOOMVIG
-        *g_dFov = (target + g_fovDelta) - base;
+        g_gameFov = *g_bFov;                   // ZOOMVIG: the game's own FOV, saved by the stub
+        *g_aFov = target + g_fovDelta;
+        *g_dFov = 0.0f;
+        *g_fovAbs = 1;
     }
     else
+    {
         *g_dFov = 0.0f;
+        *g_fovAbs = 0;
+        if (*g_bFov > 1.0f) g_gameFov = *g_bFov;
+    }
+    // CAMTEST 2026-10-02 (Batmobile enter/exit: the transition plays with head tracking off): switch off one part of the
+    // head's write at a time - rotation, position - to find which one stops it.
+    if (g_testNoRot) { *g_dYaw = *g_dPitch = *g_dRoll = 0; }
+    if (g_testNoPos) { *g_dPosX = *g_dPosY = *g_dPosZ = 0.0f; }
     pause_look_write();   // PAUSELOOK
     akvr_camera_record_rotators();   // NEARRAIN2
 }
@@ -1867,3 +1895,6 @@ void akvr_camera_shutdown()
         akvr_proj_uninstall();
     } __except (EXCEPTION_EXECUTE_HANDLER) {}
 }
+// CAMTEST: Batmobile transition test switches (panel only, not saved)
+bool akvr_camtest_get(int which) { return which == 0 ? g_testNoRot : (which == 1 ? g_testNoPos : g_testKeepFov); }
+void akvr_camtest_set(int which, bool on) { if (which == 0) g_testNoRot = on; else if (which == 1) g_testNoPos = on; else g_testKeepFov = on; }

@@ -92,6 +92,8 @@ bool        akvr_hud_global();                  // HUDAREA: also resize the game
 void        akvr_hud_global_set(bool on);
 float       akvr_hud_raise();                   // HUDPOS: gameplay HUD up/down, fraction of height
 void        akvr_audiosync_frame();             // audiosync.cpp
+bool        akvr_camtest_get(int which);        // camera.cpp: CAMTEST
+void        akvr_camtest_set(int which, bool on);
 void        akvr_audiosync_shutdown();
 bool        akvr_audiosync();
 void        akvr_audiosync_set(bool on);
@@ -1901,7 +1903,7 @@ namespace
 
         ImGui::TextColored(ImVec4(1.0f, 0.85f, 0.2f, 1.0f), "Arkham Knight VR");
         ImGui::SameLine();
-        ImGui::TextDisabled("   build: HTBUTTON  " __DATE__ " " __TIME__);   // the same tag as the status file
+        ImGui::TextDisabled("   build: FOVABS  " __DATE__ " " __TIME__);   // the same tag as the status file
 
         // ---- one status line ----------------------------------------------------
         // TIDY4 2026-09-27 (JJ: "cleaned up and reformatted to be a bit more consistent with the
@@ -1930,6 +1932,16 @@ namespace
         // HTBUTTON 2026-10-02 — JJ: "Is there an overlay button for switching head tracking off? I'm not in front of the
         // keyboard." (for the Batmobile enter/exit A/B)
         if (ImGui::Button(akvr_head_state().on ? "Head tracking: ON  (F11)" : "Head tracking: OFF  (F11)")) akvr_head_toggle();
+        // CAMTEST 2026-10-02 — JJ: getting in/out of the Batmobile, the game's transition plays with head tracking off.
+        // Which part of the head's write stops it? (not saved: off again at the next start)
+        if (ImGui::TreeNode("Batmobile transition test  (one at a time)"))
+        {
+            bool t0 = akvr_camtest_get(0), t1 = akvr_camtest_get(1), t2 = akvr_camtest_get(2);
+            if (ImGui::Checkbox("head turning off", &t0)) akvr_camtest_set(0, t0);
+            if (ImGui::Checkbox("head moving (lean) off", &t1)) akvr_camtest_set(1, t1);
+            if (ImGui::Checkbox("game's own view angle (not the headset's)", &t2)) akvr_camtest_set(2, t2);
+            ImGui::TreePop();
+        }
         if (g_traceRows || g_modeRows)
         { ImGui::SameLine(); ImGui::TextColored(kGreen, "saved"); }
         if (akvr_gamepad_menu())
@@ -2856,7 +2868,7 @@ namespace
             float pvRatio = 0.0f, pvFov = 0.0f; int pvHits = 0;
             akvr_projvr_diag(pvRatio, pvHits, pvFov);
             fprintf(f, "\npatches:\n");
-            fprintf(f, "   build: HTBUTTON " __DATE__ " " __TIME__ "\n");
+            fprintf(f, "   build: FOVABS " __DATE__ " " __TIME__ "\n");
             fprintf(f, "   zoom vignette: %s\n", akvr_xr_vig_diag());
             fprintf(f, "   %s\n", akvr_audiosync_diag());   // AUDIOSYNC
             fprintf(f, "   pause look: %s, %s now, main view through the player camera: %s, head writes into the paused camera: %ld, darken %.0f%%\n",

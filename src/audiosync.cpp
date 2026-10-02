@@ -17,6 +17,10 @@ int akvr_xr_menu_phase();   // xr.cpp: 0 = start-up (before the main menu is con
 void akvr_xr_mode_note(const char* what);           // xr.cpp: a line in the mode timeline
 void akvr_hudsplit_ui_now(int& movies, int& draws); // hudsplit.cpp: the screen UI drawn just now
 bool akvr_xr_startup_3d();                         // xr.cpp: start-up, the 3D menu scene has begun
+float akvr_xr_startup_bright();                    // xr.cpp: the picture's brightness in start-up (-1 = unknown)
+// STARTBRIGHT 2026-10-02 — JJ: with the UI-draw rule "the audio started after the main menu had appeared ... We're
+// syncing it up with the appearance of the first menu": the menu has appeared when the picture is no longer black
+// (mean brightness 0.03+); the UI-draw count only when the brightness is unknown.
 // AUDIOSYNC3 2026-10-02 — JJ: "the music still starts very briefly before it pauses"; "There is music that goes together
 // with the title screens. And then that stops and then another music starts briefly, but that's the music that should
 // appear with the menu." The menu's music starts while the game still draws black frames between its two loading
@@ -51,6 +55,8 @@ namespace {
     bool menu_not_drawn()
     {
         if (g_holdDone || !akvr_xr_startup_3d()) return false;
+        const float b = akvr_xr_startup_bright();
+        if (b >= 0.0f) return b < 0.03f;
         int mv = 0, dr = 0; akvr_hudsplit_ui_now(mv, dr);
         return dr < 10;
     }
@@ -75,7 +81,8 @@ namespace {
             const ULONGLONG held = GetTickCount64() - g_stoppedAt;
             InterlockedExchange(&g_holdMs, g_holdMs + (LONG)held);
             int mv = 0, dr = 0; akvr_hudsplit_ui_now(mv, dr);
-            char n[64]; snprintf(n, sizeof(n), "sound on after %llu ms (ui %d/%d)", (unsigned long long)held, mv, dr);
+            char n[64]; snprintf(n, sizeof(n), "sound on after %llu ms (ui %d/%d, picture %.3f)", (unsigned long long)held, mv, dr,
+                                 akvr_xr_startup_bright());
             note(n);
         }
         if (akvr_xr_startup_3d()) InterlockedExchange(&g_holdDone, 1);   // AUDIOSYNC3: the menu-scene hold happens once

@@ -689,3 +689,19 @@ until the menu is really drawn (hudsplit akvr_hudsplit_ui_now: the last scene-0 
 game shows a camera transition that VR snaps over. No Batmobile entry in any F2 camera.csv (70 s ring) found; asked JJ for
 (1) an F11 A/B (head tracking off: does the transition come back?) and (2) F2 right after an entry. Suspect: ORBITFIX /
 the camera writes cancelling the game's auto camera blend. Rollback: `diagnostics/before-AUDIOSYNC3-20261002/`.
+**STARTBRIGHT + FOVABS + CAMTEST (2026-10-02, build FOVABS, DLL only, deployed, untested):**
+- Sound: JJ (AUDIOSYNC3) "the audio started after the main menu had appeared ... sync it up with the appearance of the
+  first menu", not an arbitrary value. Timeline 22:50: the loads came BEFORE the 3D scene this time; held at 8.0 s (3D),
+  released 9.4 s at 11 UI draws - the menu was visible earlier. STARTBRIGHT (xr.cpp): in menu phase 0, five 64x64
+  patches of the left eye are copied to a 3-deep staging ring and their mean brightness kept; audiosync releases the
+  menu-scene hold when the picture is no longer black (0.03+); UI draws only if brightness unknown. Release note now
+  shows "picture N".
+- Batmobile: JJ - with head tracking OFF the full get-in/out transition plays. F2 22:52 (head on): the game camera does
+  move smoothly (~2 s, position + pitch); its first frame is a cut (yaw 2.8, pitch 6.5) and the game widens its FOV
+  ~34 deg there - our additive FOV delta (from the frame before) showed ONE frame at 138 deg. FOVABS: the stub now saves
+  the game's FOV (cave+0xB0, ZOOMVIG reads it) and writes the headset's FOV (cave+0xB4) when cave+0xB8 = 1 - no lag.
+  CAMTEST: panel tree under the head tracking button with three test switches (head turning off / head lean off / game's
+  own view angle), not saved, to find which part of the head write breaks the transition. JJ also: the head tracking
+  button gave "a sort of a warped image that still sort of head tracked" - expected: F11 also drops the FOV lock (game
+  FOV in a headset frustum) while the compositor still reprojects.
+Rollback: `diagnostics/before-FOVABS-20261002/`.

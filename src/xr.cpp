@@ -1280,6 +1280,83 @@ bool hud_conv_build() {
   g_hcState = ok ? 1 : -1;
   return ok;
 }
+// STARTBRIGHT 2026-10-02 — JJ: with AUDIOSYNC3 "the audio started after the main menu had appeared. ... We're syncing
+// it up with the appearance of the first menu", not "an arbitrary value". During start-up only (menu phase 0), five
+// 64x64 patches of the left eye's picture are copied to a small CPU-readable texture (3 in flight, read when the GPU
+// is done) and their mean brightness kept: the menu has appeared when the picture is no longer black.
+ID3D11Texture2D *g_brStage[3] = {};
+bool g_brPend[3] = {};
+int g_brNext = 0;
+DXGI_FORMAT g_brFmt = DXGI_FORMAT_UNKNOWN;
+volatile float g_startBright = -1.0f;
+volatile ULONGLONG g_startBrightAt = 0;
+static float half_to_float(uint16_t h) {
+  const uint32_t e = (h >> 10) & 31, m = h & 1023;
+  float v = e == 0 ? m / 1024.0f / 16384.0f : (e == 31 ? 65504.0f : (1.0f + m / 1024.0f) * powf(2.0f, (float)e - 15.0f));
+  return (h & 0x8000) ? -v : v;
+}
+static void bright_read(ID3D11Texture2D *t) {
+  D3D11_MAPPED_SUBRESOURCE m{};
+  HRESULT hr = g_ctx->Map(t, 0, D3D11_MAP_READ, D3D11_MAP_FLAG_DO_NOT_WAIT, &m);
+  if (FAILED(hr)) return;
+  double sum = 0.0; int n = 0;
+  for (int y = 0; y < 64; y += 2) {
+    const uint8_t *row = (const uint8_t *)m.pData + (size_t)y * m.RowPitch;
+    for (int x = 0; x < 320; x += 2) {
+      float v = -1.0f;
+      if (g_brFmt == DXGI_FORMAT_R16G16B16A16_FLOAT) {
+        const uint16_t *p = (const uint16_t *)(row + x * 8);
+        v = fmaxf(half_to_float(p[0]), fmaxf(half_to_float(p[1]), half_to_float(p[2])));
+      } else if (g_brFmt == DXGI_FORMAT_R10G10B10A2_UNORM || g_brFmt == DXGI_FORMAT_R10G10B10A2_TYPELESS) {
+        const uint32_t q = *(const uint32_t *)(row + x * 4);
+        v = (float)max(q & 1023u, max((q >> 10) & 1023u, (q >> 20) & 1023u)) / 1023.0f;
+      } else {
+        const uint8_t *p = row + x * 4;
+        v = (float)max(p[0], max(p[1], p[2])) / 255.0f;
+      }
+      sum += v < 0.0f ? 0.0f : (v > 1.0f ? 1.0f : v); ++n;
+    }
+  }
+  g_ctx->Unmap(t, 0);
+  if (n) { g_startBright = (float)(sum / n); g_startBrightAt = GetTickCount64(); }
+}
+static void bright_probe(ID3D11Texture2D *src, UINT eyeW, UINT h) {
+  if (!src || !g_ctx || !g_device || !(g_autoMainMenu && g_menuPhase == 0) || eyeW < 256 || h < 256) return;
+  D3D11_TEXTURE2D_DESC sd{};
+  src->GetDesc(&sd);
+  if (sd.SampleDesc.Count != 1) return;
+  const bool known = sd.Format == DXGI_FORMAT_R16G16B16A16_FLOAT || sd.Format == DXGI_FORMAT_R10G10B10A2_UNORM ||
+                     sd.Format == DXGI_FORMAT_R10G10B10A2_TYPELESS ||
+                     (sd.Format >= DXGI_FORMAT_R8G8B8A8_TYPELESS && sd.Format <= DXGI_FORMAT_R8G8B8A8_SINT) ||
+                     (sd.Format >= DXGI_FORMAT_B8G8R8A8_UNORM && sd.Format <= DXGI_FORMAT_B8G8R8X8_UNORM_SRGB);
+  if (!known) return;
+  if (g_brFmt != sd.Format) {
+    for (auto &t : g_brStage) if (t) { t->Release(); t = nullptr; }
+    for (auto &p : g_brPend) p = false;
+    D3D11_TEXTURE2D_DESC d{};
+    d.Width = 320; d.Height = 64; d.MipLevels = 1; d.ArraySize = 1; d.Format = sd.Format;
+    d.SampleDesc.Count = 1; d.Usage = D3D11_USAGE_STAGING; d.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+    for (auto &t : g_brStage) if (FAILED(g_device->CreateTexture2D(&d, nullptr, &t))) t = nullptr;
+    g_brFmt = sd.Format;
+  }
+  for (int i = 0; i < 3; ++i)
+    if (g_brPend[i] && g_brStage[i]) { bright_read(g_brStage[i]); g_brPend[i] = false; break; }
+  const int k = g_brNext;
+  if (!g_brStage[k] || g_brPend[k]) return;
+  static const float fx[5] = {0.2f, 0.5f, 0.8f, 0.3f, 0.7f}, fy[5] = {0.3f, 0.3f, 0.3f, 0.7f, 0.7f};
+  for (int i = 0; i < 5; ++i) {
+    const UINT x = (UINT)(fx[i] * eyeW) - 32, y = (UINT)(fy[i] * h) - 32;
+    D3D11_BOX b{x, y, 0, x + 64, y + 64, 1};
+    g_ctx->CopySubresourceRegion(g_brStage[k], 0, (UINT)i * 64, 0, 0, src, 0, &b);
+  }
+  g_brPend[k] = true;
+  g_brNext = (k + 1) % 3;
+}
+// the picture's mean brightness in start-up, 0..1, measured in the last 300 ms; -1 = unknown
+float startup_bright_impl() {
+  return (g_startBrightAt && GetTickCount64() - g_startBrightAt < 300) ? g_startBright : -1.0f;
+}
+
 // Draw src slice 0 into swapchain image idx through the conversion shader. False = use a raw copy.
 bool hud_conv_draw(ID3D11Texture2D *src, uint32_t idx) {
   if (!hud_conv_build()) return false;
@@ -2437,6 +2514,7 @@ void akvr_xr_frame_submit(IDXGISwapChain *swapChain, float gameFovDeg,
                 idx < g_swapImages[0].size()) {
               D3D11_BOX box{0, 0, 0, g_swW, g_swH, 1};
               g_ctx->CopySubresourceRegion(g_swapImages[0][idx], 0, 0, 0, 0, backBuffer, 0, &box);
+              bright_probe(backBuffer, g_eyeW, g_swH);   // STARTBRIGHT: start-up only
               float by = 0.0f;
               const bool bok = akvr_camera_base_yaw_deg(by);
               for (int e = 0; e < 2; ++e) {
@@ -3326,3 +3404,4 @@ const char *akvr_xr_vig_diag() {
            g_vigErr ? (g_vigErr == 1 ? " - no image format" : " - could not make its image") : "");
   return d;
 }
+float akvr_xr_startup_bright() { return startup_bright_impl(); }   // STARTBRIGHT
