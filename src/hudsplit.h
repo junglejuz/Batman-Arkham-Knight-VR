@@ -61,6 +61,8 @@ int         akvr_frame_world();                    // the world's camera, Presen
 void        akvr_frame_world_set(int k);
 bool        akvr_marker_head();                    // TARGETMOVE (fix step 1m): move the on-target markers by the head turn
 void        akvr_marker_head_set(bool on);
+bool        akvr_marker_face();                    // TARGETFACE (fix step 1q): the on-target markers face the eye
+void        akvr_marker_face_set(bool on);
 int         akvr_marker_lag();                     // camera pair k Presents back; -1 = automatic
 void        akvr_marker_lag_set(int k);
 int         akvr_marker_hud_lag();                 // TARGETMOVE2: frames the markers trail the drawn camera (0 = off)

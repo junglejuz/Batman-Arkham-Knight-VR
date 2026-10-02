@@ -420,7 +420,7 @@ function Patch-TargetMove([string]$hash) {
     $bin = Join-Path $dm "$hash-vs.bin"
     if (-not (Test-Path $txt)) { return }
     $s = [System.IO.File]::ReadAllText($txt)
-    if ($s.Contains($moveMarker)) { Say "  $hash : target move already patched"; return }
+    if ($s.Contains($moveMarker) -or $s.Contains($scaleMarker)) { Say "  $hash : target move already patched"; return }   # 1n replaces 1m's lines
     if (-not $s.Contains($targetMarker)) { Say "  $hash : target depth (1k) not applied - target move NOT patched" 'Red'; return }
     $nl = if ($s.Contains("`r`n")) { "`r`n" } else { "`n" }
     $cbd = [regex]::Matches($s, '(?m)^dcl_constantbuffer CB13\[3\], immediateIndexed[ \t]*$')
@@ -586,6 +586,71 @@ function Patch-TargetMulti([string]$hash) {
     [System.IO.File]::WriteAllText($txt, $s, $utf8)
     if (Test-Path $bin) { Remove-Item $bin }
     Say "  $hash : target multi patched (point register $v)" 'Green'
+}
+
+# ---- 1q. TARGETFACE: the on-target pieces face the eye, so turning the head no longer turns them ---------------
+# JJ 2026-10-02: the reticle and the distance marker "turn on their y-axis as you turn your head". The game draws them
+# as stickers flat on the picture; the picture turns with the head, so a marker off to the side is seen on a slant (on a
+# flat picture a fixed-size sticker covers cos^2 of its centre angle across, cos down). Each vertex's offset from its
+# point, in tangent units (cb13[3].xy = the game frame's tan half-angles), is laid on the plane square to the line of
+# sight to that point instead: with u, v = the point's tangents, L = sqrt(1+u^2+v^2), M = sqrt(1+u^2),
+# a = dx L / M, b = dy / M:  P = (u + a - b u v,  v + b (1 + u^2),  1 - a u - b v), x' = P.x / P.z, y' = P.y / P.z.
+# Unchanged at the centre of the view; off-centre the piece keeps the size and shape it has straight ahead. Only pieces
+# that follow a point (1p's mask), only with cb13[3].z != 0 (AKVR sends it). Two new temps.
+$faceMarker = '// AKVR TARGETFACE'
+function Patch-TargetFace([string]$hash) {
+    $txt = Join-Path $dm "$hash-vs.txt"
+    $bin = Join-Path $dm "$hash-vs.bin"
+    if (-not (Test-Path $txt)) { return }
+    $s = [System.IO.File]::ReadAllText($txt)
+    if ($s.Contains($faceMarker)) { Say "  $hash : target face already patched"; return }
+    if (-not $s.Contains($multiMarker)) { Say "  $hash : target multi (1p) not applied - target face NOT patched" 'Red'; return }
+    $nl = if ($s.Contains("`r`n")) { "`r`n" } else { "`n" }
+    $sc = [regex]::Match($s, '(?m)^(?<i>[ \t]*)mad (?<w>r\d+)\.xw, (?<p>r\d+)\.xxxy, cb13\[4\]\.xxxy, cb13\[4\]\.zzzw[ \t]*\r?\n[ \t]*and \k<w>\.xw, \k<w>\.xxxw, (?<u>r\d+)\.zzzz[ \t]*\r?\n[ \t]*add \k<p>\.xy, \k<p>\.xyxx, \k<w>\.xwxx[ \t]*')
+    $vm = [regex]::Match($s, '(?m)^[ \t]*mad (?<u>r\d+)\.xy, (?<v>r\d+)\.xyxx, cb13\[4\]\.xyxx, cb13\[4\]\.zwzz[ \t]*\r?\n[ \t]*add \k<v>\.xy, \k<v>\.xyxx, \k<u>\.xyxx[ \t]*$')
+    $tm = [regex]::Matches($s, '(?m)^dcl_temps (?<n>\d+)[ \t]*$')
+    if (-not $sc.Success -or -not $vm.Success -or $tm.Count -ne 1 -or $vm.Groups['u'].Value -ne $sc.Groups['u'].Value) {
+        Say "  $hash : 1n / 1p lines not found - target face NOT patched" 'Red'; return
+    }
+    $i = $sc.Groups['i'].Value; $p = $sc.Groups['p'].Value; $u = $sc.Groups['u'].Value; $v = $vm.Groups['v'].Value
+    $n = [int]$tm[0].Groups['n'].Value
+    $a = "r$n"; $b = "r$($n + 1)"
+    $lines = @(
+        "$faceMarker 2026-10-02: an on-target piece faces the eye: its offset from its point is laid on the plane square",
+        "// to the line of sight to that point (cb13[3] = tan half-angles h, v, on), so turning the head no longer turns it",
+        "ne $a.w, cb13[3].z, l(0.000000)",
+        "and $a.w, $a.w, $u.z",
+        "if_nz $a.w",
+        "  mul $a.xy, $v.xyxx, cb13[3].xyxx",
+        "  add $b.xy, $p.xyxx, -$v.xyxx",
+        "  mul $b.xy, $b.xyxx, cb13[3].xyxx",
+        "  mul $a.z, $a.x, $a.x",
+        "  add $a.z, $a.z, l(1.000000)",
+        "  mad $a.w, $a.y, $a.y, $a.z",
+        "  div $a.w, $a.w, $a.z",
+        "  sqrt $a.w, $a.w",
+        "  mul $b.x, $b.x, $a.w",
+        "  rsq $b.w, $a.z",
+        "  mul $b.y, $b.y, $b.w",
+        "  mul $b.z, $b.y, $a.x",
+        "  mad $b.z, -$b.z, $a.y, $a.x",
+        "  add $b.z, $b.z, $b.x",
+        "  mad $b.w, $b.y, $a.z, $a.y",
+        "  mad $a.z, -$b.x, $a.x, l(1.000000)",
+        "  mad $a.z, -$b.y, $a.y, $a.z",
+        "  max $a.z, $a.z, l(0.050000)",
+        "  div $b.zw, $b.zzzw, $a.zzzz",
+        "  div $p.xy, $b.zwzz, cb13[3].xyxx",
+        "endif"
+    )
+    $at = $sc.Index + $sc.Length
+    $s = $s.Substring(0, $at) + $nl + (($lines | ForEach-Object { $i + $_ }) -join $nl) + $s.Substring($at)
+    $s = [regex]::Replace($s, '(?m)^dcl_temps \d+', "dcl_temps $($n + 2)")
+    Backup-Once $txt $bakDm
+    Backup-Once $bin $bakDm
+    [System.IO.File]::WriteAllText($txt, $s, $utf8)
+    if (Test-Path $bin) { Remove-Item $bin }
+    Say "  $hash : target face patched (position $p, point $v, temps $a / $b)" 'Green'
 }
 
 # ---- 1l. RAINSTRETCH: optional - the world rain streaks without the per-frame camera term (cb0[12]) ----------
@@ -1124,6 +1189,7 @@ switch ($Mode) {
         foreach ($h in $hudVs) { Patch-TargetMove $h }
         foreach ($h in $hudVs) { Patch-TargetScale $h }
         foreach ($h in $hudVs) { Patch-TargetMulti $h }
+        foreach ($h in $hudVs) { Patch-TargetFace $h }
         Patch-NearRain
         Patch-RainStretch
         Patch-RainLag

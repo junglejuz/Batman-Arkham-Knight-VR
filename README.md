@@ -181,6 +181,7 @@ pictures and a recording, for troubleshooting.
 | HUD distance | How far away the HUD looks, in metres. 0 or **far away** puts it at the distance of far-off scenery. |
 | Attach UI to head movement | Off (normal): the HUD hangs still in the room, and you can look around it; **F12** hangs it in front of you again. On: the HUD moves with your head. |
 | Reticle and distance marker sit on their target | On (normal): the grapple reticle and the target distance stay locked to what they point at. Turn it off only to compare. |
+| ... and face you when you turn your head | On (normal): those markers keep facing you and keep their shape when they are off to the side of your view, instead of looking turned and squashed. Turn it off only to compare. |
 | Move / resize single HUD parts | Adjust the radar, compass and other parts one by one. With the HUD on screen, press **find the HUD parts**. Tick **hide** on a part to see which one it is, then open it to change its size and position. Each part also has **stays on its target** (keeps it at the depth it points at), **hang in the room** and **hide while zoomed**. **Reset** undoes a part. Your layout is remembered; the mod comes with the tested layout. |
 
 ### Zoom vignette

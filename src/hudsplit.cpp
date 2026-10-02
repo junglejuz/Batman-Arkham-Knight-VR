@@ -134,7 +134,9 @@ namespace {
     int   g_tgtN = 0; float g_tgtXY[4] = {};
     // TARGETMOVE (fix step 1m, 2026-10-02): move the on-target parts by the head turn the game's HUD does not know about
     bool  g_markerHead = true;
-    int   g_markerLag = -1;                  // the drawn camera: k Presents back; -1 = the pose delay in use - 1
+    // TARGETFACE (fix step 1q, 2026-10-02): the on-target parts face the eye (cb13 row 3 = tan half-angles, on)
+    bool  g_markerFace = true;
+    int   g_markerLag = -1;                 // the drawn camera: k Presents back; -1 = the pose delay in use - 1
     int   g_markerHudLag = 1;                // TARGETMOVE2: the markers' camera is this many Presents older (0 = off)
     float g_tgtOff[4] = {};
     // TARGETTRACE 2026-10-02 — JJ after TARGETDEPTH: the distance widget is "still moving around with the head". Does
@@ -1728,6 +1730,15 @@ namespace {
             // TARGETSCALE (fix step 1n): row 4 moves the pieces themselves, per vertex, in the same frame as their draw
             for (int k = 0; k < 4; ++k) g_tgtXf[k] = (nTp > 0 && g_markerHead) ? txf[k] : 0.0f;
             rows[12] = g_tgtXf[0]; rows[13] = g_tgtXf[1]; rows[14] = g_tgtXf[2]; rows[15] = g_tgtXf[3];
+            // TARGETFACE (fix step 1q) 2026-10-02 — JJ: the reticle and the distance marker "turn on their y-axis as you
+            // turn your head". Row 3 = the game frame's tan half-angles + on: the shaders lay each on-target piece on the
+            // plane square to the line of sight to its point. Its own row, so RETSQUASH (row 0 .zw) stays off.
+            if (nTp > 0 && g_markerHead && g_markerFace)
+            {
+                float fh = 0.0f, fv = 0.0f;
+                akvr_xr_game_tan(fh, fv);
+                if (fh > 0.0f && fv > 0.0f) { rows[8] = fh; rows[9] = fv; rows[10] = 1.0f; }
+            }
             if (g_testTools) tgt_record(nTp, tp);   // TARGETTRACE
             if (g_cbFlat && g_cbDepth && (g_bandSent != band || memcmp(rows, g_tgtSent, sizeof(rows)) != 0 ||
                                           fabsf(th - g_tanSent[0]) > 1e-4f || fabsf(tv - g_tanSent[1]) > 1e-4f))
@@ -2324,6 +2335,8 @@ int  akvr_frame_world() { return (int)g_frameWorld; }
 void akvr_frame_world_set(int k) { InterlockedExchange(&g_frameWorld, k < 1 ? 1 : (k > 4 ? 4 : k)); }   // FRAMEPAIR2: a head pose delay
 bool akvr_marker_head() { return g_markerHead; }                        // TARGETMOVE
 void akvr_marker_head_set(bool on) { g_markerHead = on; }
+bool akvr_marker_face() { return g_markerFace; }                        // TARGETFACE
+void akvr_marker_face_set(bool on) { g_markerFace = on; }
 int  akvr_marker_lag() { return g_markerLag; }
 void akvr_marker_lag_set(int k) { g_markerLag = k < -1 ? -1 : (k > 8 ? 8 : k); }
 int  akvr_marker_hud_lag() { return g_markerHudLag; }                   // TARGETMOVE2

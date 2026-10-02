@@ -621,6 +621,44 @@ Untested in the headset. Rollback: `akvr/diagnostics/before-TARGETMULTI-20261002
 
 ---
 
+## 1q. ShaderFixesDM: the on-target pieces face the eye, so turning the head no longer turns them (AKVR, TARGETFACE, 2026-10-02)
+
+**Files:** all 13 HUD `-vs.txt` (after 1p); `-vs.bin` deleted.
+
+**Why:** JJ: "the HUD elements that are attached to world space objects, like the reticle, and the distance marker turn on
+their y-axis as you turn your head". The game draws them as stickers flat on its picture; the picture turns with the head,
+so a marker off to the side is seen on a slant. On a flat (rectilinear) picture a fixed-size sticker at angle t from the
+centre covers cos^2 t of its straight-ahead width and cos t of its height (45 deg: 50% / 71%, checked numerically). Not
+RETSQUASH (1d, never worked, inert): that scaled each piece about its own corner in 2 shaders, before the on-target points
+existed; this lays the whole piece on a plane facing the eye, about its target point, in all 13.
+
+**Edit (per file; `rP` = position, `rV` = the matched point, `rU.z` = 1p's on-target mask, all read from the 1n/1p lines;
+`rA`, `rB` = two new temps, `dcl_temps` +2):** directly after 1n's `add rP.xy, rP.xyxx, rW.xwxx`:
+```
+// AKVR TARGETFACE 2026-10-02: an on-target piece faces the eye: its offset from its point is laid on the plane square
+// to the line of sight to that point (cb13[3] = tan half-angles h, v, on), so turning the head no longer turns it
+ne rA.w, cb13[3].z, l(0.000000)
+and rA.w, rA.w, rU.z
+if_nz rA.w
+  (u, v = rV * tan; dx, dy = (rP - rV) * tan; L = sqrt(1+u^2+v^2), M = sqrt(1+u^2); a = dx L/M, b = dy/M;
+   P = (u + a - b u v, v + b (1+u^2), max(1 - a u - b v, 0.05)); rP.xy = (P.xy / P.z) / tan)  - 22 instructions
+endif
+```
+CB13 stays 11 rows (row 3 was unused since 1p). AKVR sends row 3 = (tan half-angle x, y of the game frame
+[`akvr_xr_game_tan`], 1, 0) only with on-target points and the panel's "... and face you" box on (`markerface`, default
+1); RETSQUASH's row 0 .zw stays 0. Row 3 zero / unbound = no change. Unchanged at the centre of the view.
+
+**Detect:** `// AKVR TARGETFACE`. **Reference:** `Patch-TargetFace` (step 1q) in `tools/AKVR-fix-patches.ps1` (practice
+copy of JJ's ShaderFixesDM: 13 patched, second run 0, exit 0; the instruction sequence was simulated in Python against
+the closed form and a direct 3D construction). **Driver test:** 13/13 assembled (cmd_Decompiler 0.6.90 `-a`, round-trip
+disassembly shows every instruction) and loaded OK in vstest.exe. **Applied** 2026-10-02 to JJ's game with the script
+(13 texts identical to the tested copies). Untested in the headset.
+Also fixed in the script: on an already-patched set, 1m reported "1k lines not found" (1n replaces 1m's marker) - a
+repair run exited 2; 1m now counts 1n as already patched.
+Rollback: `akvr/diagnostics/before-TARGETFACE-20261002/` (13 texts, DLL, settings), or untick "... and face you".
+
+---
+
 ## 2. d3dxdm.ini
 
 | Key / section | Baseline | AKVR value | Status and reason |
@@ -884,3 +922,4 @@ baseline versions). Needs JJ: where the 2026-09-26 update came from, or an in-ga
 | 2026-10-02 | THREADSYNC (mod) | BmSystemSettings OneFrameThreadLag forced False under geo-11 too (earlyres comfort list) | 6 |
 | 2026-10-02 | TARGETSCALE | 13 HUD vertex shaders: on-target pieces mapped per vertex back to the movie's own layout (CB13[5]); replaces 1m's move | 1n |
 | 2026-10-02 | VRLAUNCH (mod + installer) | VR via shortcut/flag/-akvr, Steam = 2D; BmSystemSettings.ini + GFX store swapped per mode (akvr_profiles); installer edits the VR copies only | 6 |
+| 2026-10-02 | TARGETFACE | 13 HUD vertex shaders: on-target pieces laid on the plane facing the eye about their point (CB13[3] = tan half-angles, on) | 1q |

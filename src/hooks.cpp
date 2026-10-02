@@ -844,6 +844,7 @@ namespace
         if (akvr_test_tools()) fprintf(f, "testtools=1\n");   // CLEANUP: written only when on
         fprintf(f, "rainnostretch=%d\n", akvr_rain_no_stretch() ? 1 : 0);   // RAINSTRETCH
         fprintf(f, "markerhead=%d\n", akvr_marker_head() ? 1 : 0);   // TARGETMOVE / TARGETSCALE
+        fprintf(f, "markerface=%d\n", akvr_marker_face() ? 1 : 0);   // TARGETFACE
         fprintf(f, "framefix=%d\nframedelay=%d\nrainframefix=%d\n", akvr_frame_fix() ? 1 : 0, akvr_frame_world(), akvr_rain_frame_fix() ? 1 : 0);   // FRAMEPAIR(2) / RAINSPLIT
         if (g_menuCapture) fprintf(f, "menucapture=1\n");             // MENUBLACK: written only when on
         fprintf(f, "farrain=%d\n", akvr_far_rain() ? 1 : 0);   // FARRAIN
@@ -967,6 +968,7 @@ namespace
             else if (sscanf(line, "testtools=%d", &iv) == 1) akvr_test_tools_set(iv != 0);   // CLEANUP
             else if (sscanf(line, "rainnostretch=%d", &iv) == 1) akvr_rain_no_stretch_set(iv != 0);   // RAINSTRETCH
             else if (sscanf(line, "markerhead=%d", &iv) == 1) akvr_marker_head_set(iv != 0);   // TARGETMOVE
+            else if (sscanf(line, "markerface=%d", &iv) == 1) akvr_marker_face_set(iv != 0);   // TARGETFACE
             else if (sscanf(line, "markerlag=%d", &iv) == 1) akvr_marker_lag_set(iv);
             else if (sscanf(line, "markerhudlag=%d", &iv) == 1) akvr_marker_hud_lag_set(iv);   // TARGETMOVE2
             else if (sscanf(line, "menucapture=%d", &iv) == 1) g_menuCapture = iv != 0;   // MENUBLACK (no panel switch)
@@ -1878,7 +1880,7 @@ namespace
 
         ImGui::TextColored(ImVec4(1.0f, 0.85f, 0.2f, 1.0f), "Arkham Knight VR");
         ImGui::SameLine();
-        ImGui::TextDisabled("   build: VRLAUNCH  " __DATE__ " " __TIME__);   // the same tag as the status file
+        ImGui::TextDisabled("   build: TARGETFACE  " __DATE__ " " __TIME__);   // the same tag as the status file
 
         // ---- one status line ----------------------------------------------------
         // TIDY4 2026-09-27 (JJ: "cleaned up and reformatted to be a bit more consistent with the
@@ -2100,6 +2102,11 @@ namespace
                 // TARGETSTOCK: the move undoes the HUD shrink for them (the timing sliders of TARGETMOVE2 are gone)
                 bool mh = akvr_marker_head();
                 if (ImGui::Checkbox("reticle and distance marker sit on their target  (fix - compare on / off)", &mh)) { akvr_marker_head_set(mh); s_hudDirty = true; }
+                // TARGETFACE 2026-10-02 (JJ: they "turn on their y-axis as you turn your head")
+                bool mf = akvr_marker_face();
+                if (!mh) ImGui::BeginDisabled();
+                if (ImGui::Checkbox("   ... and face you when you turn your head  (fix - compare on / off)", &mf)) { akvr_marker_face_set(mf); s_hudDirty = true; }
+                if (!mh) ImGui::EndDisabled();
                 // FRAMEPAIR / FRAMEPAIR2 panel controls removed 2026-10-02: with OneFrameThreadLag=False the world, the rain
                 // and the markers share one frame (JJ: "perfectly stable"); settings framefix / framedelay still read.
                 if (g_showAdvanced && lay && ImGui::TreeNode("HUD layer settings"))
@@ -2798,7 +2805,7 @@ namespace
             float pvRatio = 0.0f, pvFov = 0.0f; int pvHits = 0;
             akvr_projvr_diag(pvRatio, pvHits, pvFov);
             fprintf(f, "\npatches:\n");
-            fprintf(f, "   build: VRLAUNCH " __DATE__ " " __TIME__ "\n");
+            fprintf(f, "   build: TARGETFACE " __DATE__ " " __TIME__ "\n");
             fprintf(f, "   zoom vignette: %s\n", akvr_xr_vig_diag());
             fprintf(f, "   pause look: %s, %s now, main view through the player camera: %s, head writes into the paused camera: %ld, darken %.0f%%\n",
                     akvr_xr_pause_look() ? "ON" : "off", akvr_xr_pause_live() ? "LIVE" : "not live",

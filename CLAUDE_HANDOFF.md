@@ -580,3 +580,11 @@ pause/map run "3D", so `g_anamorphic` may separate in-game loads from pause (ope
 - geo-11 stamps each rebuilt `.bin` with its `.txt`'s time; matching times = loaded. Restoring with `cp -p` keeps an
   old `.bin` valid.
 - Memory updated: `ak-hud-steadiness` (whole HUD story), `preserve-hud-part-settings` (new).
+**TARGETFACE (2026-10-02, build TARGETFACE + fix step 1q, deployed, untested in the headset):** JJ: the reticle and the
+distance marker "turn on their y-axis as you turn your head". Cause: flat stickers on a flat picture that turns with the
+head - off-centre they are seen on a slant (45 deg: 50% width, 71% height). Step 1q lays each on-target piece on the plane
+facing the eye, about its target point (cb13 row 3 = game-frame tan half-angles + on; panel "... and face you when you
+turn your head", key `markerface`, default 1). Practice copy 13/13 + rerun clean, driver 13/13, applied to JJ's game
+(identical to tested). Also fixed: a repair re-run of the patch script reported 1m "not patched" (exit 2) on an already
+patched set. Package rebuilt with it (not uploaded). Ask JJ: markers keep their shape and stop turning when off to the
+side? Compare with the box off. Rollback: `diagnostics/before-TARGETFACE-20261002/`.
