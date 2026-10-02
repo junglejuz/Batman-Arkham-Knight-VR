@@ -750,3 +750,20 @@ handled by copy_fix in smooth_cb: when the game's base rotation jumps by exactly
 (< 0.2 deg both axes, head > 0.5 deg), that delta is taken off again and eased out over 1.2 s (smoothstep). SWINGEASE
 reads the base less the copy correction. Replayed on the two pre-CAMRESTORE F2 traces: 15/15 copies found, shown jumps
 5-12 deg -> < 1 deg. camaimhead=0 = the old full rotation restore. Rollback: `diagnostics/before-AIMHEAD-20261003/`.
+**PAUSEFOV + AIMHEAD2 (2026-10-03, build AIMHEAD2, DLL only, deployed, untested):** JJ: "the pause menu is appearing in a
+window again", and the Batmobile get-out pop "is back ... most noticeable when looking down at the vehicle".
+- PAUSEFOV: CAMRESTORE (not AIMHEAD) broke the pause. Between frames the camera's FOV field now holds the GAME's FOV,
+  while the main view is drawn at the headset FOV (F2 23:29: field 55.87, projections 0.990@104.0). The PAUSELOOK check
+  (projection FOV = camera field FOV, `akvr_camera_main_view_live`) never matched in a pause, so it fell back to the
+  window. The check now also accepts the headset FOV the stub writes (g_aFov while g_fovAbs), and pause_look_write
+  puts the headset FOV into the field during the pause (otherwise the paused world would be drawn at the game's FOV:
+  projVR is off under geo-11). No pause F2 since CAMRESTORE, so this is from the data + code, not a pause capture.
+- AIMHEAD2: F2 23:07 (pre-CAMRESTORE) at 53.71 s: the game copied the head yaw exactly but the pitch only in part
+  (-7.29 of -9.85, its own move started the same frame); AIMHEAD's both-axes test missed it -> a 7 deg shown jump.
+  copy_seen now also takes (b) one axis exact + the other toward its head offset (<= offset + 3 deg) and (c) no head yaw
+  + a pitch jump toward the head pitch (<= it; a clamped copy looking far down), both only from a still camera with
+  the right stick idle. The whole one-frame jump comes off (not the head offset) and stacks onto any correction still
+  easing out. Replay (scratch copyscan2.py) on 7 F2 traces: the 15 known copies + 53.71 s, no other frames. The
+  "looking far down" case itself is not in any trace (head pitch there was -5..-12): ask JJ for an F2 right after a
+  get-out looking down if it still pops.
+Rollback: `diagnostics/before-AIMHEAD2-20261003/`.

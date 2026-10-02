@@ -480,34 +480,70 @@ namespace
     // drawn camera (its own rotation jumps by exactly the last frame's head offset, within 0.2 deg) that copy is taken off
     // again, easing out over 1.2 s as the game's move takes over. Replayed on the two pre-CAMRESTORE F2 traces: all 15
     // copies found, the shown jump 5-12 deg -> under 1 deg, no other frames touched.
+    // AIMHEAD2 2026-10-03 — JJ: "the camera pop when exiting the Batmobile is back. It's most noticeable when looking
+    // down at the vehicle." F2 23:07 (before CAMRESTORE) at 53.71 s: the game copied the head's yaw exactly (-3.25) but
+    // its pitch only in part (-7.29 of -9.85: its own move started in the same frame), so the both-axes test missed it
+    // and the shown view jumped 7 deg. Looking far down a clamped pitch copy would miss it the same way. Now a copy is
+    // also (b) one axis exact while the other moves toward its head offset (no further than it + 3 deg), or (c) no head
+    // yaw and the pitch jumps toward the head pitch, no further than it - both only from a still camera. The whole
+    // one-frame jump comes off (not the head offset), and a new copy adds to what is still easing out. Replayed on seven
+    // F2 traces (driving, stick turns, menus): the 15 known copies + the 53.71 s one, nothing else.
     bool  g_aimHead = true;
-    float g_cfPrevBase[2] = {}, g_cfPrevHead[2] = {}, g_cfC0[2] = {};
+    float g_cfPrevBase[2] = {}, g_cfPrevHead[2] = {}, g_cfPrevStep[2] = { 9.0f, 9.0f }, g_cfC0[2] = {};
     bool  g_cfHave = false;
     ULONGLONG g_cfT0 = 0;
+    float sgnf(float a) { return a > 0.0f ? 1.0f : -1.0f; }
+    bool copy_seen(const float dB[2], const float hp[2], bool still)
+    {
+        if (fmaxf(fabsf(hp[0]), fabsf(hp[1])) > 0.5f && fabsf(dB[0] - hp[0]) < 0.2f && fabsf(dB[1] - hp[1]) < 0.2f)
+            return true;                                                     // (a) both axes exact
+        if (!still) return false;
+        for (int a = 0; a < 2; ++a)
+        {   // (b) one axis exact, the other toward its head offset
+            const int o = 1 - a;
+            if (fabsf(hp[a]) > 0.5f && fabsf(dB[a] - hp[a]) < 0.2f)
+            {
+                if (fabsf(hp[o]) < 0.5f && fabsf(dB[o]) < 3.0f) return true;
+                if (fabsf(hp[o]) >= 0.5f && sgnf(dB[o]) == sgnf(hp[o]) && fabsf(dB[o]) <= fabsf(hp[o]) + 3.0f) return true;
+            }
+        }
+        return fabsf(hp[0]) < 0.5f && fabsf(dB[0]) < 0.2f && fabsf(hp[1]) > 1.5f && fabsf(dB[1]) >= 1.5f &&
+               sgnf(dB[1]) == sgnf(hp[1]) && fabsf(dB[1]) <= fabsf(hp[1]) + 0.2f;   // (c) straight down / up
+    }
+    float copy_weight()
+    {
+        if (!g_cfT0) return 0.0f;
+        const float t = (float)(GetTickCount64() - g_cfT0) / 1200.0f;
+        if (t >= 1.0f) { g_cfT0 = 0; return 0.0f; }
+        return 1.0f - t * t * (3.0f - 2.0f * t);      // eases from 1 to 0
+    }
     void copy_fix(uintptr_t cam)
     {
         g_copyApplied[0] = g_copyApplied[1] = 0.0f;
         if (!g_bYaw || !g_bPitch || !g_dYaw || !g_dPitch) return;
         const float base[2] = { (float)(*g_bYaw) * ROT2DEG, (float)(*g_bPitch) * ROT2DEG };    // the game's own, this finalize
         const float head[2] = { wrap180((float)(*g_dYaw) * ROT2DEG), wrap180((float)(*g_dPitch) * ROT2DEG) };   // added now
-        if (g_cfHave && g_aimHead)
+        if (g_cfHave)
         {
             const float dB[2] = { wrap180(base[0] - g_cfPrevBase[0]), wrap180(base[1] - g_cfPrevBase[1]) };
-            const float* hp = g_cfPrevHead;
-            if (fmaxf(fabsf(hp[0]), fabsf(hp[1])) > 0.5f && fabsf(dB[0] - hp[0]) < 0.2f && fabsf(dB[1] - hp[1]) < 0.2f)
-            {   // the game started from the drawn camera: take the copied head off again
-                g_cfC0[0] = -hp[0]; g_cfC0[1] = -hp[1];
+            const bool still = fmaxf(fabsf(g_cfPrevStep[0]), fabsf(g_cfPrevStep[1])) < 0.3f &&
+                               akvr_gamepad_right_stick_ms() >= 250;   // never while the player turns the camera
+            if (g_aimHead && copy_seen(dB, g_cfPrevHead, still))
+            {   // the game started from the drawn camera: take the jump off again (on top of any still easing out)
+                const float w0 = copy_weight();
+                g_cfC0[0] = g_cfC0[0] * w0 - dB[0];
+                g_cfC0[1] = g_cfC0[1] * w0 - dB[1];
                 g_cfT0 = GetTickCount64();
                 InterlockedIncrement(&g_smoothEvents);
             }
+            g_cfPrevStep[0] = dB[0]; g_cfPrevStep[1] = dB[1];
         }
         g_cfPrevBase[0] = base[0]; g_cfPrevBase[1] = base[1];
         g_cfPrevHead[0] = head[0]; g_cfPrevHead[1] = head[1];
         g_cfHave = true;
-        if (!g_cfT0 || !g_aimHead) return;
-        const float t = (float)(GetTickCount64() - g_cfT0) / 1200.0f;
-        if (t >= 1.0f) { g_cfT0 = 0; return; }
-        const float w = 1.0f - t * t * (3.0f - 2.0f * t);      // eases from 1 to 0
+        if (!g_aimHead) { g_cfT0 = 0; return; }
+        const float w = copy_weight();
+        if (w <= 0.0f) return;
         const float c[2] = { g_cfC0[0] * w, g_cfC0[1] * w };
         *(int32_t*)(cam + OFF_YAW)   += (int32_t)(c[0] / ROT2DEG);
         *(int32_t*)(cam + OFF_PITCH) += (int32_t)(c[1] / ROT2DEG);
@@ -1028,7 +1064,13 @@ namespace
                         float camFov = 0.0f;
                         const uintptr_t cb = cam_base();
                         if (cb) __try { camFov = *(float*)(cb + OFF_FOV); } __except (EXCEPTION_EXECUTE_HANDLER) { camFov = 0.0f; }
-                        if (camFov > 1.0f && fabsf(fovDeg - camFov) < 1.0f) g_pvCamTick = GetTickCount64();
+                        // PAUSEFOV 2026-10-03 — JJ: "the pause menu is appearing in a window again". Since CAMRESTORE
+                        // the camera's FOV field holds the GAME's FOV between frames, while the main view is drawn at
+                        // the headset FOV the stub writes (F2 23:29: field 55.9, main view 104.0), so a paused view
+                        // never matched and the pause fell back to the window. The headset FOV counts as the camera's.
+                        const float lockFov = (g_fovAbs && *g_fovAbs && g_aFov) ? *g_aFov : 0.0f;
+                        if ((camFov > 1.0f && fabsf(fovDeg - camFov) < 1.0f) || (lockFov > 1.0f && fabsf(fovDeg - lockFov) < 1.0f))
+                            g_pvCamTick = GetTickCount64();
                         else g_pvOtherTick = GetTickCount64();
                     }
                     if (g_projVR)
@@ -1493,6 +1535,8 @@ namespace {
             *(float*)(b + OFF_X) = g_pauseBase[0] + *g_dPosX;
             *(float*)(b + OFF_Y) = g_pauseBase[1] + *g_dPosY;
             *(float*)(b + OFF_Z) = g_pauseBase[2] + *g_dPosZ;
+            // PAUSEFOV: the paused world at the headset FOV, as the stub would draw it (CAMRESTORE left the game's own)
+            if (g_fovAbs && *g_fovAbs && g_aFov && *g_aFov > 10.0f) *(float*)(b + OFF_FOV) = *g_aFov;
             ++g_pauseWrites;
         }
         __except (EXCEPTION_EXECUTE_HANDLER) { g_pauseWriting = false; }
