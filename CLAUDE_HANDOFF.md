@@ -622,3 +622,12 @@ pieces of the real markers near them took their point. List children now count o
 earlyres). MENUSIDE: JJ wants the main-menu camera moved left so Batman sits right of the menu items. camera.cpp slides
 the camera along its right vector by `menuside` (default -80 UU) while the main menu is detected; panel "main menu
 camera: left / right" in MENUS AND SCREENS; README row. Rollback: `diagnostics/before-MENUSIDE-20261002/`.
+**MENUTEXT + ANCHORLOST (2026-10-02, build ANCHORLOST, DLL only, deployed, untested):** JJ on MENUSIDE: "when you move
+your head right the camera moves towards Batman in a weird motion", the menu text needs to go further left, and "Batman's
+camera needs to be fixed to how it was before". The slide rode the head-turned right vector; now the base camera's level
+right and default 0 (JJ's live menuside set to 0.0). MENUTEXT: the live main menu's text box (hud_rect, sized by the main
+menu size) slides left by `menutextleft` x width (default 0.10; panel "main menu text: move left"). ANCHORLOST: the
+distance marker lost its fix at "a certain position" moving the head up and down: in the Batmobile the still reticle part
+fell back to a fixed point (0.000, 0.215), and the 199m marker (widget child .1.1) passing within 0.05 of it was dropped as
+a duplicate and took the reticle's spot and depth. Now: no point for a part with nothing moving; remembered anchors only
+if they moved in the last 2 min; duplicates merged within one part only. Rollback: `diagnostics/before-ANCHORLOST-20261002/`.

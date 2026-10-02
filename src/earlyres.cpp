@@ -1043,6 +1043,7 @@ namespace {
     // So height follows width, and the vertical control is a POSITION instead.
     float  hud_eff_v() { return hud_eff(); }
     float  g_hudRaise = 0.0f;   // + = up, as a fraction of the frame height (gameplay HUD)
+    float  g_menuTextLeft = 0.10f;   // MENUTEXT: main-menu text slides left by this share of the frame width
     void   menu3d_shift(int W, int H, int& dx, int& dy);
     int    hud_up_px(int H);
     // The ONE place the HUD rectangle is computed — for each movie's viewport and for
@@ -1064,6 +1065,10 @@ namespace {
         if (w < 64) w = 64;
         if (h < 64) h = 64;
         int sx = 0, sy = 0; menu3d_shift(W, H, sx, sy);
+        // MENUTEXT 2026-10-02 — JJ: on the main menu "the text on the left is too close to the middle so it needs to be
+        // taken over a bit more to the left", with Batman's camera as it was. The live main menu's text box (its size =
+        // the main menu size) slides left by a fixed share of the frame width; the camera is untouched.
+        if (akvr_xr_menu3d_active() && g_hudGameplay) sx -= (int)(g_menuTextLeft * (float)W);
         l = (W - w) / 2 + sx;
         t = (H - h) / 2 - (squash ? hud_up_px(H) : 0) + sy
             - (g_hudGameplay ? (int)(g_hudRaise * (float)H) : 0);   // HUDPOS
@@ -2944,6 +2949,8 @@ float akvr_hud_scale()          { return g_hudScale; }
 float akvr_hud_scale_v()        { return g_hudScaleV; }
 void  akvr_hud_scale_v_set(float s) { g_hudScaleV = s < 0.25f ? 0.25f : (s > 2.0f ? 2.0f : s); }
 float akvr_hud_raise()          { return g_hudRaise; }
+float akvr_menu_text_left()     { return g_menuTextLeft; }   // MENUTEXT
+void  akvr_menu_text_left_set(float f) { g_menuTextLeft = f < 0.0f ? 0.0f : (f > 0.4f ? 0.4f : f); }
 void  akvr_hud_raise_set(float r) { g_hudRaise = r < -0.3f ? -0.3f : (r > 0.3f ? 0.3f : r); }
 bool  akvr_hud_menu_fill()      { return g_menuUiFill; }
 int   akvr_hud_piece_count()     { return g_nMovies; }
@@ -3925,6 +3932,13 @@ namespace {
         r.node = node; r.tx = m[3]; r.ty = m[7]; r.moved = 0;
         return false;
     }
+    // ANCHORLOST: true when this node's translation last changed within `ms` (a record must exist)
+    bool node_moved_within(uintptr_t node, DWORD now, DWORD ms)
+    {
+        for (int i = 0; i < g_mvN; ++i)
+            if (g_mvRec[i].node == node) return g_mvRec[i].moved != 0 && now - g_mvRec[i].moved < ms;
+        return false;
+    }
     // the moving nodes under `node` (inclusive; a moving node ends its branch), into out[] (max 4)
     void moving_anchors(uintptr_t node, int depth, DWORD now, int& budget, uintptr_t* out, int& n)
     {
@@ -3965,13 +3979,19 @@ namespace {
             for (int i = 0; i < n; ++i) rec.anchor[i] = out[i];
             return n;
         }
+        // ANCHORLOST 2026-10-02 — JJ: the distance marker "is still losing its fix when moving the head up and down when it
+        // reaches a certain position and it detaches from its object". F2 21:34: in the Batmobile the grapple reticle part
+        // never moves, and the old fallback (the still part itself) gave it a point fixed at (0.000, 0.215); the 199m marker
+        // passing within 0.05 of it lost its own point to the duplicate check and took the reticle's spot and depth. A part
+        // with nothing moving gets NO point; a remembered anchor counts only if it moved in the last 2 minutes.
         if (rec.part == part)
             for (int i = 0; i < rec.n; ++i)
             {
                 float m[12]; int fl = 0;
-                if (is_under(rec.anchor[i], part) && node_matrix(rec.anchor[i], m, &fl) && (fl & 1)) out[n++] = rec.anchor[i];
+                if (is_under(rec.anchor[i], part) && node_matrix(rec.anchor[i], m, &fl) && (fl & 1) &&
+                    node_moved_within(rec.anchor[i], now, 120000)) out[n++] = rec.anchor[i];
             }
-        if (n == 0) out[n++] = fallback;
+        (void)fallback;
         return n;
     }
 }
@@ -4066,12 +4086,13 @@ int akvr_hud_target_points(float* xy, int max, int rtW, int rtH, float* off, flo
         }
         uintptr_t anchors[4];
         const int na = part_anchors(want[w].node, node, now, anchors);   // TARGETANCHOR2
+        const int partStart = ns;
         for (int a = 0; a < na && ns < 8; ++a)
         {
             float cx = 0.0f, cy = 0.0f;
             if (!point_of(anchors[a], want[w], cx, cy) || fabsf(cx) > 1.1f || fabsf(cy) > 1.1f) continue;
-            bool dup = false;   // the reticle's pulsing pieces: one point
-            for (int j = 0; j < ns && !dup; ++j)
+            bool dup = false;   // the reticle's pulsing pieces: one point - within THIS part only (ANCHORLOST)
+            for (int j = partStart; j < ns && !dup; ++j)
                 dup = fabsf(sxy[j * 2] - cx) < 0.05f && fabsf(sxy[j * 2 + 1] - cy) < 0.05f;
             if (dup) continue;
             sxy[ns * 2] = cx; sxy[ns * 2 + 1] = cy; ++ns;

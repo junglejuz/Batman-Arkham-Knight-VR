@@ -393,7 +393,10 @@ namespace
     // MENUSIDE 2026-10-02 — JJ: on the main menu "the camera is looking straight at Batman, with the menu items on the
     // left ... move the camera over to the left a bit so that Batman is more to the right and the menu items are a bit
     // more readable". A slide along the camera's right vector while the main menu is detected (negative = left).
-    float g_menuSideUU = -80.0f;
+    // MENUSIDE2: JJ - "when you move your head right the camera moves towards Batman in a weird motion" and "Batman's
+    // camera needs to be fixed to how it was before": the slide rode the HEAD-turned right vector. Now the game camera's
+    // own (base yaw, level) right, and 0 by default (the menu text moves instead: MENUTEXT, earlyres).
+    float g_menuSideUU = 0.0f;
 
     // DECOUPLED PITCH — 2026-09-26 (vrframework guide 09 section 7). JJ: correct at
     // eye level, but with the camera lowered or raised high, looking left/right also
@@ -1560,15 +1563,15 @@ void akvr_head_update()
     const float stickLiftUU = (g_pitchUnlink == 0 && g_basePitchKeep < 0.001f && !screenFrozen)
                             ? -sinf(b2pitch) * g_stickHeightM * g_posScale : 0.0f;   // STICKHEIGHT
     const float menuSideUU = akvr_xr_main_menu_detected() ? g_menuSideUU : 0.0f;   // MENUSIDE
-    ox += gRight.x * menuSideUU;
-    oy += gRight.y * menuSideUU;
+    ox += -sy * menuSideUU;   // MENUSIDE2: the base camera's level right (-sin, cos), not the head's
+    oy +=  cy * menuSideUU;
     if (g_camFixOn)
     {
         ox += gRight.x * g_shoulderUU + gUp.x * g_offUpUU + gFwd.x * g_offFwdUU;
         oy += gRight.y * g_shoulderUU + gUp.y * g_offUpUU + gFwd.y * g_offFwdUU;
         *g_dPosX = ox;
         *g_dPosY = oy;
-        *g_dPosZ = upAmt * g_posScale + gRight.z * (eyeUU + g_shoulderUU + menuSideUU)
+        *g_dPosZ = upAmt * g_posScale + gRight.z * (eyeUU + g_shoulderUU)
                  + gUp.z * g_offUpUU + gFwd.z * g_offFwdUU + stickLiftUU;
     }
     else
@@ -1577,7 +1580,7 @@ void akvr_head_update()
         oy += gRight.y * g_shoulderUU;
         *g_dPosX = ox;
         *g_dPosY = oy;
-        *g_dPosZ = upAmt * g_posScale + gRight.z * (eyeUU + g_shoulderUU + menuSideUU) + stickLiftUU;
+        *g_dPosZ = upAmt * g_posScale + gRight.z * (eyeUU + g_shoulderUU) + stickLiftUU;
     }
 
     // --- Trace ---------------------------------------------------------------

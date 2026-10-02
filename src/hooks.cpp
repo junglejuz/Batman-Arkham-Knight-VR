@@ -91,6 +91,8 @@ void        akvr_hud_menu_fill_set(bool on);
 bool        akvr_hud_global();                  // HUDAREA: also resize the game's UI rectangle
 void        akvr_hud_global_set(bool on);
 float       akvr_hud_raise();                   // HUDPOS: gameplay HUD up/down, fraction of height
+float       akvr_menu_text_left();              // MENUTEXT: main-menu text slides left, fraction of width
+void        akvr_menu_text_left_set(float f);
 void        akvr_hud_raise_set(float r);
 bool        akvr_hud_scale_found();
 const char* akvr_hud_diag();
@@ -828,6 +830,7 @@ namespace
         fprintf(f, "leanscale=%.4f\n", akvr_head_pos_scale() / kLeanAt1);
         fprintf(f, "shoulder=%.3f\n", akvr_head_shoulder());
         fprintf(f, "menuside=%.1f\n", akvr_head_menu_side());   // MENUSIDE
+        fprintf(f, "menutextleft=%.3f\n", akvr_menu_text_left());   // MENUTEXT
         fprintf(f, "pitchkeep=%.3f\n", akvr_head_pitch_keep());
         fprintf(f, "pitchunlink=%d\n", akvr_head_pitch_unlink());
         fprintf(f, "sbsswapchain=%d\n", akvr_xr_sbs_one() ? 1 : 0);
@@ -954,6 +957,7 @@ namespace
             else if (sscanf(line, "lean=%f",       &v) == 1) akvr_head_pos_scale_set(v);
             else if (sscanf(line, "shoulder=%f",   &v) == 1) akvr_head_shoulder_set(v);
             else if (sscanf(line, "menuside=%f",   &v) == 1) akvr_head_menu_side_set(v);   // MENUSIDE
+            else if (sscanf(line, "menutextleft=%f", &v) == 1) akvr_menu_text_left_set(v);   // MENUTEXT
             else if (sscanf(line, "pitchkeep=%f",  &v) == 1) akvr_head_pitch_keep_set(0.0f);   // settled: view level (v ignored)
             else if (sscanf(line, "pitchunlink=%d", &iv) == 1) akvr_head_pitch_unlink_set(iv == 2 ? 2 : 0);   // 1 (horizon-level tilt) retired; 2 = UEVR-style
             else if (sscanf(line, "stickheight=%f", &v) == 1) akvr_head_stick_height_set(v);
@@ -1884,7 +1888,7 @@ namespace
 
         ImGui::TextColored(ImVec4(1.0f, 0.85f, 0.2f, 1.0f), "Arkham Knight VR");
         ImGui::SameLine();
-        ImGui::TextDisabled("   build: MENUSIDE  " __DATE__ " " __TIME__);   // the same tag as the status file
+        ImGui::TextDisabled("   build: ANCHORLOST  " __DATE__ " " __TIME__);   // the same tag as the status file
 
         // ---- one status line ----------------------------------------------------
         // TIDY4 2026-09-27 (JJ: "cleaned up and reformatted to be a bit more consistent with the
@@ -2383,8 +2387,11 @@ namespace
             if (ImGui::IsItemDeactivatedAfterEdit()) settings_save();
             // MENUSIDE 2026-10-02 (JJ: move the main-menu camera left so Batman sits right of the menu items)
             float ms = akvr_head_menu_side();
-            if (SliderStep("main menu camera: left / right  (minus = Batman further right)", &ms, -400.0f, 400.0f, "%.0f", ImGuiSliderFlags_AlwaysClamp))
+            if (SliderStep("main menu camera: left / right  (0 = the game's own)", &ms, -400.0f, 400.0f, "%.0f", ImGuiSliderFlags_AlwaysClamp))
             { akvr_head_menu_side_set(ms); settings_save(); }
+            float mt = akvr_menu_text_left() * 100.0f;   // MENUTEXT (JJ: the menu text further left, Batman as he was)
+            if (SliderStep("main menu text: move left  (% of the view)", &mt, 0.0f, 40.0f, "%.0f", ImGuiSliderFlags_AlwaysClamp))
+            { akvr_menu_text_left_set(mt / 100.0f); settings_save(); }
             float pscr = akvr_xr_pause_zoom() * 100.0f;
             if (SliderStep("map size %", &pscr, 10.0f, 100.0f, "%.0f"))   // PAUSESIZE: the pause menu has its own size now
                 akvr_xr_pause_zoom_set(pscr / 100.0f);
@@ -2817,7 +2824,7 @@ namespace
             float pvRatio = 0.0f, pvFov = 0.0f; int pvHits = 0;
             akvr_projvr_diag(pvRatio, pvHits, pvFov);
             fprintf(f, "\npatches:\n");
-            fprintf(f, "   build: MENUSIDE " __DATE__ " " __TIME__ "\n");
+            fprintf(f, "   build: ANCHORLOST " __DATE__ " " __TIME__ "\n");
             fprintf(f, "   zoom vignette: %s\n", akvr_xr_vig_diag());
             fprintf(f, "   pause look: %s, %s now, main view through the player camera: %s, head writes into the paused camera: %ld, darken %.0f%%\n",
                     akvr_xr_pause_look() ? "ON" : "off", akvr_xr_pause_live() ? "LIVE" : "not live",

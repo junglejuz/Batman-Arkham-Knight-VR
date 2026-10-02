@@ -210,7 +210,8 @@ your head, then untick it to get the picture back.
 | Float as a screen now (Pause key) | Shows the game on a flat floating screen, for example for cutscenes. |
 | Floating screen size | How big that screen is. |
 | Main menu size | How big the main menu looks. |
-| Main menu camera: left / right | Slides the main menu's camera sideways. Minus moves Batman further right, leaving the menu items on the left clear. |
+| Main menu text: move left | Slides the main menu's text to the left, so Batman stands clear of it. |
+| Main menu camera: left / right | Slides the main menu's camera sideways. 0 (normal) is the game's own framing. |
 | Map size | How big the map looks. |
 | Pause menu size | How big the pause menu looks over the world, so you don't have to turn your head to read it. |
 | Pause: darken the world | How much the world around you darkens while the game is paused. |
