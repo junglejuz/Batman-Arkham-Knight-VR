@@ -767,3 +767,16 @@ window again", and the Batmobile get-out pop "is back ... most noticeable when l
   "looking far down" case itself is not in any trace (head pitch there was -5..-12): ask JJ for an F2 right after a
   get-out looking down if it still pops.
 Rollback: `diagnostics/before-AIMHEAD2-20261003/`.
+**COPYHOLD + PAUSEFOV2 (2026-10-03, build COPYHOLD, DLL only, deployed, untested):** JJ on AIMHEAD2: the get-out pop
+"not as bad but still there"; the pause "still in a window". F2s 00:45:53 (pause) and 00:46:04-00:46:41 (Batmobile).
+- COPYHOLD: all 11 copies in the 00:46:41 trace were caught, but the 1.2 s ease-out assumed the game's own move replaces
+  the copied angle. Getting out looking down at the car (64.66 s) the game KEEPS it (base pitch held at -62 for 4 s), so
+  the doubled head slid back in (live pitch -62.9 -> -68.8 over 1.2 s, yaw 6 deg). The correction now fades only as the
+  game moves its camera by itself (stick idle): x exp(-moved/15 deg) per finalize; stick turns hold it; a cut (> 25 deg)
+  clears it. Replay (scratch csim.py): kept copy stays corrected; the 91.2 s swing (-68 -> -22) takes 11.8 deg -> 0.5.
+  Side effect while a correction is held: the game's aim (read-back) is off from the shown view by that amount.
+- PAUSEFOV2: the pause F2 still said "main view through the player camera: no" (camera stopped at 53.09 s, screen at
+  53.3 s). Suspect: the 16:9 (0.568) projections at the game's own FOV that exist since FOVABS counted as "something
+  else". With a square eye image only frame-shaped projections now count for the test. NOT proven: status now has a
+  "pause test:" line (last match / other / left-out projection with FOV and age) - read it from a pause F2 first.
+Rollback: `diagnostics/before-COPYHOLD-20261003/`.

@@ -491,7 +491,6 @@ namespace
     bool  g_aimHead = true;
     float g_cfPrevBase[2] = {}, g_cfPrevHead[2] = {}, g_cfPrevStep[2] = { 9.0f, 9.0f }, g_cfC0[2] = {};
     bool  g_cfHave = false;
-    ULONGLONG g_cfT0 = 0;
     float sgnf(float a) { return a > 0.0f ? 1.0f : -1.0f; }
     bool copy_seen(const float dB[2], const float hp[2], bool still)
     {
@@ -510,13 +509,13 @@ namespace
         return fabsf(hp[0]) < 0.5f && fabsf(dB[0]) < 0.2f && fabsf(hp[1]) > 1.5f && fabsf(dB[1]) >= 1.5f &&
                sgnf(dB[1]) == sgnf(hp[1]) && fabsf(dB[1]) <= fabsf(hp[1]) + 0.2f;   // (c) straight down / up
     }
-    float copy_weight()
-    {
-        if (!g_cfT0) return 0.0f;
-        const float t = (float)(GetTickCount64() - g_cfT0) / 1200.0f;
-        if (t >= 1.0f) { g_cfT0 = 0; return 0.0f; }
-        return 1.0f - t * t * (3.0f - 2.0f * t);      // eases from 1 to 0
-    }
+    // COPYHOLD 2026-10-03 — JJ with AIMHEAD2: the get-out pop is "not as bad but still there". F2 00:46: every copy was
+    // caught (11 in 50 s), but the 1.2 s ease-out assumed the game's own move replaces the copied angle. Getting out
+    // looking down at the car it KEEPS it (64.66 s: base pitch held at -62 for 4 s), so the doubled head slid back in,
+    // 6-7 deg over 1.2 s. The correction now fades only while the game moves its camera by itself (stick idle):
+    // x exp(-moved / 15 deg) per finalize, so a kept copy stays corrected and a swing to the game's own target (91.2 s:
+    // -68 -> -22 deg) takes it away (11.8 -> 0.5 deg). The player's stick turns keep it (the copy stays in the game's
+    // state); a cut (> 25 deg in one finalize) clears it.
     void copy_fix(uintptr_t cam)
     {
         g_copyApplied[0] = g_copyApplied[1] = 0.0f;
@@ -526,25 +525,29 @@ namespace
         if (g_cfHave)
         {
             const float dB[2] = { wrap180(base[0] - g_cfPrevBase[0]), wrap180(base[1] - g_cfPrevBase[1]) };
-            const bool still = fmaxf(fabsf(g_cfPrevStep[0]), fabsf(g_cfPrevStep[1])) < 0.3f &&
-                               akvr_gamepad_right_stick_ms() >= 250;   // never while the player turns the camera
+            const bool stick = akvr_gamepad_right_stick_ms() < 250;   // the player is turning the camera
+            const bool still = fmaxf(fabsf(g_cfPrevStep[0]), fabsf(g_cfPrevStep[1])) < 0.3f && !stick;
             if (g_aimHead && copy_seen(dB, g_cfPrevHead, still))
-            {   // the game started from the drawn camera: take the jump off again (on top of any still easing out)
-                const float w0 = copy_weight();
-                g_cfC0[0] = g_cfC0[0] * w0 - dB[0];
-                g_cfC0[1] = g_cfC0[1] * w0 - dB[1];
-                g_cfT0 = GetTickCount64();
+            {   // the game started from the drawn camera: take the jump off again (on top of what is still held)
+                g_cfC0[0] -= dB[0];
+                g_cfC0[1] -= dB[1];
                 InterlockedIncrement(&g_smoothEvents);
             }
+            else if (fmaxf(fabsf(dB[0]), fabsf(dB[1])) > 25.0f) { g_cfC0[0] = g_cfC0[1] = 0.0f; }   // a cut
+            else if (!stick)
+            {
+                const float f = expf(-(fabsf(dB[0]) + fabsf(dB[1])) / 15.0f);
+                g_cfC0[0] *= f; g_cfC0[1] *= f;
+            }
+            if (fabsf(g_cfC0[0]) < 0.01f && fabsf(g_cfC0[1]) < 0.01f) g_cfC0[0] = g_cfC0[1] = 0.0f;
             g_cfPrevStep[0] = dB[0]; g_cfPrevStep[1] = dB[1];
         }
         g_cfPrevBase[0] = base[0]; g_cfPrevBase[1] = base[1];
         g_cfPrevHead[0] = head[0]; g_cfPrevHead[1] = head[1];
         g_cfHave = true;
-        if (!g_aimHead) { g_cfT0 = 0; return; }
-        const float w = copy_weight();
-        if (w <= 0.0f) return;
-        const float c[2] = { g_cfC0[0] * w, g_cfC0[1] * w };
+        if (!g_aimHead) { g_cfC0[0] = g_cfC0[1] = 0.0f; return; }
+        if (g_cfC0[0] == 0.0f && g_cfC0[1] == 0.0f) return;
+        const float c[2] = { g_cfC0[0], g_cfC0[1] };
         *(int32_t*)(cam + OFF_YAW)   += (int32_t)(c[0] / ROT2DEG);
         *(int32_t*)(cam + OFF_PITCH) += (int32_t)(c[1] / ROT2DEG);
         g_copyApplied[0] = c[0]; g_copyApplied[1] = c[1];
@@ -994,6 +997,8 @@ namespace
     volatile float g_pvPostFov  = 0.0f;  // read back from the matrix after we wrote it
     volatile float g_pvPostVFov = 0.0f;
     volatile ULONGLONG g_pvCamTick = 0, g_pvOtherTick = 0;   // PAUSELOOK: last main view at / not at the camera FOV
+    volatile ULONGLONG g_pvIgnTick = 0;   // PAUSEFOV2: last projection left out of the test (not frame-shaped)
+    volatile float g_pvCamFov = 0, g_pvCamRatio = 0, g_pvOtherFov = 0, g_pvOtherRatio = 0, g_pvOtherField = 0, g_pvIgnFov = 0, g_pvIgnRatio = 0;
     volatile int   g_pvSkips    = 0;     // projections seen but NOT matched
     volatile float g_pvSkipFov  = 0.0f;  // HFOV of the widest one we skipped
     volatile float g_pvSkipRatio= 0.0f;
@@ -1069,9 +1074,16 @@ namespace
                         // the headset FOV the stub writes (F2 23:29: field 55.9, main view 104.0), so a paused view
                         // never matched and the pause fell back to the window. The headset FOV counts as the camera's.
                         const float lockFov = (g_fovAbs && *g_fovAbs && g_aFov) ? *g_aFov : 0.0f;
-                        if ((camFov > 1.0f && fabsf(fovDeg - camFov) < 1.0f) || (lockFov > 1.0f && fabsf(fovDeg - lockFov) < 1.0f))
-                            g_pvCamTick = GetTickCount64();
-                        else g_pvOtherTick = GetTickCount64();
+                        // PAUSEFOV2: JJ's pause F2 (00:45:53) still said "main view through the player camera: no". With
+                        // a square eye image the main view (and the map's) is frame-shaped; the 16:9 projections seen
+                        // since FOVABS (0.568 at the game's own FOV, from the camera between frames) are not the main
+                        // view, so they no longer count as "something else". Diag: the last of each, for the status file.
+                        const bool eye169 = want > 0.55f && want < 0.575f;
+                        const bool mainShaped = frameShaped || eye169;
+                        const bool camMatch = (camFov > 1.0f && fabsf(fovDeg - camFov) < 1.0f) || (lockFov > 1.0f && fabsf(fovDeg - lockFov) < 1.0f);
+                        if (camMatch && mainShaped) { g_pvCamTick = GetTickCount64(); g_pvCamFov = fovDeg; g_pvCamRatio = ratio; }
+                        else if (mainShaped) { g_pvOtherTick = GetTickCount64(); g_pvOtherFov = fovDeg; g_pvOtherRatio = ratio; g_pvOtherField = camFov; }
+                        else { g_pvIgnTick = GetTickCount64(); g_pvIgnFov = fovDeg; g_pvIgnRatio = ratio; }
                     }
                     if (g_projVR)
                     {
@@ -1132,6 +1144,17 @@ bool akvr_camera_main_view_live()
 {
     const ULONGLONG now = GetTickCount64();
     return g_projVRHooked && now - g_pvCamTick < 300 && now - g_pvOtherTick > 600;
+}
+// PAUSEFOV2: what the pause test saw last ("match 0.990@104.0 12 ms ago | other ... | left out ...")
+const char* akvr_camera_main_view_diag()
+{
+    static char s[256];
+    const ULONGLONG now = GetTickCount64();
+    auto ago = [&](ULONGLONG t) { return t ? (long long)(now - t) : -1ll; };
+    snprintf(s, sizeof(s), "match %.3f@%.1f %lld ms ago | other %.3f@%.1f (field %.1f) %lld ms ago | left out %.3f@%.1f %lld ms ago",
+             g_pvCamRatio, g_pvCamFov, ago(g_pvCamTick), g_pvOtherRatio, g_pvOtherFov, g_pvOtherField, ago(g_pvOtherTick),
+             g_pvIgnRatio, g_pvIgnFov, ago(g_pvIgnTick));
+    return s;
 }
 // PROJTIGHT: "ratio@HFOVxcount" for every distinct projection the game built.
 const char* akvr_projection_seen()
