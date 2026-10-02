@@ -1920,7 +1920,7 @@ namespace
 
         ImGui::TextColored(ImVec4(1.0f, 0.85f, 0.2f, 1.0f), "Arkham Knight VR");
         ImGui::SameLine();
-        ImGui::TextDisabled("   build: COPYHOLD  " __DATE__ " " __TIME__);   // the same tag as the status file
+        ImGui::TextDisabled("   build: AIMTRIGGER  " __DATE__ " " __TIME__);   // the same tag as the status file
 
         // ---- one status line ----------------------------------------------------
         // TIDY4 2026-09-27 (JJ: "cleaned up and reformatted to be a bit more consistent with the
@@ -2088,7 +2088,7 @@ namespace
             if (ImGui::Checkbox("smooth Batmobile get in / out  (fix - compare on / off)", &crs)) { akvr_cam_restore_set(crs); settings_save(); }
             // AIMHEAD 2026-10-03 (JJ: the Batmobile's weapon reticle no longer follows the head)
             bool aih = akvr_cam_aim_head();
-            if (ImGui::Checkbox("aim with your head  (Batmobile weapons and anything the game aims along the camera)", &aih)) { akvr_cam_aim_head_set(aih); settings_save(); }
+            if (ImGui::Checkbox("aim with your head while holding the left trigger  (Batmobile battle mode, gadget aim)", &aih)) { akvr_cam_aim_head_set(aih); settings_save(); }
             // CAMSMOOTH 2026-10-02 (JJ: getting out of the Batmobile still pops - the game's camera jumps ~30 cm in a frame)
             bool csm = akvr_cam_smooth();
             if (ImGui::Checkbox("soften the game's sudden camera jumps  (fix - compare on / off)", &csm)) { akvr_cam_smooth_set(csm); settings_save(); }
@@ -2899,7 +2899,7 @@ namespace
             float pvRatio = 0.0f, pvFov = 0.0f; int pvHits = 0;
             akvr_projvr_diag(pvRatio, pvHits, pvFov);
             fprintf(f, "\npatches:\n");
-            fprintf(f, "   build: COPYHOLD " __DATE__ " " __TIME__ "\n");
+            fprintf(f, "   build: AIMTRIGGER " __DATE__ " " __TIME__ "\n");
             fprintf(f, "   zoom vignette: %s\n", akvr_xr_vig_diag());
             fprintf(f, "   %s\n", akvr_audiosync_diag());   // AUDIOSYNC
             fprintf(f, "   pause look: %s, %s now, main view through the player camera: %s, head writes into the paused camera: %ld, darken %.0f%%\n",

@@ -12,6 +12,7 @@
 // until it succeeds (the game may load its input DLL after us).
 void akvr_gamepad_install();
 unsigned long long akvr_gamepad_right_stick_ms();   // SWINGEASE: ms since the right stick was last off centre
+unsigned long long akvr_gamepad_left_trigger_ms();  // AIMTRIGGER: ms since the left trigger was last held
 
 // Menu mode: when ON, the game sees an empty controller (so it ignores the pad
 // while you're in the settings menu); the menu gets the real controller instead.

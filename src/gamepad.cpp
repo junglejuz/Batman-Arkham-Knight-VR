@@ -11,6 +11,7 @@ namespace
     bool   g_hooked = false;
     bool   g_menu   = false;
     volatile ULONGLONG g_rsAt = 0;   // SWINGEASE: the last game read with the right stick off centre
+    volatile ULONGLONG g_ltAt = 0;   // AIMTRIGGER: the last game read with the left trigger (aim / battle mode) held
 
     // Our interception: pass through normally, but while menu mode is on, blank out
     // controller 0 for the CALLER (the game) so it acts as if no buttons/sticks are
@@ -29,6 +30,7 @@ namespace
         {
             if (abs(st->Gamepad.sThumbRX) > XINPUT_GAMEPAD_RIGHT_THUMB_DEADZONE ||
                 abs(st->Gamepad.sThumbRY) > XINPUT_GAMEPAD_RIGHT_THUMB_DEADZONE) g_rsAt = GetTickCount64();   // SWINGEASE
+            if (st->Gamepad.bLeftTrigger > 64) g_ltAt = GetTickCount64();   // AIMTRIGGER
             if (g_menu)
                 ZeroMemory(&st->Gamepad, sizeof(st->Gamepad));
             // Hide the chord from the game while it's being held.
@@ -142,3 +144,5 @@ void akvr_gamepad_feed_imgui(bool muteLeftRight)
 }
 // SWINGEASE: ms since the game last read the right stick off centre (huge = never)
 unsigned long long akvr_gamepad_right_stick_ms() { return g_rsAt ? GetTickCount64() - g_rsAt : ~0ull; }
+// AIMTRIGGER: ms since the game last read the left trigger held (huge = never)
+unsigned long long akvr_gamepad_left_trigger_ms() { return g_ltAt ? GetTickCount64() - g_ltAt : ~0ull; }

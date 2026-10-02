@@ -174,7 +174,7 @@ pictures and a recording, for troubleshooting.
 | Smooth Batmobile get in / out | On (normal): getting in and out of the Batmobile plays the game's own camera move instead of popping. Turn it off only to compare. |
 | Soften the game's sudden camera jumps | On (normal): when the game's camera suddenly jumps a short way in a single frame (it does when Batman gets out of the Batmobile), the jump is spread over a fifth of a second instead of popping. Real cuts still cut. |
 | Ease the game's fast camera tilts | On (normal): when the game swings the camera up or down very fast by itself (getting out of the Batmobile, some takedowns), the view follows at a comfortable speed and eases to a stop instead. Never while you're using the right stick. |
-| Aim with your head | On (normal): the Batmobile's weapons (and anything else the game aims along the camera) aim where you look. |
+| Aim with your head while holding the left trigger | On (normal): while the left trigger is held (Batmobile battle mode, gadget aim) the weapons aim where you look. The rest of the time the game keeps its own camera, so getting in and out of the Batmobile stays smooth. |
 | Where you stand | Moves your viewpoint left or right, down or up, back or forward. If you feel you're standing to the left of what you're looking at, move left/right to the right. **Reset position** undoes it. |
 
 ### HUD

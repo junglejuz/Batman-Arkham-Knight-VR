@@ -780,3 +780,18 @@ Rollback: `diagnostics/before-AIMHEAD2-20261003/`.
   else". With a square eye image only frame-shaped projections now count for the test. NOT proven: status now has a
   "pause test:" line (last match / other / left-out projection with FOV and age) - read it from a pause F2 first.
 Rollback: `diagnostics/before-COPYHOLD-20261003/`.
+**AIMTRIGGER + PAUSEFOV3 (2026-10-03, build AIMTRIGGER, DLL only, deployed, untested):** JJ on COPYHOLD: pause "still in
+a window"; get-out "still pops a little ... more obvious when looking straight at it now"; "we seem to be going around
+in circles". STOP patching copies.
+- AIMTRIGGER (root fix): F2 01:01:13 - at a steep game camera the head reaches the rotation fields as a mix of yaw,
+  pitch AND roll (live roll 9.7 -> 19.0 on the 72.24 s copy frame) that changes as the game's camera moves, so no copy
+  correction can be exact. The restore is now the full CAMRESTORE (JJ-confirmed smooth) EXCEPT while the game reads the
+  left trigger held (gamepad.cpp g_ltAt, < 300 ms: Batmobile battle mode, gadget aim): then the head stays in the
+  read-back for aiming (old AIMHEAD path). copy_fix only looks for a copy when the last read-back carried the head
+  (g_rbHead), i.e. leaving trigger aim. Panel/README row renamed "aim with your head while holding the left trigger".
+  Check with JJ: Batmobile battle-mode reticle follows the head; get in/out smooth; gadget aim (L2 on foot) OK.
+- PAUSEFOV3: the new "pause test" line (pause F2 01:00:37) read: match 0.990@69.5 31 ms ago | other 0.990@75.0 (field
+  69.5) 31 ms ago. Every paused frame builds the player view at the camera FOV AND a second frame-shaped view at 75.0,
+  so "nothing else for 0.6 s" never held. main_view_live = a match within 300 ms only. RISK: if the MAP also draws
+  the player view, the map now gets the pause look too - ask JJ to open the map.
+Rollback: `diagnostics/before-AIMTRIGGER-20261003/`.

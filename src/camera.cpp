@@ -418,6 +418,7 @@ namespace
     bool  g_tsHave = false;
     volatile float g_tiltApplied = 0.0f;   // degrees added to the pitch field this finalize (CAMRESTORE puts the base back)
     volatile float g_copyApplied[2] = {};   // AIMHEAD: the copied head taken off this finalize (degrees, yaw / pitch)
+    bool g_rbHead = false;   // AIMTRIGGER: the last read-back kept the head in the rotation (left trigger held)
     float wrap180(float a) { while (a > 180.0f) a -= 360.0f; while (a < -180.0f) a += 360.0f; return a; }
     // SWINGEASE 2026-10-02 — JJ with TILTSMOOTH: "I still notice the pop when getting out of the Batmobile"; and "is this
     // fix going to be applicable if there are other vehicles in the game or other situations". F2 23:29: no one-frame
@@ -527,7 +528,9 @@ namespace
             const float dB[2] = { wrap180(base[0] - g_cfPrevBase[0]), wrap180(base[1] - g_cfPrevBase[1]) };
             const bool stick = akvr_gamepad_right_stick_ms() < 250;   // the player is turning the camera
             const bool still = fmaxf(fabsf(g_cfPrevStep[0]), fabsf(g_cfPrevStep[1])) < 0.3f && !stick;
-            if (g_aimHead && copy_seen(dB, g_cfPrevHead, still))
+            // AIMTRIGGER: a copy of the head is only possible when the game last read the head back
+            static const float kNoHead[2] = { 0.0f, 0.0f };
+            if (g_aimHead && copy_seen(dB, g_rbHead ? g_cfPrevHead : kNoHead, still))
             {   // the game started from the drawn camera: take the jump off again (on top of what is still held)
                 g_cfC0[0] -= dB[0];
                 g_cfC0[1] -= dB[1];
@@ -1143,7 +1146,10 @@ bool akvr_projvr_ok()  { return g_projVRHooked; }
 bool akvr_camera_main_view_live()
 {
     const ULONGLONG now = GetTickCount64();
-    return g_projVRHooked && now - g_pvCamTick < 300 && now - g_pvOtherTick > 600;
+    // PAUSEFOV3 2026-10-03 — JJ's pause F2 (01:00:37, "pause test" line): every paused frame builds the player view at
+    // the camera's FOV (0.990@69.5) AND a second frame-shaped view at 75.0, so "nothing else for 0.6 s" never held.
+    // The player view being drawn is what matters; another view beside it no longer blocks the pause look.
+    return g_projVRHooked && now - g_pvCamTick < 300;
 }
 // PAUSEFOV2: what the pause test saw last ("match 0.990@104.0 12 ms ago | other ... | left out ...")
 const char* akvr_camera_main_view_diag()
@@ -1916,7 +1922,15 @@ void akvr_head_update()
     {
         __try
         {
-            if (g_aimHead)
+            // AIMTRIGGER 2026-10-03 — JJ on COPYHOLD: still "pops a little" getting out, now more looking straight at
+            // the car, "we seem to be going around in circles". F2 01:01: at a steep camera the head reaches the game's
+            // rotation as a mix of yaw, pitch AND roll (roll 9.7 -> 19.0 on the copy frame) that changes as the game's
+            // camera moves, so a copied head can never be taken off exactly. Root fix: the game gets its own rotation
+            // back (full CAMRESTORE, JJ: "it was fine before") except while the left trigger is held (Batmobile battle
+            // mode / gadget aim), when the head stays in for aiming. Transitions start from the game's own camera.
+            const bool aimNow = g_aimHead && akvr_gamepad_left_trigger_ms() < 300;
+            g_rbHead = aimNow;
+            if (aimNow)
             {   // AIMHEAD: the rotation keeps the head (the Batmobile aims with it); only our corrections come off
                 *(int32_t*)(cb + OFF_YAW)   -= (int32_t)(rsCopy[0] / ROT2DEG);
                 *(int32_t*)(cb + OFF_PITCH) -= (int32_t)((rsCopy[1] + rsTilt) / ROT2DEG);
