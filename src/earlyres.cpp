@@ -4326,7 +4326,13 @@ void  akvr_hud_layers_dump(const wchar_t* path)
     if (_wfopen_s(&f, path, L"w") != 0 || !f) return;
     discover_layers(false);                       // F2 was slow: no name search here
     fprintf(f, "AKVR HUD layers (HUDLAYERS phase 2)\n%s\n"
-               "index depth parent kids 3D  key  |  a b tx / c d ty (twips)  |  adjustment\n", g_layerDiag);
+               "index depth parent kids 3D  key  |  a b tx / c d ty (twips)  |  adjustment  |  shown (self/all) at x,y (stage px)\n", g_layerDiag);
+    // AIMRETICLE 2026-10-03 - JJ: the Batmobile gun reticle must follow the head while aiming, the rest of the HUD stays
+    // in the room. Parts have no names, so F2 now writes each part's live visible bit (own and with every parent) and
+    // its position on the stage (all parent matrices applied): an F2 aiming vs not aiming shows which part appears at
+    // the centre.
+    static float s_ax[2048], s_ay[2048], s_m[2048][6];
+    static bool  s_vis[2048];
     for (int i = 0; i < g_nContFps; ++i)
         fprintf(f, "container id %s: %d fingerprint parts\n", g_contFps[i].id, g_contFps[i].n);
     fprintf(f, "\n");
@@ -4341,10 +4347,25 @@ void  akvr_hud_layers_dump(const wchar_t* path)
         if (node_data(L.node, d))
             __try { if (has_mark(d)) mark = L.taggedByUs ? " MARK" : " MARK(not ours)"; }
             __except (EXCEPTION_EXECUTE_HANDLER) {}
-        fprintf(f, "%4d %*sd%d p%-3d kids %-3d %s %-40s | %.3f %.3f %.0f / %.3f %.3f %.0f | s %.2f x %.3f y %.3f %s%s%s%s\n",
+        float cur[12]; int fl = 0; bool own = true;
+        if (!node_matrix(L.node, cur, &fl)) { memcpy(cur, L.base, sizeof(cur)); fl = L.flags | 1; }
+        own = (fl & 1) != 0;
+        const float m[6] = { cur[0], cur[1], cur[3], cur[4], cur[5], cur[7] };   // a b tx / c d ty
+        float* M = s_m[i];
+        if (L.parent >= 0 && L.parent < i)
+        {
+            const float* P = s_m[L.parent];
+            M[0] = P[0] * m[0] + P[1] * m[3]; M[1] = P[0] * m[1] + P[1] * m[4]; M[2] = P[0] * m[2] + P[1] * m[5] + P[2];
+            M[3] = P[3] * m[0] + P[4] * m[3]; M[4] = P[3] * m[1] + P[4] * m[4]; M[5] = P[3] * m[2] + P[4] * m[5] + P[5];
+            s_vis[i] = own && s_vis[L.parent];
+        }
+        else { memcpy(M, m, sizeof(m)); s_vis[i] = own; }
+        s_ax[i] = M[2] / 20.0f; s_ay[i] = M[5] / 20.0f;
+        fprintf(f, "%4d %*sd%d p%-3d kids %-3d %s %-40s | %.3f %.3f %.0f / %.3f %.3f %.0f | s %.2f x %.3f y %.3f %s%s%s%s | shown %d/%d at %.0f,%.0f\n",
                 i, L.depth * 2, "", L.depth, L.parent, L.kids, (L.flags & 0x200) ? "3D" : "  ", L.key,
                 L.base[0], L.base[1], L.base[3], L.base[4], L.base[5], L.base[7],
-                L.s, L.dx, L.dy, L.hide ? "HIDDEN" : "", L.world ? " ON-TARGET" : "", L.room ? " ROOM" : "", mark);
+                L.s, L.dx, L.dy, L.hide ? "HIDDEN" : "", L.world ? " ON-TARGET" : "", L.room ? " ROOM" : "", mark,
+                own ? 1 : 0, s_vis[i] ? 1 : 0, s_ax[i], s_ay[i]);
     }
     ReleaseSRWLockShared(&g_layerLock);
     fclose(f);

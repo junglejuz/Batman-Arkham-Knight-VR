@@ -819,3 +819,14 @@ empty slot is slow to ask). Panel: "AIMING" / "(trigger not held)" next to the a
 aim still does not follow, detection is fine and the aim reads something else: compare with camaimhead behaviour
 before AIMTRIGGER (AIMHEAD build) - F2 while holding the trigger.
 Rollback: `diagnostics/before-AIMTRIGGER2-20261003/`.
+**AIMTRIGGER2 result (JJ):** head aiming works again (gun follows the head) but "the Batmobile's gun reticle is not
+following" - the reticle is a HUD part, hung in the room by ROOMALL. JJ chose: ONLY the reticle follows the head while
+aiming (not the whole HUD). Parts have no names, so it must be identified from captures.
+**AIMRETICLE (2026-10-03, build AIMRETICLE, DLL only, deployed, waiting for JJ's two F2s):** hudlayers.txt rows now end
+"| shown own/all at x,y" (live visible bit of the node and of all its parents; stage position with every parent
+matrix applied, px). NEXT: JJ presses F2 in the Batmobile once holding the left trigger and once not (same view);
+diff the "shown" columns - the part(s) that appear only while aiming, near the stage centre, are the reticle. Then
+tick that part "stays on its target" in hudlayers (8th field = 1, keep every other entry - preserve-hud-part-settings);
+on-target parts are drawn into the game picture (head-locked when the game's camera includes the head while aiming).
+If it should also follow the head when NOT aiming, that is the same tick.
+Rollback: `diagnostics/before-AIMRETICLE-20261003/`.
