@@ -731,3 +731,13 @@ from a still camera, zero yaw, at each get in/out start. Rule (replayed on every
 all at those moments, none on stick turns): a still-camera pitch step >= 1.5 deg with < 0.3 deg yaw is absorbed and let out
 at 0.3 deg/frame; > 25 deg = cut. Runs in smooth_cb (finalize stub), adds to the pitch field; CAMRESTORE puts the base
 back. Same `camsmooth` switch; the panel count includes these. Rollback: `diagnostics/before-TILTSMOOTH-20261002/`.
+**SWINGEASE (2026-10-02, build SWINGEASE, DLL only, deployed, untested):** JJ with TILTSMOOTH: still a pop getting out,
+and asked whether the fixes cover other vehicles/situations. F2 23:29 (shown camera = live fields): no one-frame jumps
+left; getting out the game swings its camera DOWN ~55 deg in 0.37 s (up to 3.9 deg/frame) and stops dead. General
+comfort rule in smooth_cb (replaces TILTSMOOTH): pitch only; when the game's tilt changes > 1 deg in a frame and the
+right stick is idle (gamepad.cpp records the last off-centre read the GAME made, akvr_gamepad_right_stick_ms < 250 ms
+= in use), the shown tilt follows at <= 1.3 deg/frame with speed changes <= 0.15 deg/frame, then hands back exactly;
+stick use hands back over a few frames. Replayed on six F2 paths (scratch swingsim.py): 2-15 eases each, lag <= 26 deg
+for ~0.5 s on the get-out. Setting `camswing` (default 1), VIEW box. Generality (answered JJ): CAMRESTORE + CAMSMOOTH
+are general (any transition / one-frame jump); SWINGEASE covers any fast automatic tilt; sideways swings are not eased
+(the car's own turning must not lag). Rollback: `diagnostics/before-SWINGEASE-20261002/`.

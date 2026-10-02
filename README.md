@@ -173,6 +173,7 @@ pictures and a recording, for troubleshooting.
 | Picture height per eye | Sharpness against speed. Higher is sharper and slower. The installer's Low / Medium / High are 2016 / 2432 / 2860. Takes effect after a restart. |
 | Smooth Batmobile get in / out | On (normal): getting in and out of the Batmobile plays the game's own camera move instead of popping. Turn it off only to compare. |
 | Soften the game's sudden camera jumps | On (normal): when the game's camera suddenly jumps a short way in a single frame (it does when Batman gets out of the Batmobile), the jump is spread over a fifth of a second instead of popping. Real cuts still cut. |
+| Ease the game's fast camera tilts | On (normal): when the game swings the camera up or down very fast by itself (getting out of the Batmobile, some takedowns), the view follows at a comfortable speed and eases to a stop instead. Never while you're using the right stick. |
 | Where you stand | Moves your viewpoint left or right, down or up, back or forward. If you feel you're standing to the left of what you're looking at, move left/right to the right. **Reset position** undoes it. |
 
 ### HUD

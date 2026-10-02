@@ -10,6 +10,7 @@ namespace
     XIGS_t oXIGS = nullptr;          // original (un-intercepted) XInputGetState, via MinHook trampoline
     bool   g_hooked = false;
     bool   g_menu   = false;
+    volatile ULONGLONG g_rsAt = 0;   // SWINGEASE: the last game read with the right stick off centre
 
     // Our interception: pass through normally, but while menu mode is on, blank out
     // controller 0 for the CALLER (the game) so it acts as if no buttons/sticks are
@@ -26,6 +27,8 @@ namespace
         DWORD r = oXIGS ? oXIGS(idx, st) : ERROR_DEVICE_NOT_CONNECTED;
         if (r == ERROR_SUCCESS && st && idx == 0)
         {
+            if (abs(st->Gamepad.sThumbRX) > XINPUT_GAMEPAD_RIGHT_THUMB_DEADZONE ||
+                abs(st->Gamepad.sThumbRY) > XINPUT_GAMEPAD_RIGHT_THUMB_DEADZONE) g_rsAt = GetTickCount64();   // SWINGEASE
             if (g_menu)
                 ZeroMemory(&st->Gamepad, sizeof(st->Gamepad));
             // Hide the chord from the game while it's being held.
@@ -137,3 +140,5 @@ void akvr_gamepad_feed_imgui(bool muteLeftRight)
     axis(ImGuiKey_GamepadLStickUp,     gp.sThumbLY, 7000, 30000);
     axis(ImGuiKey_GamepadLStickDown,  -gp.sThumbLY, 7000, 30000);
 }
+// SWINGEASE: ms since the game last read the right stick off centre (huge = never)
+unsigned long long akvr_gamepad_right_stick_ms() { return g_rsAt ? GetTickCount64() - g_rsAt : ~0ull; }

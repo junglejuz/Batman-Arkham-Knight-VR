@@ -14,6 +14,7 @@
 // ------------------------------------------------------------------
 #include "camera.h"
 #include "xr.h"           // akvr_xr_head_deg / akvr_xr_session_running (M4a-3)
+#include "gamepad.h"      // SWINGEASE: right stick in use
 #include <windows.h>
 #include <tlhelp32.h>
 #include <cstring>
@@ -407,6 +408,7 @@ namespace
     bool  g_smHave = false;
     volatile float g_smoothApplied[3] = {};
     volatile LONG g_smoothEvents = 0;
+    // (TILTSMOOTH, superseded the same night by SWINGEASE below, which covers its tilt step too)
     // TILTSMOOTH 2026-10-02 — JJ with CAMSMOOTH: getting out of the Batmobile "still pops". F2 23:23: the position jumps
     // are gone; what is left is the game's own camera TILTING 3.3-3.5 deg in one frame (sometimes 1.6 more the next) from
     // a still camera, with no sideways turn, at the start of each get in / get out. In every F2 since 1 Oct a still-camera
@@ -416,34 +418,64 @@ namespace
     bool  g_tsHave = false;
     volatile float g_tiltApplied = 0.0f;   // degrees added to the pitch field this finalize (CAMRESTORE puts the base back)
     float wrap180(float a) { while (a > 180.0f) a -= 360.0f; while (a < -180.0f) a += 360.0f; return a; }
+    // SWINGEASE 2026-10-02 — JJ with TILTSMOOTH: "I still notice the pop when getting out of the Batmobile"; and "is this
+    // fix going to be applicable if there are other vehicles in the game or other situations". F2 23:29: no one-frame
+    // jumps left; getting out the game swings its camera DOWN ~55 deg in 0.37 s (up to 3.9 deg a frame, ~200 deg/s) and
+    // stops dead - deliberate camera work, a whole-world swing in VR. General rule (any vehicle, takedown, scripted move):
+    // when the game tilts its camera faster than 1 deg a frame and the right stick is idle, the shown tilt eases after it
+    // - speed at most 1.3 deg a frame, changing by at most 0.15 deg a frame (no dead start or stop) - then hands back
+    // exactly. Tilt only: the car's own turning is sideways and must not lag. Replayed on six F2 paths (scratch
+    // swingsim): 2-15 eases each, lag <= 26 deg for ~0.5 s on the get-out, speed changes <= 0.15 deg/frame.
+    bool  g_swingEase = true;
+    float g_seShown = 0.0f, g_sePrev = 0.0f, g_seVel = 0.0f, g_seLastStep = 0.0f;
+    bool  g_seHave = false, g_seActive = false;
     void tilt_smooth(uintptr_t cam)
     {
         g_tiltApplied = 0.0f;
-        if (!g_bYaw || !g_bPitch) return;
-        const float yaw = (float)(*g_bYaw) * ROT2DEG, pitch = (float)(*g_bPitch) * ROT2DEG;   // the game's own (saved by the stub)
-        if (!g_tsHave) { g_tsPrevYaw = yaw; g_tsPrevPitch = pitch; g_tsVel = 0.0f; g_tsCorr = 0.0f; g_tsHave = true; return; }
-        const float dy = wrap180(yaw - g_tsPrevYaw), dp = wrap180(pitch - g_tsPrevPitch);
-        g_tsPrevYaw = yaw; g_tsPrevPitch = pitch;
-        if (fabsf(dp) > 25.0f || fabsf(dy) > 25.0f) { g_tsVel = 0.0f; g_tsCorr = 0.0f; return; }   // a cut
-        g_tsCorr = g_tsCorr > 0.0f ? fmaxf(0.0f, g_tsCorr - 0.3f) : fminf(0.0f, g_tsCorr + 0.3f);
-        if (fabsf(dp - g_tsVel) >= 1.5f && fabsf(dy) < 0.3f && fabsf(g_tsVel) < 0.5f)
-        {
-            g_tsCorr -= dp;
-            InterlockedIncrement(&g_smoothEvents);
+        if (!g_bPitch) return;
+        const float pitch = (float)(*g_bPitch) * ROT2DEG;   // the game's own (saved by the stub)
+        if (!g_seHave) { g_seShown = g_sePrev = pitch; g_seVel = g_seLastStep = 0.0f; g_seActive = false; g_seHave = true; return; }
+        const float dp = wrap180(pitch - g_sePrev);
+        g_sePrev = pitch;
+        const float old = g_seShown;
+        const bool stick = akvr_gamepad_right_stick_ms() < 250;   // the player is turning the camera
+        if (fabsf(dp) > 25.0f || !g_swingEase) { g_seShown = pitch; g_seActive = false; g_seVel = 0.0f; }   // a cut / off
+        else if (g_seActive && stick)
+        {   // hand over to the player quickly but not in one frame
+            g_seShown += wrap180(pitch - g_seShown) * 0.5f;
+            g_seVel = 0.0f;
+            if (fabsf(wrap180(pitch - g_seShown)) < 0.1f) { g_seShown = pitch; g_seActive = false; }
         }
-        else
-            g_tsVel = 0.5f * g_tsVel + 0.5f * dp;
-        if (g_tsCorr != 0.0f)
+        else if (!g_seActive && fabsf(dp) > 1.0f && !stick)
         {
-            *(int32_t*)(cam + OFF_PITCH) += (int32_t)(g_tsCorr / ROT2DEG);
-            g_tiltApplied = g_tsCorr;
+            g_seActive = true;
+            InterlockedIncrement(&g_smoothEvents);
+            g_seVel = g_seLastStep;                            // carry on at the speed already shown
+        }
+        else if (!g_seActive)
+            g_seShown = pitch;
+        if (g_seActive && !stick)
+        {
+            const float d = wrap180(pitch - g_seShown);
+            const float vt = fmaxf(-1.3f, fminf(1.3f, 0.25f * d));
+            g_seVel += fmaxf(-0.15f, fminf(0.15f, vt - g_seVel));
+            g_seShown += g_seVel;
+            if (fabsf(wrap180(pitch - g_seShown)) < 0.05f && fabsf(dp) <= 1.0f && fabsf(g_seVel) < 0.2f)
+            { g_seShown = pitch; g_seActive = false; g_seVel = 0.0f; }
+        }
+        g_seLastStep = fabsf(dp) > 25.0f ? 0.0f : wrap180(g_seShown - old);
+        const float corr = wrap180(g_seShown - pitch);
+        if (corr != 0.0f)
+        {
+            *(int32_t*)(cam + OFF_PITCH) += (int32_t)(corr / ROT2DEG);
+            g_tiltApplied = corr;
         }
     }
     void __fastcall smooth_cb(uintptr_t cam)
     {
         __try
         {
-            if (g_camSmooth) tilt_smooth(cam); else { g_tsHave = false; g_tiltApplied = 0.0f; }   // TILTSMOOTH
+            tilt_smooth(cam);   // SWINGEASE (its own switch; replaced TILTSMOOTH)
             float* P = (float*)(cam + OFF_X);
             const float p[3] = { P[0], P[1], P[2] };
             g_smoothApplied[0] = g_smoothApplied[1] = g_smoothApplied[2] = 0.0f;
@@ -2050,3 +2082,5 @@ void akvr_cam_restore_set(bool on) { g_camRestore = on; }
 bool akvr_cam_smooth() { return g_camSmooth; }                 // CAMSMOOTH
 void akvr_cam_smooth_set(bool on) { g_camSmooth = on; }
 long akvr_cam_smooth_events() { return g_smoothEvents; }
+bool akvr_cam_swing() { return g_swingEase; }                  // SWINGEASE
+void akvr_cam_swing_set(bool on) { g_swingEase = on; }
