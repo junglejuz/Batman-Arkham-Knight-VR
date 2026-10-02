@@ -417,6 +417,7 @@ namespace
     float g_tsPrevYaw = 0.0f, g_tsPrevPitch = 0.0f, g_tsVel = 0.0f, g_tsCorr = 0.0f;
     bool  g_tsHave = false;
     volatile float g_tiltApplied = 0.0f;   // degrees added to the pitch field this finalize (CAMRESTORE puts the base back)
+    volatile float g_copyApplied[2] = {};   // AIMHEAD: the copied head taken off this finalize (degrees, yaw / pitch)
     float wrap180(float a) { while (a > 180.0f) a -= 360.0f; while (a < -180.0f) a += 360.0f; return a; }
     // SWINGEASE 2026-10-02 — JJ with TILTSMOOTH: "I still notice the pop when getting out of the Batmobile"; and "is this
     // fix going to be applicable if there are other vehicles in the game or other situations". F2 23:29: no one-frame
@@ -433,7 +434,7 @@ namespace
     {
         g_tiltApplied = 0.0f;
         if (!g_bPitch) return;
-        const float pitch = (float)(*g_bPitch) * ROT2DEG;   // the game's own (saved by the stub)
+        const float pitch = (float)(*g_bPitch) * ROT2DEG + g_copyApplied[1];   // the game's own, less a copied head (AIMHEAD)
         if (!g_seHave) { g_seShown = g_sePrev = pitch; g_seVel = g_seLastStep = 0.0f; g_seActive = false; g_seHave = true; return; }
         const float dp = wrap180(pitch - g_sePrev);
         g_sePrev = pitch;
@@ -471,10 +472,52 @@ namespace
             g_tiltApplied = corr;
         }
     }
+    // AIMHEAD 2026-10-03 — JJ: "the Batmobile's target reticle for the weapon previously was locked to your face. So that
+    // you could use your head for aiming ... it's now locked." CAMRESTORE gave the game its own rotation back after every
+    // frame, and the Batmobile's weapon aims along the rotation the game reads back - so the head no longer aimed. The
+    // rotation now goes back WITH the head (as before CAMRESTORE); position, FOV and the smoothing still go back to the
+    // game's own. The double head at get in / out is handled where it happens instead: on the frame the game copies the
+    // drawn camera (its own rotation jumps by exactly the last frame's head offset, within 0.2 deg) that copy is taken off
+    // again, easing out over 1.2 s as the game's move takes over. Replayed on the two pre-CAMRESTORE F2 traces: all 15
+    // copies found, the shown jump 5-12 deg -> under 1 deg, no other frames touched.
+    bool  g_aimHead = true;
+    float g_cfPrevBase[2] = {}, g_cfPrevHead[2] = {}, g_cfC0[2] = {};
+    bool  g_cfHave = false;
+    ULONGLONG g_cfT0 = 0;
+    void copy_fix(uintptr_t cam)
+    {
+        g_copyApplied[0] = g_copyApplied[1] = 0.0f;
+        if (!g_bYaw || !g_bPitch || !g_dYaw || !g_dPitch) return;
+        const float base[2] = { (float)(*g_bYaw) * ROT2DEG, (float)(*g_bPitch) * ROT2DEG };    // the game's own, this finalize
+        const float head[2] = { wrap180((float)(*g_dYaw) * ROT2DEG), wrap180((float)(*g_dPitch) * ROT2DEG) };   // added now
+        if (g_cfHave && g_aimHead)
+        {
+            const float dB[2] = { wrap180(base[0] - g_cfPrevBase[0]), wrap180(base[1] - g_cfPrevBase[1]) };
+            const float* hp = g_cfPrevHead;
+            if (fmaxf(fabsf(hp[0]), fabsf(hp[1])) > 0.5f && fabsf(dB[0] - hp[0]) < 0.2f && fabsf(dB[1] - hp[1]) < 0.2f)
+            {   // the game started from the drawn camera: take the copied head off again
+                g_cfC0[0] = -hp[0]; g_cfC0[1] = -hp[1];
+                g_cfT0 = GetTickCount64();
+                InterlockedIncrement(&g_smoothEvents);
+            }
+        }
+        g_cfPrevBase[0] = base[0]; g_cfPrevBase[1] = base[1];
+        g_cfPrevHead[0] = head[0]; g_cfPrevHead[1] = head[1];
+        g_cfHave = true;
+        if (!g_cfT0 || !g_aimHead) return;
+        const float t = (float)(GetTickCount64() - g_cfT0) / 1200.0f;
+        if (t >= 1.0f) { g_cfT0 = 0; return; }
+        const float w = 1.0f - t * t * (3.0f - 2.0f * t);      // eases from 1 to 0
+        const float c[2] = { g_cfC0[0] * w, g_cfC0[1] * w };
+        *(int32_t*)(cam + OFF_YAW)   += (int32_t)(c[0] / ROT2DEG);
+        *(int32_t*)(cam + OFF_PITCH) += (int32_t)(c[1] / ROT2DEG);
+        g_copyApplied[0] = c[0]; g_copyApplied[1] = c[1];
+    }
     void __fastcall smooth_cb(uintptr_t cam)
     {
         __try
         {
+            copy_fix(cam);      // AIMHEAD: the get in / out copy of the head taken off
             tilt_smooth(cam);   // SWINGEASE (its own switch; replaced TILTSMOOTH)
             float* P = (float*)(cam + OFF_X);
             const float p[3] = { P[0], P[1], P[2] };
@@ -1471,6 +1514,8 @@ void akvr_head_update()
     const uint64_t rsFc = akvr_camera_finalize_count();
     const float rsPos[3] = { *g_dPosX + g_smoothApplied[0], *g_dPosY + g_smoothApplied[1], *g_dPosZ + g_smoothApplied[2] };   // + CAMSMOOTH
     const bool rsFovAbs = g_fovAbs && *g_fovAbs != 0;
+    const float rsCopy[2] = { g_copyApplied[0], g_copyApplied[1] };   // AIMHEAD
+    const float rsTilt = g_tiltApplied;                               // SWINGEASE
     float y, p, r, px, py, pz; akvr_xr_head_pose(y, p, r, px, py, pz);
     float qx, qy, qz, qw; akvr_xr_head_quat(qx, qy, qz, qw);
 
@@ -1804,9 +1849,17 @@ void akvr_head_update()
     {
         __try
         {
-            *(int32_t*)(cb + OFF_YAW)   = *g_bYaw;
-            *(int32_t*)(cb + OFF_PITCH) = *g_bPitch;
-            *(int32_t*)(cb + OFF_ROLL)  = *g_bRoll;
+            if (g_aimHead)
+            {   // AIMHEAD: the rotation keeps the head (the Batmobile aims with it); only our corrections come off
+                *(int32_t*)(cb + OFF_YAW)   -= (int32_t)(rsCopy[0] / ROT2DEG);
+                *(int32_t*)(cb + OFF_PITCH) -= (int32_t)((rsCopy[1] + rsTilt) / ROT2DEG);
+            }
+            else
+            {
+                *(int32_t*)(cb + OFF_YAW)   = *g_bYaw;
+                *(int32_t*)(cb + OFF_PITCH) = *g_bPitch;
+                *(int32_t*)(cb + OFF_ROLL)  = *g_bRoll;
+            }
             *(float*)(cb + OFF_X) -= rsPos[0];
             *(float*)(cb + OFF_Y) -= rsPos[1];
             *(float*)(cb + OFF_Z) -= rsPos[2];
@@ -2084,3 +2137,5 @@ void akvr_cam_smooth_set(bool on) { g_camSmooth = on; }
 long akvr_cam_smooth_events() { return g_smoothEvents; }
 bool akvr_cam_swing() { return g_swingEase; }                  // SWINGEASE
 void akvr_cam_swing_set(bool on) { g_swingEase = on; }
+bool akvr_cam_aim_head() { return g_aimHead; }                 // AIMHEAD
+void akvr_cam_aim_head_set(bool on) { g_aimHead = on; }

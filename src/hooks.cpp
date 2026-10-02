@@ -98,6 +98,8 @@ bool        akvr_cam_smooth();                  // camera.cpp: CAMSMOOTH
 void        akvr_cam_smooth_set(bool on);
 long        akvr_cam_smooth_events();
 bool        akvr_cam_swing();                   // camera.cpp: SWINGEASE
+bool        akvr_cam_aim_head();                // camera.cpp: AIMHEAD
+void        akvr_cam_aim_head_set(bool on);
 void        akvr_cam_swing_set(bool on);
 void        akvr_cam_restore_set(bool on);
 void        akvr_camtest_set(int which, bool on);
@@ -847,6 +849,7 @@ namespace
         fprintf(f, "camrestore=%d\n", akvr_cam_restore() ? 1 : 0);   // CAMRESTORE
         fprintf(f, "camsmooth=%d\n", akvr_cam_smooth() ? 1 : 0);   // CAMSMOOTH
         fprintf(f, "camswing=%d\n", akvr_cam_swing() ? 1 : 0);   // SWINGEASE
+        fprintf(f, "camaimhead=%d\n", akvr_cam_aim_head() ? 1 : 0);   // AIMHEAD
         fprintf(f, "menutextleft=%.3f\n", akvr_menu_text_left());   // MENUTEXT
         fprintf(f, "pitchkeep=%.3f\n", akvr_head_pitch_keep());
         fprintf(f, "pitchunlink=%d\n", akvr_head_pitch_unlink());
@@ -981,6 +984,7 @@ namespace
             else if (sscanf(line, "camrestore=%d", &iv) == 1) akvr_cam_restore_set(iv != 0);   // CAMRESTORE
             else if (sscanf(line, "camsmooth=%d", &iv) == 1) akvr_cam_smooth_set(iv != 0);   // CAMSMOOTH
             else if (sscanf(line, "camswing=%d", &iv) == 1) akvr_cam_swing_set(iv != 0);   // SWINGEASE
+            else if (sscanf(line, "camaimhead=%d", &iv) == 1) akvr_cam_aim_head_set(iv != 0);   // AIMHEAD
             else if (sscanf(line, "menutextleft=%f", &v) == 1) akvr_menu_text_left_set(v);   // MENUTEXT
             else if (sscanf(line, "pitchkeep=%f",  &v) == 1) akvr_head_pitch_keep_set(0.0f);   // settled: view level (v ignored)
             else if (sscanf(line, "pitchunlink=%d", &iv) == 1) akvr_head_pitch_unlink_set(iv == 2 ? 2 : 0);   // 1 (horizon-level tilt) retired; 2 = UEVR-style
@@ -1916,7 +1920,7 @@ namespace
 
         ImGui::TextColored(ImVec4(1.0f, 0.85f, 0.2f, 1.0f), "Arkham Knight VR");
         ImGui::SameLine();
-        ImGui::TextDisabled("   build: SWINGEASE  " __DATE__ " " __TIME__);   // the same tag as the status file
+        ImGui::TextDisabled("   build: AIMHEAD  " __DATE__ " " __TIME__);   // the same tag as the status file
 
         // ---- one status line ----------------------------------------------------
         // TIDY4 2026-09-27 (JJ: "cleaned up and reformatted to be a bit more consistent with the
@@ -2082,6 +2086,9 @@ namespace
             // CAMRESTORE 2026-10-02 (JJ: the camera "pops" getting in and out of the Batmobile)
             bool crs = akvr_cam_restore();
             if (ImGui::Checkbox("smooth Batmobile get in / out  (fix - compare on / off)", &crs)) { akvr_cam_restore_set(crs); settings_save(); }
+            // AIMHEAD 2026-10-03 (JJ: the Batmobile's weapon reticle no longer follows the head)
+            bool aih = akvr_cam_aim_head();
+            if (ImGui::Checkbox("aim with your head  (Batmobile weapons and anything the game aims along the camera)", &aih)) { akvr_cam_aim_head_set(aih); settings_save(); }
             // CAMSMOOTH 2026-10-02 (JJ: getting out of the Batmobile still pops - the game's camera jumps ~30 cm in a frame)
             bool csm = akvr_cam_smooth();
             if (ImGui::Checkbox("soften the game's sudden camera jumps  (fix - compare on / off)", &csm)) { akvr_cam_smooth_set(csm); settings_save(); }
@@ -2892,7 +2899,7 @@ namespace
             float pvRatio = 0.0f, pvFov = 0.0f; int pvHits = 0;
             akvr_projvr_diag(pvRatio, pvHits, pvFov);
             fprintf(f, "\npatches:\n");
-            fprintf(f, "   build: SWINGEASE " __DATE__ " " __TIME__ "\n");
+            fprintf(f, "   build: AIMHEAD " __DATE__ " " __TIME__ "\n");
             fprintf(f, "   zoom vignette: %s\n", akvr_xr_vig_diag());
             fprintf(f, "   %s\n", akvr_audiosync_diag());   // AUDIOSYNC
             fprintf(f, "   pause look: %s, %s now, main view through the player camera: %s, head writes into the paused camera: %ld, darken %.0f%%\n",

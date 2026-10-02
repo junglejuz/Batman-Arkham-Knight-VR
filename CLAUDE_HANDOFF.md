@@ -741,3 +741,12 @@ stick use hands back over a few frames. Replayed on six F2 paths (scratch swings
 for ~0.5 s on the get-out. Setting `camswing` (default 1), VIEW box. Generality (answered JJ): CAMRESTORE + CAMSMOOTH
 are general (any transition / one-frame jump); SWINGEASE covers any fast automatic tilt; sideways swings are not eased
 (the car's own turning must not lag). Rollback: `diagnostics/before-SWINGEASE-20261002/`.
+**AIMHEAD (2026-10-03, build AIMHEAD, DLL only, deployed, untested):** JJ: "the Batmobile's target reticle for the
+weapon previously was locked to your face. So that you could use your head for aiming ... it's now locked." CAMRESTORE
+gave the game its own rotation back every frame; the Batmobile aims along the rotation the game reads back. Now (setting
+`camaimhead`, default 1) the restore keeps base + head in the rotation fields (only AKVR's corrections come off:
+copy fix + swing ease); position / FOV / CAMSMOOTH still go back to the game's own. The double head at get in/out is
+handled by copy_fix in smooth_cb: when the game's base rotation jumps by exactly the previous frame's head delta
+(< 0.2 deg both axes, head > 0.5 deg), that delta is taken off again and eased out over 1.2 s (smoothstep). SWINGEASE
+reads the base less the copy correction. Replayed on the two pre-CAMRESTORE F2 traces: 15/15 copies found, shown jumps
+5-12 deg -> < 1 deg. camaimhead=0 = the old full rotation restore. Rollback: `diagnostics/before-AIMHEAD-20261003/`.
