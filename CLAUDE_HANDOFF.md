@@ -844,3 +844,9 @@ and hudcontainers K13 was EMPTY (never saved; the container came up as K14 in th
 fingerprint recomputed from capture 02:10:47 (scratch contfp.py: cont_tokens re-implemented from hudlayers.txt rows;
 validated vs saved K1/K2/K5/K11/K12 at 0.6-0.9 Jaccard; K13 self-similarity across sessions 0.81-1.0, vs K4 0.44 - K4
 shares its first tokens, so watch that the ids do not swap). Untested in the headset.
+**RELEASE 2026-10-03 (build RELEASE1003):** JJ: "good for now ... remove probes we don't need, hide the ones we might,
+package it up". AIMSHOT auto-captures now only with testtools=1 (the reticle part is found). Kept (status-file text
+only, no cost in play): "pause test" and "head aiming" status lines, hudlayers "shown own/all at x,y" columns, the
+panel AIMING light. Package settings = JJ's live akvr_settings.ini (menuside -25, screen 0.70, the K13 reticle tick +
+K13 fingerprint). make_package.py now refuses testtools=1. README: AIMING light noted. Uploaded to release v0.1.0
+(--clobber), downloaded back and hash-compared. Local commits are NOT pushed (origin/main is 56+ behind).

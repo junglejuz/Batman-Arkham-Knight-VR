@@ -34,6 +34,10 @@ FILES = {  # package path -> source path (relative to akvr/)
 
 
 def main():
+    # PACKAGING_GUIDE section 12: test tools behind one switch, off in the package
+    with open(os.path.join(AKVR, 'install', 'files', 'akvr_settings.ini'), encoding='utf-8', errors='replace') as f:
+        if any(line.strip() == 'testtools=1' for line in f):
+            raise SystemExit('refusing: install/files/akvr_settings.ini has testtools=1')
     if os.path.isdir(PKG):
         shutil.rmtree(PKG)
     for dst, src in FILES.items():
