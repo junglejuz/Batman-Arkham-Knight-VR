@@ -3009,6 +3009,8 @@ bool akvr_xr_menu3d_offset(float &dyawDeg, float &dpitchDeg) {
 }
 bool akvr_xr_main_menu_detected() { return g_autoMainMenu && g_menuPhase == 1; }
 int  akvr_xr_menu_phase() { return g_autoMainMenu ? g_menuPhase : 2; }   // AUDIOSYNC: 0 = start-up
+void akvr_xr_mode_note(const char *what) { mode_log(what); }            // AUDIOSYNC3: into the mode timeline
+bool akvr_xr_startup_3d() { return g_autoMainMenu && g_menuPhase == 0 && g_anamorphic; }   // AUDIOSYNC3: the menu scene has begun
 void akvr_xr_set_anamorphic(bool on) { g_anamorphic = on; }
 void akvr_xr_set_screen_hold(bool on) { g_holdScreen = on; }
 void akvr_xr_set_camera_pos(bool ok, float x, float y, float z) {

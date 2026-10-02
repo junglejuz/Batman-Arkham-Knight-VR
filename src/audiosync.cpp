@@ -10,9 +10,19 @@
 #include <windows.h>
 #include <objbase.h>
 #include <stdio.h>
+#include <string.h>
 #include <MinHook.h>
 
 int akvr_xr_menu_phase();   // xr.cpp: 0 = start-up (before the main menu is confirmed)
+void akvr_xr_mode_note(const char* what);           // xr.cpp: a line in the mode timeline
+void akvr_hudsplit_ui_now(int& movies, int& draws); // hudsplit.cpp: the screen UI drawn just now
+bool akvr_xr_startup_3d();                         // xr.cpp: start-up, the 3D menu scene has begun
+// AUDIOSYNC3 2026-10-02 — JJ: "the music still starts very briefly before it pauses"; "There is music that goes together
+// with the title screens. And then that stops and then another music starts briefly, but that's the music that should
+// appear with the menu." The menu's music starts while the game still draws black frames between its two loading
+// pauses, so releasing on the next frame let it through. From the first frame of the 3D menu scene (still black) the
+// sound stays held until the menu is really being drawn (its UI call draws 10+ pieces), at most 6 s; every hold and
+// release goes into the mode timeline with the UI counts. The logos before it are untouched by this rule.
 
 namespace {
     // XAudio2 2.7 (DirectX June 2010): CLSID_XAudio2 / CLSID_XAudio2_Debug, IID_IXAudio2
@@ -37,6 +47,21 @@ namespace {
     volatile ULONGLONG g_stoppedAt = 0;
     volatile LONG  g_holds = 0;
     volatile LONG  g_holdMs = 0;
+    volatile LONG  g_holdDone = 0;            // AUDIOSYNC3: the menu-scene hold has ended once (never again)
+    bool menu_not_drawn()
+    {
+        if (g_holdDone || !akvr_xr_startup_3d()) return false;
+        int mv = 0, dr = 0; akvr_hudsplit_ui_now(mv, dr);
+        return dr < 10;
+    }
+    volatile LONG  g_notes = 0;               // timeline lines written (max 10)
+    char g_pending[2][64] = {}; int g_pendN = 0;   // notes for the timeline, written from the Present thread (under g_lock)
+    void note(const char* t)
+    {
+        if (g_notes >= 10 || g_pendN >= 2) return;
+        ++g_notes;
+        strncpy_s(g_pending[g_pendN++], t, _TRUNCATE);
+    }
     CRITICAL_SECTION g_lock;
     bool g_lockReady = false;
     char g_diag[160] = "";
@@ -47,8 +72,13 @@ namespace {
         if (g_stopped && xa)
         {
             __try { ((StartFn)(*(void***)xa)[11])(xa); } __except (EXCEPTION_EXECUTE_HANDLER) { g_xa = nullptr; }
-            InterlockedExchange(&g_holdMs, g_holdMs + (LONG)(GetTickCount64() - g_stoppedAt));
+            const ULONGLONG held = GetTickCount64() - g_stoppedAt;
+            InterlockedExchange(&g_holdMs, g_holdMs + (LONG)held);
+            int mv = 0, dr = 0; akvr_hudsplit_ui_now(mv, dr);
+            char n[64]; snprintf(n, sizeof(n), "sound on after %llu ms (ui %d/%d)", (unsigned long long)held, mv, dr);
+            note(n);
         }
+        if (akvr_xr_startup_3d()) InterlockedExchange(&g_holdDone, 1);   // AUDIOSYNC3: the menu-scene hold happens once
         InterlockedExchange(&g_stopped, 0);
     }
     void engine_stop_locked()
@@ -84,11 +114,15 @@ namespace {
             EnterCriticalSection(&g_lock);
             if (g_stopped)
             {
-                if (now - g_stoppedAt > 8000 || !g_on) engine_start_locked();   // never hold longer than 8 s
+                // never longer than 6 s, and never past the start-up
+                if (now - g_stoppedAt > 6000 || !g_on || akvr_xr_menu_phase() != 0) engine_start_locked();
             }
             // AUDIOSYNC2: 50 ms (JJ: "the music starts briefly just before it pauses" - the 150 ms wait let it through)
             else if (g_on && g_xa && last && now - last > 50 && akvr_xr_menu_phase() == 0)
+            {
                 engine_stop_locked();
+                if (g_stopped) note("sound held");
+            }
             LeaveCriticalSection(&g_lock);
         }
     }
@@ -119,8 +153,25 @@ void akvr_audiosync_install()
 void akvr_audiosync_frame()
 {
     g_lastFrame = GetTickCount64();
+    if (g_pendN && g_lockReady)   // AUDIOSYNC3: the timeline is written on this thread only
+    {
+        EnterCriticalSection(&g_lock);
+        for (int i = 0; i < g_pendN; ++i) akvr_xr_mode_note(g_pending[i]);
+        g_pendN = 0;
+        LeaveCriticalSection(&g_lock);
+    }
+    // AUDIOSYNC3: the 3D menu scene has begun but the menu itself is not drawn yet: hold (at most 6 s from the hold)
+    if (!g_stopped && g_lockReady && g_on && g_xa && !g_holdDone && menu_not_drawn())
+    {
+        EnterCriticalSection(&g_lock);
+        engine_stop_locked();
+        if (g_stopped) note("sound held (menu scene, no menu yet)");
+        LeaveCriticalSection(&g_lock);
+        return;
+    }
     if (g_stopped && g_lockReady)
     {
+        if (menu_not_drawn()) return;   // AUDIOSYNC3: the menu scene is up but the menu is not drawn yet
         EnterCriticalSection(&g_lock);
         engine_start_locked();
         LeaveCriticalSection(&g_lock);

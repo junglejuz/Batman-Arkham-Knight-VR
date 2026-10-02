@@ -1817,6 +1817,8 @@ namespace {
         g_subsRep = g_scopeSubs;
     }
 
+    // AUDIOSYNC3: the last screen UI call - its movie count and draws (the menu being drawn at all)
+    volatile int g_uiMovies = 0; volatile LONG g_uiDraws = 0; volatile ULONGLONG g_uiAt = 0;
     void hkRenderUI(void* engine, void* params)
     {
         int scene = -1, movies = -1;
@@ -1836,7 +1838,9 @@ namespace {
                        G::oOMSetRT && G::oBlend && GetCurrentThreadId() == g_presentTid;
         layer_begin();
         g_scopeTid = GetCurrentThreadId();
+        const LONG d0 = g_cDraw[0];
         g_orig(engine, params);
+        if (scene == 0) { g_uiMovies = movies; g_uiDraws = g_cDraw[0] - d0; g_uiAt = GetTickCount64(); }   // AUDIOSYNC3
         g_scopeTid = 0;
         layer_end();
         g_scopeLayer = false;
@@ -2553,3 +2557,10 @@ const char* akvr_hudsplit_vs_diag()
 }
 void akvr_hudsplit_squash_set(bool on) { g_squashWant = on; }
 bool akvr_hudsplit_squash() { return g_squashWant; }
+// AUDIOSYNC3: the screen UI drawn in the last 150 ms: movies and draws of the last call (0 / 0 = none)
+void akvr_hudsplit_ui_now(int& movies, int& draws)
+{
+    const bool fresh = g_uiAt && GetTickCount64() - g_uiAt < 150;
+    movies = fresh ? g_uiMovies : 0;
+    draws = fresh ? (int)g_uiDraws : 0;
+}

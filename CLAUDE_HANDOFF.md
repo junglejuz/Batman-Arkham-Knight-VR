@@ -679,3 +679,13 @@ feather the edges of it": ps3 fades dark pixels by their distance to the nearest
 directions x 6 distances up to cb0.y px); `menubackfeather` 0..1 -> 0..6% of the layer width (default 0.5); panel slider
 under the opacity one. ps3 compiled offline with d3dcompiler_47 (ps_5_0) first. Rollback:
 `diagnostics/before-MENUFEATHER-20261002/`.
+**AUDIOSYNC3 (2026-10-02, DLL only, deployed, untested):** JJ: "the music still starts very briefly before it pauses";
+"There is music that goes together with the title screens. And then that stops and then another music starts briefly,
+but that's the music that should appear with the menu." The menu music starts during the black 3D frames between the two
+loading pauses. Now: from the first 3D frame of start-up (xr akvr_xr_startup_3d: phase 0 + anamorphic) the sound is held
+until the menu is really drawn (hudsplit akvr_hudsplit_ui_now: the last scene-0 RenderUI call drew 10+ pieces), once,
+6 s cap; the 50 ms gap hold stays for start-up pauses. Hold/release events go into the mode timeline ("sound held ...",
+"sound on after N ms (ui movies/draws)") via a queue flushed on the Present thread. Batmobile enter/exit: JJ says the flat
+game shows a camera transition that VR snaps over. No Batmobile entry in any F2 camera.csv (70 s ring) found; asked JJ for
+(1) an F11 A/B (head tracking off: does the transition come back?) and (2) F2 right after an entry. Suspect: ORBITFIX /
+the camera writes cancelling the game's auto camera blend. Rollback: `diagnostics/before-AUDIOSYNC3-20261002/`.
