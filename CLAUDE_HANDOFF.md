@@ -644,3 +644,11 @@ streaming from a spinning disk; later runs hit the Windows file cache. NVIDIA DX
 also rebuilds ShaderCacheDM after every fix-shader edit (one stuttery first run per update). Advised: Steam "Move install
 folder" to L: (P3 Plus NVMe, 95 GB free; game 63 GB), then repoint the two VR shortcuts. Rollback:
 `diagnostics/before-TARGETDIST-20261002/`.
+**HUDWAIT + MENUSIDE4 (2026-10-02, build HUDWAIT, DLL only, deployed, untested):** JJ: TARGETDIST "much better"; on
+entering gameplay "the distance marker is in the middle of the screen and not locked onto its target, and then it quickly
+jumps to the target" ~0.5 s later = the MARKFIRST wait, when the whole HUD went to the room layer at its shrunk spots. Now
+the HUD is not drawn at all during that wait (hudsplit hud_wait_skip, capped at 1.5 s so it can never stay hidden), and a
+node counts as moving at 5 units (was 20) so markers get their point within a frame or two. Menu: JJ - the menu camera no
+longer "wigs out", but at -80 "Batman is way off to the right"; -35 now (live + package). He also said the menu "looks fine
+when coming back to the menu from gameplay": the slide applies only to the launch-order main menu (g_menuPhase 1), so the
+menu after gameplay has no slide. Rollback: `diagnostics/before-HUDWAIT-20261002/`.

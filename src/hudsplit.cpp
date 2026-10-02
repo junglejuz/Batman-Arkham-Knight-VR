@@ -1151,6 +1151,7 @@ namespace {
     void split_mid(ID3D11DeviceContext* c);
     void split_post(ID3D11DeviceContext* c);
     bool layer_only_now();
+    bool hud_wait_skip();   // HUDWAIT
     void layer_only_pre(ID3D11DeviceContext* c);
     void layer_only_post(ID3D11DeviceContext* c);
 
@@ -1305,6 +1306,7 @@ namespace {
             note_draw(c, L);
             if (L == 0 && probe_skip(c, n)) return;   // DRAWPROBE
             if (L == 0 && snoop_ctx(c)) mark_record(c, split_now(c), n, 1);   // MARKREC
+            if (L == 0 && split_now(c) && hud_wait_skip()) return;   // HUDWAIT: no HUD until its parts are known
             if (L == 0 && split_now(c) && layer_only_now()) { layer_only_pre(c); oDrawIndexed(c, n, s, b); layer_only_post(c); return; }   // PSMARK
             if (L == 0 && split_now(c)) { split_pre(c); oDrawIndexed(c, n, s, b); split_mid(c); oDrawIndexed(c, n, s, b); split_post(c); return; }
             if (L == 0 && c == g_gameCtx && akvr_hudsplit_active())
@@ -1321,6 +1323,7 @@ namespace {
             note_draw(c, L);
             if (L == 0 && probe_skip(c, n)) return;   // DRAWPROBE
             if (L == 0 && snoop_ctx(c)) mark_record(c, split_now(c), n, 1);   // MARKREC
+            if (L == 0 && split_now(c) && hud_wait_skip()) return;   // HUDWAIT: no HUD until its parts are known
             if (L == 0 && split_now(c) && layer_only_now()) { layer_only_pre(c); oDraw(c, n, s); layer_only_post(c); return; }   // PSMARK
             if (L == 0 && split_now(c)) { split_pre(c); oDraw(c, n, s); split_mid(c); oDraw(c, n, s); split_post(c); return; }
             if (L == 0 && c == g_gameCtx && akvr_hudsplit_active())
@@ -1339,6 +1342,7 @@ namespace {
             if (L == 0) i = rain_inst(c, i);   // RAINPARTS
             if (L == 0 && rain_now(c)) { ID3D11Buffer* ob = rain_cb_pre(c); oDrawIdxInst(c, a, i, s, b, si); rain_cb_post(c, ob); return; }   // NEARRAIN
             if (L == 0 && snoop_ctx(c)) mark_record(c, split_now(c), a, i);   // MARKREC
+            if (L == 0 && split_now(c) && hud_wait_skip()) return;   // HUDWAIT: no HUD until its parts are known
             if (L == 0 && split_now(c) && layer_only_now()) { layer_only_pre(c); oDrawIdxInst(c, a, i, s, b, si); layer_only_post(c); return; }   // PSMARK
             if (L == 0 && split_now(c)) { split_pre(c); oDrawIdxInst(c, a, i, s, b, si); split_mid(c); oDrawIdxInst(c, a, i, s, b, si); split_post(c); return; }
             if (L == 0 && c == g_gameCtx && akvr_hudsplit_active())
@@ -1357,6 +1361,7 @@ namespace {
             if (L == 0) i = rain_inst(c, i);   // RAINPARTS
             if (L == 0 && rain_now(c)) { ID3D11Buffer* ob = rain_cb_pre(c); oDrawInst(c, a, i, s, si); rain_cb_post(c, ob); return; }   // NEARRAIN
             if (L == 0 && snoop_ctx(c)) mark_record(c, split_now(c), a, i);   // MARKREC
+            if (L == 0 && split_now(c) && hud_wait_skip()) return;   // HUDWAIT: no HUD until its parts are known
             if (L == 0 && split_now(c) && layer_only_now()) { layer_only_pre(c); oDrawInst(c, a, i, s, si); layer_only_post(c); return; }   // PSMARK
             if (L == 0 && split_now(c)) { split_pre(c); oDrawInst(c, a, i, s, si); split_mid(c); oDrawInst(c, a, i, s, si); split_post(c); return; }
             if (L == 0 && c == g_gameCtx && akvr_hudsplit_active())
@@ -1636,6 +1641,18 @@ namespace {
     long g_layerOnlyDraws = 0, g_layerOnlyRep = 0;
     // MARKFIRST 2026-10-02: until the first HUD-part read of a gameplay stretch has landed its room marks, every HUD draw
     // goes whole to the room layer (nothing of the HUD in the head-locked picture).
+    // HUDWAIT 2026-10-02 — JJ: "when first entering gameplay, the distance marker is in the middle of the screen and not locked
+    // onto its target, and then it quickly jumps to the target" - the room layer drew it at its shrunk-HUD spot during that
+    // wait. The HUD is now left out until the marks are ready (~0.7 s); the draw hooks return before this is asked.
+    // at most 1.5 s per wait, so the HUD can never stay hidden if the marks never arrive
+    bool hud_wait_skip()
+    {
+        static ULONGLONG s_since = 0;
+        if (akvr_hud_marks_ready()) { s_since = 0; return false; }
+        const ULONGLONG now = GetTickCount64();
+        if (!s_since) s_since = now;
+        return now - s_since < 1500;
+    }
     bool layer_only_now() { return g_cbAll && ((vs_no_colour(vs_hud_index(g_curVs)) && ps_marked()) || !akvr_hud_marks_ready()); }
     void layer_only_pre(ID3D11DeviceContext* c) { c->VSSetConstantBuffers(13, 1, &g_cbAll); }
     void layer_only_post(ID3D11DeviceContext* c) { c->VSSetConstantBuffers(13, 1, &g_cbFlat); ++g_layerOnlyDraws; }

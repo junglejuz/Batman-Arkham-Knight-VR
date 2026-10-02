@@ -3925,7 +3925,9 @@ namespace {
         {
             MoveRec& r = g_mvRec[i];
             if (r.node != node) continue;
-            if (fabsf(m[3] - r.tx) > 20.0f || fabsf(m[7] - r.ty) > 20.0f) { r.tx = m[3]; r.ty = m[7]; r.moved = now; }
+            // HUDWAIT: 5 units (a quarter pixel of the stage), so a marker is known as moving within a frame or two of
+            // gameplay starting - the head never holds that still; still UI keeps exactly the same value.
+            if (fabsf(m[3] - r.tx) > 5.0f || fabsf(m[7] - r.ty) > 5.0f) { r.tx = m[3]; r.ty = m[7]; r.moved = now; }
             return r.moved != 0 && now - r.moved < 30000;
         }
         MoveRec& r = g_mvN < 256 ? g_mvRec[g_mvN++] : g_mvRec[g_mvNext++ & 255];
