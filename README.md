@@ -172,6 +172,7 @@ pictures and a recording, for troubleshooting.
 | Extra view at the sides | Draws a little past the edges of the lenses, so no black edges show when you turn quickly. |
 | Picture height per eye | Sharpness against speed. Higher is sharper and slower. The installer's Low / Medium / High are 2016 / 2432 / 2860. Takes effect after a restart. |
 | Smooth Batmobile get in / out | On (normal): getting in and out of the Batmobile plays the game's own camera move instead of popping. Turn it off only to compare. |
+| Soften the game's sudden camera jumps | On (normal): when the game's camera suddenly jumps a short way in a single frame (it does when Batman gets out of the Batmobile), the jump is spread over a fifth of a second instead of popping. Real cuts still cut. |
 | Where you stand | Moves your viewpoint left or right, down or up, back or forward. If you feel you're standing to the left of what you're looking at, move left/right to the right. **Reset position** undoes it. |
 
 ### HUD

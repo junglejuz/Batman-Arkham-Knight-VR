@@ -716,3 +716,12 @@ and if a new finalize already ran. pause_look_write's base no longer subtracts t
 `camrestore` (default 1), VIEW box "smooth Batmobile get in / out". CAMTEST tree now advanced-only. Watch: anything the
 game computes between frames from the camera (marker placement, aim) now sees the game's own camera.
 Rollback: `diagnostics/before-CAMRESTORE-20261002/`.
+**CAMSMOOTH (2026-10-02, build CAMSMOOTH, DLL only, deployed, untested):** JJ after CAMRESTORE: getting in is fine now,
+getting out still pops. F2 23:15: no more head-offset copies; ~0.7 s into the transitions the game's OWN camera position
+jumps ~30 units in one frame (steps 16 -> 62 -> 25), frames evenly 18 ms, one finalize each - also in the 22:52 F2 before
+CAMRESTORE. Fix: the finalize stub now calls smooth_cb(rbx) (volatile regs saved, stack aligned; bytes disassembled
+with capstone - OK, FOVABS block too) before our deltas: a step that leaves the camera's own path by more than
+8 + 0.3*speed units is absorbed above that allowance and released x0.8 a frame; >120 off or >400 step = a cut, passed
+through. Replayed on three F2 camera.csv files (scratch smsim.py): jumps 62-72 -> 28-34, offsets <= ~40 (one 1 m during
+driving), 5-24 events per minute-plus. CAMRESTORE also takes the smoothing back. Setting `camsmooth` (default 1), VIEW
+box with a running count. Rollback: `diagnostics/before-CAMSMOOTH-20261002/`.

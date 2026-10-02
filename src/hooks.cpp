@@ -94,6 +94,9 @@ float       akvr_hud_raise();                   // HUDPOS: gameplay HUD up/down,
 void        akvr_audiosync_frame();             // audiosync.cpp
 bool        akvr_camtest_get(int which);        // camera.cpp: CAMTEST
 bool        akvr_cam_restore();                 // camera.cpp: CAMRESTORE
+bool        akvr_cam_smooth();                  // camera.cpp: CAMSMOOTH
+void        akvr_cam_smooth_set(bool on);
+long        akvr_cam_smooth_events();
 void        akvr_cam_restore_set(bool on);
 void        akvr_camtest_set(int which, bool on);
 void        akvr_audiosync_shutdown();
@@ -840,6 +843,7 @@ namespace
         fprintf(f, "shoulder=%.3f\n", akvr_head_shoulder());
         fprintf(f, "menuside=%.1f\n", akvr_head_menu_side());   // MENUSIDE
         fprintf(f, "camrestore=%d\n", akvr_cam_restore() ? 1 : 0);   // CAMRESTORE
+        fprintf(f, "camsmooth=%d\n", akvr_cam_smooth() ? 1 : 0);   // CAMSMOOTH
         fprintf(f, "menutextleft=%.3f\n", akvr_menu_text_left());   // MENUTEXT
         fprintf(f, "pitchkeep=%.3f\n", akvr_head_pitch_keep());
         fprintf(f, "pitchunlink=%d\n", akvr_head_pitch_unlink());
@@ -972,6 +976,7 @@ namespace
             else if (sscanf(line, "shoulder=%f",   &v) == 1) akvr_head_shoulder_set(v);
             else if (sscanf(line, "menuside=%f",   &v) == 1) akvr_head_menu_side_set(v);   // MENUSIDE
             else if (sscanf(line, "camrestore=%d", &iv) == 1) akvr_cam_restore_set(iv != 0);   // CAMRESTORE
+            else if (sscanf(line, "camsmooth=%d", &iv) == 1) akvr_cam_smooth_set(iv != 0);   // CAMSMOOTH
             else if (sscanf(line, "menutextleft=%f", &v) == 1) akvr_menu_text_left_set(v);   // MENUTEXT
             else if (sscanf(line, "pitchkeep=%f",  &v) == 1) akvr_head_pitch_keep_set(0.0f);   // settled: view level (v ignored)
             else if (sscanf(line, "pitchunlink=%d", &iv) == 1) akvr_head_pitch_unlink_set(iv == 2 ? 2 : 0);   // 1 (horizon-level tilt) retired; 2 = UEVR-style
@@ -1907,7 +1912,7 @@ namespace
 
         ImGui::TextColored(ImVec4(1.0f, 0.85f, 0.2f, 1.0f), "Arkham Knight VR");
         ImGui::SameLine();
-        ImGui::TextDisabled("   build: CAMRESTORE  " __DATE__ " " __TIME__);   // the same tag as the status file
+        ImGui::TextDisabled("   build: CAMSMOOTH  " __DATE__ " " __TIME__);   // the same tag as the status file
 
         // ---- one status line ----------------------------------------------------
         // TIDY4 2026-09-27 (JJ: "cleaned up and reformatted to be a bit more consistent with the
@@ -2073,6 +2078,10 @@ namespace
             // CAMRESTORE 2026-10-02 (JJ: the camera "pops" getting in and out of the Batmobile)
             bool crs = akvr_cam_restore();
             if (ImGui::Checkbox("smooth Batmobile get in / out  (fix - compare on / off)", &crs)) { akvr_cam_restore_set(crs); settings_save(); }
+            // CAMSMOOTH 2026-10-02 (JJ: getting out of the Batmobile still pops - the game's camera jumps ~30 cm in a frame)
+            bool csm = akvr_cam_smooth();
+            if (ImGui::Checkbox("soften the game's sudden camera jumps  (fix - compare on / off)", &csm)) { akvr_cam_smooth_set(csm); settings_save(); }
+            ImGui::SameLine(); ImGui::TextDisabled("(%ld so far)", akvr_cam_smooth_events());
 
             // CAMERA POSITION: all three slide the viewpoint along the camera's own axes,
             // so they stay glued to it however it is pitched or rolled (JJ, 2026-08-05).
@@ -2876,7 +2885,7 @@ namespace
             float pvRatio = 0.0f, pvFov = 0.0f; int pvHits = 0;
             akvr_projvr_diag(pvRatio, pvHits, pvFov);
             fprintf(f, "\npatches:\n");
-            fprintf(f, "   build: CAMRESTORE " __DATE__ " " __TIME__ "\n");
+            fprintf(f, "   build: CAMSMOOTH " __DATE__ " " __TIME__ "\n");
             fprintf(f, "   zoom vignette: %s\n", akvr_xr_vig_diag());
             fprintf(f, "   %s\n", akvr_audiosync_diag());   // AUDIOSYNC
             fprintf(f, "   pause look: %s, %s now, main view through the player camera: %s, head writes into the paused camera: %ld, darken %.0f%%\n",

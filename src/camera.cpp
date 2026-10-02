@@ -394,6 +394,69 @@ namespace
     // the game only ever reads back its own camera.
     bool     g_camRestore = true;
     uint64_t g_restoredFc = ~0ull;     // the finalize whose values were last put back
+    // CAMSMOOTH 2026-10-02 — JJ after CAMRESTORE: getting in is fine now, "but getting out, I definitely do" see a pop.
+    // F2 23:15: ~0.7 s into each transition the game's OWN camera position jumps ~30 units in one frame (three frames'
+    // worth of its path, e.g. steps 12.6 -> 46.2 -> 18.4), frames evenly 18 ms apart (not a hitch); the same jump is in
+    // the 22:52 F2 from before CAMRESTORE. On a TV a tiny hitch; next to the car in VR a pop. Called by the finalize
+    // stub (game thread) with the camera: when the game's position leaves its own steady path by more than 15 units in
+    // one frame, the excess is absorbed and let out again over ~10 frames (x0.8 a frame). Steps over 400 units are
+    // cuts (fast travel, menu shots) and pass straight through. g_smoothApplied is what was added this finalize, so
+    // CAMRESTORE gives the game back its own position.
+    bool  g_camSmooth = true;
+    float g_smPrev[3] = {}, g_smVel[3] = {}, g_smCorr[3] = {};
+    bool  g_smHave = false;
+    volatile float g_smoothApplied[3] = {};
+    volatile LONG g_smoothEvents = 0;
+    void __fastcall smooth_cb(uintptr_t cam)
+    {
+        __try
+        {
+            float* P = (float*)(cam + OFF_X);
+            const float p[3] = { P[0], P[1], P[2] };
+            g_smoothApplied[0] = g_smoothApplied[1] = g_smoothApplied[2] = 0.0f;
+            if (!g_camSmooth || !(p[0] == p[0])) { g_smHave = false; return; }
+            if (!g_smHave)
+            {
+                for (int i = 0; i < 3; ++i) { g_smPrev[i] = p[i]; g_smVel[i] = 0.0f; g_smCorr[i] = 0.0f; }
+                g_smHave = true;
+                return;
+            }
+            float d[3], dev[3];
+            for (int i = 0; i < 3; ++i) { d[i] = p[i] - g_smPrev[i]; dev[i] = d[i] - g_smVel[i]; }
+            const float step = sqrtf(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
+            const float ad = sqrtf(dev[0] * dev[0] + dev[1] * dev[1] + dev[2] * dev[2]);
+            const float sp = sqrtf(g_smVel[0] * g_smVel[0] + g_smVel[1] * g_smVel[1] + g_smVel[2] * g_smVel[2]);
+            for (int i = 0; i < 3; ++i) g_smPrev[i] = p[i];
+            // replayed on JJ's F2 paths first (scratch smsim): jumps 62-72 -> 28-34 a frame, offsets <= ~40, 13-24 events
+            // in 80-100 s; the first version froze the speed after a jump and then fired every frame.
+            if (step > 400.0f || ad > 120.0f)
+            {   // a cut (fast travel, menu shots, a respawn): pass straight through, start again from here
+                for (int i = 0; i < 3; ++i) { g_smVel[i] = step > 400.0f ? 0.0f : d[i]; g_smCorr[i] = 0.0f; }
+                return;
+            }
+            for (int i = 0; i < 3; ++i) g_smCorr[i] *= 0.8f;
+            const float thr = 8.0f + 0.3f * sp;              // allowed change of step this frame (faster = more)
+            if (ad > thr)
+            {   // a jump off the path: absorb the part above the allowance, keep tracking the speed
+                const float k = thr / ad;
+                for (int i = 0; i < 3; ++i)
+                {
+                    const float devc = dev[i] * k;
+                    g_smCorr[i] -= dev[i] - devc;
+                    g_smVel[i] += 0.5f * devc;
+                }
+                InterlockedIncrement(&g_smoothEvents);
+            }
+            else
+                for (int i = 0; i < 3; ++i) g_smVel[i] = 0.5f * g_smVel[i] + 0.5f * d[i];
+            for (int i = 0; i < 3; ++i)
+            {
+                P[i] = p[i] + g_smCorr[i];
+                g_smoothApplied[i] = g_smCorr[i];
+            }
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER) { g_smHave = false; }
+    }
 
     // AER stereo: which eye we're rendering this frame (0=left, 1=right, set by xr),
     // and the half eye-separation in world units (depth strength). Tunable ([ / ]).
@@ -1146,6 +1209,27 @@ bool akvr_head_install()
     emit_rot(OFF_YAW,   g_bYaw,   g_dYaw);
     emit_rot(OFF_PITCH, g_bPitch, g_dPitch);
     emit_rot(OFF_ROLL,  g_bRoll,  g_dRoll);
+    // CAMSMOOTH: smooth_cb(rbx) - the game's fresh position, before our deltas. Volatile registers saved, stack aligned.
+    *p++ = 0x55;                                                    // push rbp
+    *p++ = 0x48; *p++ = 0x89; *p++ = 0xE5;                          // mov rbp,rsp
+    *p++ = 0x51; *p++ = 0x52;                                       // push rcx; push rdx
+    *p++ = 0x41; *p++ = 0x50; *p++ = 0x41; *p++ = 0x51;             // push r8; push r9
+    *p++ = 0x41; *p++ = 0x52; *p++ = 0x41; *p++ = 0x53;             // push r10; push r11
+    *p++ = 0x48; *p++ = 0x83; *p++ = 0xE4; *p++ = 0xF0;             // and rsp,-16
+    *p++ = 0x48; *p++ = 0x81; *p++ = 0xEC; *(uint32_t*)p = 0x80; p += 4;   // sub rsp,0x80
+    {
+        static const uint8_t xr[6] = { 0x44, 0x4C, 0x54, 0x5C, 0x64, 0x6C };   // [rsp+disp8] with xmm0..5
+        for (int i = 0; i < 6; ++i) { *p++ = 0x0F; *p++ = 0x11; *p++ = xr[i]; *p++ = 0x24; *p++ = (uint8_t)(0x20 + 0x10 * i); }   // movups [rsp+..],xmmi
+        *p++ = 0x48; *p++ = 0x89; *p++ = 0xD9;                      // mov rcx,rbx
+        *p++ = 0x48; *p++ = 0xB8; *(uint64_t*)p = (uint64_t)&smooth_cb; p += 8;   // mov rax,smooth_cb
+        *p++ = 0xFF; *p++ = 0xD0;                                   // call rax
+        for (int i = 0; i < 6; ++i) { *p++ = 0x0F; *p++ = 0x10; *p++ = xr[i]; *p++ = 0x24; *p++ = (uint8_t)(0x20 + 0x10 * i); }   // movups xmmi,[rsp+..]
+    }
+    *p++ = 0x48; *p++ = 0x8D; *p++ = 0x65; *p++ = 0xD0;             // lea rsp,[rbp-0x30]
+    *p++ = 0x41; *p++ = 0x5B; *p++ = 0x41; *p++ = 0x5A;             // pop r11; pop r10
+    *p++ = 0x41; *p++ = 0x59; *p++ = 0x41; *p++ = 0x58;             // pop r9; pop r8
+    *p++ = 0x5A; *p++ = 0x59;                                       // pop rdx; pop rcx
+    *p++ = 0x5D;                                                    // pop rbp
 
     // --- positional lean (float) ---
     auto emit_pos = [&](float* slot, uint32_t off) {
@@ -1320,7 +1404,7 @@ void akvr_head_update()
 
     // CAMRESTORE: what the stub added at the finalize that just ran (the slots are rewritten below)
     const uint64_t rsFc = akvr_camera_finalize_count();
-    const float rsPos[3] = { *g_dPosX, *g_dPosY, *g_dPosZ };
+    const float rsPos[3] = { *g_dPosX + g_smoothApplied[0], *g_dPosY + g_smoothApplied[1], *g_dPosZ + g_smoothApplied[2] };   // + CAMSMOOTH
     const bool rsFovAbs = g_fovAbs && *g_fovAbs != 0;
     float y, p, r, px, py, pz; akvr_xr_head_pose(y, p, r, px, py, pz);
     float qx, qy, qz, qw; akvr_xr_head_quat(qx, qy, qz, qw);
@@ -1930,3 +2014,6 @@ bool akvr_camtest_get(int which) { return which == 0 ? g_testNoRot : (which == 1
 void akvr_camtest_set(int which, bool on) { if (which == 0) g_testNoRot = on; else if (which == 1) g_testNoPos = on; else g_testKeepFov = on; }
 bool akvr_cam_restore() { return g_camRestore; }               // CAMRESTORE
 void akvr_cam_restore_set(bool on) { g_camRestore = on; }
+bool akvr_cam_smooth() { return g_camSmooth; }                 // CAMSMOOTH
+void akvr_cam_smooth_set(bool on) { g_camSmooth = on; }
+long akvr_cam_smooth_events() { return g_smoothEvents; }
