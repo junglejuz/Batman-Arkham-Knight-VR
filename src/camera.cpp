@@ -386,6 +386,14 @@ namespace
     // vignette - the right-stick-click zoom narrows it, but our lock cancels the magnification.
     volatile float g_gameFov = 0.0f;
     bool g_testNoRot = false, g_testNoPos = false, g_testKeepFov = false;   // CAMTEST (not saved)
+    // CAMRESTORE 2026-10-02 — JJ: getting in/out of the Batmobile the camera "pops"; with head tracking off the game's
+    // transition plays. F2 23:06 (eight transitions): on each transition's first frame the game's own camera jumped by
+    // EXACTLY the head offset of the frame before (e.g. -8.29/-8.82 deg vs -8.28/-8.84) - the game starts the transition
+    // from the camera fields as last drawn (head included) and the stub then adds the head again. After every drawn
+    // frame (at Present, once per finalize) the fields get the game's own values back: what was drawn is unchanged,
+    // the game only ever reads back its own camera.
+    bool     g_camRestore = true;
+    uint64_t g_restoredFc = ~0ull;     // the finalize whose values were last put back
 
     // AER stereo: which eye we're rendering this frame (0=left, 1=right, set by xr),
     // and the half eye-separation in world units (depth strength). Tunable ([ / ]).
@@ -1281,9 +1289,10 @@ namespace {
         {
             if (!g_pauseWriting)
             {
-                g_pauseBase[0] = *(float*)(b + OFF_X) - *g_dPosX;
-                g_pauseBase[1] = *(float*)(b + OFF_Y) - *g_dPosY;
-                g_pauseBase[2] = *(float*)(b + OFF_Z) - *g_dPosZ;
+                const bool own = g_restoredFc == fc;   // CAMRESTORE: already the game's own position
+                g_pauseBase[0] = *(float*)(b + OFF_X) - (own ? 0.0f : *g_dPosX);
+                g_pauseBase[1] = *(float*)(b + OFF_Y) - (own ? 0.0f : *g_dPosY);
+                g_pauseBase[2] = *(float*)(b + OFF_Z) - (own ? 0.0f : *g_dPosZ);
                 g_pauseWriting = true;
             }
             *(int32_t*)(b + OFF_YAW)   = (int32_t)((uint32_t)*g_bYaw   + (uint32_t)*g_dYaw);
@@ -1309,6 +1318,10 @@ void akvr_head_update()
         *g_dYaw = *g_dPitch = *g_dRoll = 0;   // ORBITFIX: zero delta = the game's own angle
         *g_dPosX = *g_dPosY = *g_dPosZ = 0.0f; *g_dFov = 0.0f; if (g_fovAbs) *g_fovAbs = 0; g_pauseWriting = false; return; }
 
+    // CAMRESTORE: what the stub added at the finalize that just ran (the slots are rewritten below)
+    const uint64_t rsFc = akvr_camera_finalize_count();
+    const float rsPos[3] = { *g_dPosX, *g_dPosY, *g_dPosZ };
+    const bool rsFovAbs = g_fovAbs && *g_fovAbs != 0;
     float y, p, r, px, py, pz; akvr_xr_head_pose(y, p, r, px, py, pz);
     float qx, qy, qz, qw; akvr_xr_head_quat(qx, qy, qz, qw);
 
@@ -1636,6 +1649,23 @@ void akvr_head_update()
     if (g_testNoPos) { *g_dPosX = *g_dPosY = *g_dPosZ = 0.0f; }
     pause_look_write();   // PAUSELOOK
     akvr_camera_record_rotators();   // NEARRAIN2
+    // CAMRESTORE: the frame has been drawn; give the game its own camera back (once per finalize, never in the pause view)
+    const uintptr_t cb = cam_base();
+    if (g_camRestore && cb && rsFc != g_restoredFc && !g_pauseWriting && akvr_camera_finalize_count() == rsFc)   // no new finalize since
+    {
+        __try
+        {
+            *(int32_t*)(cb + OFF_YAW)   = *g_bYaw;
+            *(int32_t*)(cb + OFF_PITCH) = *g_bPitch;
+            *(int32_t*)(cb + OFF_ROLL)  = *g_bRoll;
+            *(float*)(cb + OFF_X) -= rsPos[0];
+            *(float*)(cb + OFF_Y) -= rsPos[1];
+            *(float*)(cb + OFF_Z) -= rsPos[2];
+            if (rsFovAbs && *g_bFov > 1.0f) *(float*)(cb + OFF_FOV) = *g_bFov;
+            g_restoredFc = rsFc;
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER) { g_restoredFc = rsFc; }
+    }
 }
 
 float akvr_camera_game_fov() { return g_gameFov; }   // ZOOMVIG: 0 until the FOV lock has run
@@ -1898,3 +1928,5 @@ void akvr_camera_shutdown()
 // CAMTEST: Batmobile transition test switches (panel only, not saved)
 bool akvr_camtest_get(int which) { return which == 0 ? g_testNoRot : (which == 1 ? g_testNoPos : g_testKeepFov); }
 void akvr_camtest_set(int which, bool on) { if (which == 0) g_testNoRot = on; else if (which == 1) g_testNoPos = on; else g_testKeepFov = on; }
+bool akvr_cam_restore() { return g_camRestore; }               // CAMRESTORE
+void akvr_cam_restore_set(bool on) { g_camRestore = on; }

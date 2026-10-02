@@ -171,6 +171,7 @@ pictures and a recording, for troubleshooting.
 | World scale | How big the world feels. 1.00 is life size. Higher makes the world feel bigger around you; lower makes it feel like a model. **1.00** resets it. |
 | Extra view at the sides | Draws a little past the edges of the lenses, so no black edges show when you turn quickly. |
 | Picture height per eye | Sharpness against speed. Higher is sharper and slower. The installer's Low / Medium / High are 2016 / 2432 / 2860. Takes effect after a restart. |
+| Smooth Batmobile get in / out | On (normal): getting in and out of the Batmobile plays the game's own camera move instead of popping. Turn it off only to compare. |
 | Where you stand | Moves your viewpoint left or right, down or up, back or forward. If you feel you're standing to the left of what you're looking at, move left/right to the right. **Reset position** undoes it. |
 
 ### HUD

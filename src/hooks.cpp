@@ -93,6 +93,8 @@ void        akvr_hud_global_set(bool on);
 float       akvr_hud_raise();                   // HUDPOS: gameplay HUD up/down, fraction of height
 void        akvr_audiosync_frame();             // audiosync.cpp
 bool        akvr_camtest_get(int which);        // camera.cpp: CAMTEST
+bool        akvr_cam_restore();                 // camera.cpp: CAMRESTORE
+void        akvr_cam_restore_set(bool on);
 void        akvr_camtest_set(int which, bool on);
 void        akvr_audiosync_shutdown();
 bool        akvr_audiosync();
@@ -837,6 +839,7 @@ namespace
         fprintf(f, "leanscale=%.4f\n", akvr_head_pos_scale() / kLeanAt1);
         fprintf(f, "shoulder=%.3f\n", akvr_head_shoulder());
         fprintf(f, "menuside=%.1f\n", akvr_head_menu_side());   // MENUSIDE
+        fprintf(f, "camrestore=%d\n", akvr_cam_restore() ? 1 : 0);   // CAMRESTORE
         fprintf(f, "menutextleft=%.3f\n", akvr_menu_text_left());   // MENUTEXT
         fprintf(f, "pitchkeep=%.3f\n", akvr_head_pitch_keep());
         fprintf(f, "pitchunlink=%d\n", akvr_head_pitch_unlink());
@@ -968,6 +971,7 @@ namespace
             else if (sscanf(line, "lean=%f",       &v) == 1) akvr_head_pos_scale_set(v);
             else if (sscanf(line, "shoulder=%f",   &v) == 1) akvr_head_shoulder_set(v);
             else if (sscanf(line, "menuside=%f",   &v) == 1) akvr_head_menu_side_set(v);   // MENUSIDE
+            else if (sscanf(line, "camrestore=%d", &iv) == 1) akvr_cam_restore_set(iv != 0);   // CAMRESTORE
             else if (sscanf(line, "menutextleft=%f", &v) == 1) akvr_menu_text_left_set(v);   // MENUTEXT
             else if (sscanf(line, "pitchkeep=%f",  &v) == 1) akvr_head_pitch_keep_set(0.0f);   // settled: view level (v ignored)
             else if (sscanf(line, "pitchunlink=%d", &iv) == 1) akvr_head_pitch_unlink_set(iv == 2 ? 2 : 0);   // 1 (horizon-level tilt) retired; 2 = UEVR-style
@@ -1903,7 +1907,7 @@ namespace
 
         ImGui::TextColored(ImVec4(1.0f, 0.85f, 0.2f, 1.0f), "Arkham Knight VR");
         ImGui::SameLine();
-        ImGui::TextDisabled("   build: FOVABS  " __DATE__ " " __TIME__);   // the same tag as the status file
+        ImGui::TextDisabled("   build: CAMRESTORE  " __DATE__ " " __TIME__);   // the same tag as the status file
 
         // ---- one status line ----------------------------------------------------
         // TIDY4 2026-09-27 (JJ: "cleaned up and reformatted to be a bit more consistent with the
@@ -1934,7 +1938,7 @@ namespace
         if (ImGui::Button(akvr_head_state().on ? "Head tracking: ON  (F11)" : "Head tracking: OFF  (F11)")) akvr_head_toggle();
         // CAMTEST 2026-10-02 — JJ: getting in/out of the Batmobile, the game's transition plays with head tracking off.
         // Which part of the head's write stops it? (not saved: off again at the next start)
-        if (ImGui::TreeNode("Batmobile transition test  (one at a time)"))
+        if (g_showAdvanced && ImGui::TreeNode("Batmobile transition test  (one at a time)"))   // CAMRESTORE found the cause
         {
             bool t0 = akvr_camtest_get(0), t1 = akvr_camtest_get(1), t2 = akvr_camtest_get(2);
             if (ImGui::Checkbox("head turning off", &t0)) akvr_camtest_set(0, t0);
@@ -2065,6 +2069,10 @@ namespace
                     if (ImGui::Checkbox("flip eye turn  (if everything is badly doubled)", &fl)) { akvr_xr_eye_flip_set(fl); settings_save(); }
                 }
             }
+
+            // CAMRESTORE 2026-10-02 (JJ: the camera "pops" getting in and out of the Batmobile)
+            bool crs = akvr_cam_restore();
+            if (ImGui::Checkbox("smooth Batmobile get in / out  (fix - compare on / off)", &crs)) { akvr_cam_restore_set(crs); settings_save(); }
 
             // CAMERA POSITION: all three slide the viewpoint along the camera's own axes,
             // so they stay glued to it however it is pitched or rolled (JJ, 2026-08-05).
@@ -2868,7 +2876,7 @@ namespace
             float pvRatio = 0.0f, pvFov = 0.0f; int pvHits = 0;
             akvr_projvr_diag(pvRatio, pvHits, pvFov);
             fprintf(f, "\npatches:\n");
-            fprintf(f, "   build: FOVABS " __DATE__ " " __TIME__ "\n");
+            fprintf(f, "   build: CAMRESTORE " __DATE__ " " __TIME__ "\n");
             fprintf(f, "   zoom vignette: %s\n", akvr_xr_vig_diag());
             fprintf(f, "   %s\n", akvr_audiosync_diag());   // AUDIOSYNC
             fprintf(f, "   pause look: %s, %s now, main view through the player camera: %s, head writes into the paused camera: %ld, darken %.0f%%\n",

@@ -705,3 +705,14 @@ the camera writes cancelling the game's auto camera blend. Rollback: `diagnostic
   button gave "a sort of a warped image that still sort of head tracked" - expected: F11 also drops the FOV lock (game
   FOV in a headset frustum) while the compositor still reprojects.
 Rollback: `diagnostics/before-FOVABS-20261002/`.
+**CAMRESTORE (2026-10-02, build CAMRESTORE, DLL only, deployed, untested):** JJ: the Batmobile get in/out camera still
+"pops" (worse close to the car); the CAMTEST switches were too hard to use. F2 23:06 settled it without them: on all
+eight transitions the game's own (base) camera jumped by EXACTLY the previous frame's head offset (to 0.05 deg) - the
+game starts its transition from the camera fields as last drawn (head included), then the stub adds the head again.
+camera.cpp head_update now, after record_rotators (Present, the frame drawn, the game thread waiting with
+OneFrameThreadLag=False), writes the game's own values back into the fields once per finalize: rotation = the stub's
+saved base, position -= the deltas the stub added, FOV = the saved game FOV (FOVABS); skipped while the pause view writes
+and if a new finalize already ran. pause_look_write's base no longer subtracts the deltas after a restore. Setting
+`camrestore` (default 1), VIEW box "smooth Batmobile get in / out". CAMTEST tree now advanced-only. Watch: anything the
+game computes between frames from the camera (marker placement, aim) now sees the game's own camera.
+Rollback: `diagnostics/before-CAMRESTORE-20261002/`.
