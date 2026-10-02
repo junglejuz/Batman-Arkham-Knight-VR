@@ -3892,6 +3892,82 @@ void  akvr_hud_room_all_set(bool on) { g_roomAll = on; g_autoDirty = true; }
 // offset was read from the live tree while the game may lay out the next frame): xf (optional) = the fixed map from
 // AKVR's drawn HUD box back to the movie's own layout, in clip units, for the shaders to apply per vertex:
 // x' = x + x * xf[0] + xf[2], y' = y + y * xf[1] + xf[3]. Taken from the first on-target part's movie; 0 = none.
+// TARGETANCHOR 2026-10-02 — JJ after TARGETFACE: the distance marker "is now flying off its fixed point in object space
+// when turning the head" and does not face him. F2 x5: its point was (0.000, 0.080) in every capture = the screen centre.
+// The widget part K2/...1 now has TWO children (.0 and .1), so the one-child walk stopped at the part, which never moves;
+// the game moves .1.1 (local translation (5605,-59), (307,436), (-4037,-1599), (-256,-5432) across the captures). The
+// "115m" label sat where .1.1 puts it in the SHRUNK HUD box, i.e. its pieces were not taken as on-target (too far from
+// the centre point) except when they passed near the screen centre - in and out as the head turns. The anchor of a part
+// is now the node the game MOVES: the part itself if its translation changes (the reticle), else the one child whose
+// subtree moves (down to the node that does); two or more moving children = their parent (the reticle's pulsing pieces).
+// Remembered per part while nothing moves; before anything has moved, the old one-child walk.
+namespace {
+    struct MoveRec { uintptr_t node; float tx, ty; DWORD moved; };
+    MoveRec g_mvRec[256]; int g_mvN = 0, g_mvNext = 0;
+    struct AnchorRec { uintptr_t part, anchor; };
+    AnchorRec g_anchor[8] = {};
+    // true when this node's local translation changed by more than 20 units within the last 3 s
+    bool node_moved_recently(uintptr_t node, const float* m, DWORD now)
+    {
+        for (int i = 0; i < g_mvN; ++i)
+        {
+            MoveRec& r = g_mvRec[i];
+            if (r.node != node) continue;
+            if (fabsf(m[3] - r.tx) > 20.0f || fabsf(m[7] - r.ty) > 20.0f) { r.tx = m[3]; r.ty = m[7]; r.moved = now; }
+            return r.moved != 0 && now - r.moved < 3000;
+        }
+        MoveRec& r = g_mvN < 256 ? g_mvRec[g_mvN++] : g_mvRec[g_mvNext++ & 255];
+        r.node = node; r.tx = m[3]; r.ty = m[7]; r.moved = 0;
+        return false;
+    }
+    // the moving node under `node` (inclusive), 0 = nothing in this visible 2D subtree moved
+    uintptr_t moving_anchor(uintptr_t node, int depth, DWORD now, int& budget)
+    {
+        if (--budget < 0) return 0;
+        float m[12]; int fl = 0;
+        if (!node_matrix(node, m, &fl) || !(fl & 1) || (fl & 0x200)) return 0;   // hidden or 3D
+        if (node_moved_recently(node, m, now)) return node;
+        if (depth >= 6) return 0;
+        uintptr_t kids[32];
+        const int k = node_children(node, kids, 32);
+        uintptr_t found = 0; int nf = 0;
+        for (int c = 0; c < k; ++c)
+        {
+            const uintptr_t a = moving_anchor(kids[c], depth + 1, now, budget);
+            if (a) { found = a; ++nf; }
+        }
+        return nf == 1 ? found : (nf >= 2 ? node : 0);
+    }
+    bool is_under(uintptr_t node, uintptr_t part)
+    {
+        for (int up = 0; up < 12 && node; ++up)
+        {
+            if (node == part) return true;
+            uintptr_t p = 0;
+            __try { p = *(uintptr_t*)(node + 0x20); } __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
+            if (!readable_ptr(p) || (p & 7)) return false;
+            node = p;
+        }
+        return false;
+    }
+    uintptr_t part_anchor(uintptr_t part, uintptr_t fallback, DWORD now)
+    {
+        int budget = 96;
+        const uintptr_t a = moving_anchor(part, 0, now, budget);
+        int slot = -1;
+        for (int i = 0; i < 8; ++i) if (g_anchor[i].part == part) { slot = i; break; }
+        if (slot < 0) for (int i = 0; i < 8; ++i) if (!g_anchor[i].part) { slot = i; break; }
+        if (slot < 0) slot = (int)(part >> 4) & 7;
+        if (a) { g_anchor[slot] = { part, a }; return a; }
+        if (g_anchor[slot].part == part && g_anchor[slot].anchor && is_under(g_anchor[slot].anchor, part))
+        {
+            float m[12]; int fl = 0;
+            if (node_matrix(g_anchor[slot].anchor, m, &fl) && (fl & 1)) return g_anchor[slot].anchor;
+        }
+        return fallback;
+    }
+}
+
 int akvr_hud_target_points(float* xy, int max, int rtW, int rtH, float* off, float* xf)
 {
     if (xf) xf[0] = xf[1] = xf[2] = xf[3] = 0.0f;
@@ -3950,7 +4026,13 @@ int akvr_hud_target_points(float* xy, int max, int rtW, int rtH, float* off, flo
         cy = 1.0f - y / (float)rtH * 2.0f;
         return true;
     };
-    for (int w = 0; w < nWant && n < max; ++w)
+    // TARGETANCHOR: single parts (reticle, distance widget) are collected apart and written LAST, so the shaders' "last
+    // match wins" gives their pieces their own point over a nearby world-list marker's (mixed points = a marker's pieces
+    // turned about two pivots by TARGETFACE). List points fill the room the single parts leave.
+    float sxy[16]; int ns = 0;
+    float lxy[16]; int nl = 0;
+    const DWORD now = GetTickCount();
+    for (int w = 0; w < nWant; ++w)
     {
         uintptr_t node = want[w].node, kids[96];
         int k = node_children(node, kids, 96);
@@ -3958,24 +4040,27 @@ int akvr_hud_target_points(float* xy, int max, int rtW, int rtH, float* off, flo
         if (k == 0) continue;                                // nothing drawn under this part
         if (k >= 6)
         {   // a list: one point per visible child on screen
-            for (int c = 0; c < k && n < max; ++c)
+            for (int c = 0; c < k && nl < 8; ++c)
             {
                 float m[12]; int fl = 0;
                 if (!node_matrix(kids[c], m, &fl) || !(fl & 1)) continue;   // hidden marker
                 float cx = 0.0f, cy = 0.0f;
                 if (!point_of(kids[c], want[w], cx, cy) || fabsf(cx) > 1.1f || fabsf(cy) > 1.1f) continue;
-                xy[n * 2] = cx; xy[n * 2 + 1] = cy;
-                if (off) off[n * 2] = off[n * 2 + 1] = 0.0f;
-                ++n;
+                lxy[nl * 2] = cx; lxy[nl * 2 + 1] = cy; ++nl;
             }
             continue;
         }
+        if (ns >= 8) continue;
+        const uintptr_t anchor = part_anchor(want[w].node, node, now);   // TARGETANCHOR
         float cx = 0.0f, cy = 0.0f;
-        if (!point_of(node, want[w], cx, cy)) continue;
-        xy[n * 2] = cx; xy[n * 2 + 1] = cy;
-        if (off) off[n * 2] = off[n * 2 + 1] = 0.0f;
-        ++n;
+        if (!point_of(anchor, want[w], cx, cy)) continue;
+        sxy[ns * 2] = cx; sxy[ns * 2 + 1] = cy; ++ns;
     }
+    if (ns > max) ns = max;
+    const int nList = nl < max - ns ? nl : max - ns;
+    for (int i = 0; i < nList; ++i) { xy[n * 2] = lxy[i * 2]; xy[n * 2 + 1] = lxy[i * 2 + 1]; ++n; }
+    for (int i = 0; i < ns; ++i) { xy[n * 2] = sxy[i * 2]; xy[n * 2 + 1] = sxy[i * 2 + 1]; ++n; }
+    if (off) for (int i = 0; i < n * 2; ++i) off[i] = 0.0f;
     return n;
 }
 void  akvr_hud_layer_zoomhide_set(int i, bool on)

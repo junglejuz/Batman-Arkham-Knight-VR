@@ -127,11 +127,14 @@ namespace {
     float g_tanSent[2] = { -1.0f, -1.0f };
     // TARGETDEPTH (fix step 1k, 2026-10-02): the on-target parts' points sent to the shaders (cb13 rows 1 / 2)
     bool  g_targetWant = true;
-    float g_targetRadius = 0.12f;            // clip units: the widget's pieces sit within ~0.08 of its point
+    // TARGETANCHOR 2026-10-02: 0.12 -> 0.15. The reticle's "RB" prompt sits 0.105 from its point (F2: (1765, 302) twips) -
+    // at the view edges JJ saw the reticle "separate their elements a little". Every other HUD part is room-marked, so the
+    // wider circle only takes pieces of on-target parts.
+    float g_targetRadius = 0.15f;            // clip units (the drawn HUD box)
     float g_tgtSent[40] = { -9.0f };   // TARGETMULTI: cb13 rows 1-10
     float g_tgtXf[4] = {};                   // TARGETSCALE: cb13 row 4 sent last frame (kx-1, ky-1, bx, by)
     float g_framePx = 0.0f, g_framePy = 0.0f;   // FRAMEPAIR: the markers' one-frame shift (clip), for the diag
-    int   g_tgtN = 0; float g_tgtXY[4] = {};
+    int   g_tgtN = 0; float g_tgtXY[16] = {};   // TARGETANCHOR: all points (list markers first, single parts last)
     // TARGETMOVE (fix step 1m, 2026-10-02): move the on-target parts by the head turn the game's HUD does not know about
     bool  g_markerHead = true;
     // TARGETFACE (fix step 1q, 2026-10-02): the on-target parts face the eye (cb13 row 3 = tan half-angles, on)
@@ -1717,7 +1720,7 @@ namespace {
             float tp[16] = {}, toff[16] = {}, txf[4] = {};
             const int nTp = (akvr_hud_room_all() && g_targetWant && g_Hw > 0 && g_Hh > 0)
                           ? akvr_hud_target_points(tp, 8, g_Hw, g_Hh, toff, txf) : 0;
-            g_tgtN = nTp; g_tgtXY[0] = tp[0]; g_tgtXY[1] = tp[1]; g_tgtXY[2] = tp[2]; g_tgtXY[3] = tp[3];
+            g_tgtN = nTp; memcpy(g_tgtXY, tp, sizeof(g_tgtXY));
             float rows[40] = {};                                   // cb13 rows 1-10
             for (int k = 0; k < nTp; ++k)
             {
@@ -2054,7 +2057,7 @@ static const char* ctx_kind(int t) { return t == 0 ? "immediate" : (t == 1 ? "de
 
 const char* akvr_hudsplit_layer_diag()
 {
-    static char d[720];
+    static char d[1400];   // TARGETANCHOR: + every target point
     if (!g_layerWant) { _snprintf_s(d, sizeof(d), _TRUNCATE, "HUD layer: off (HUD painted into the picture)"); return d; }
     const char* why = g_state != 1 ? "HUD draw not hooked" : (g_gameState != 1 ? "game-side context not hooked"
                     : (g_Hreal == 0 ? "OFF - no real image found inside geo-11's stand-in"
@@ -2073,6 +2076,11 @@ const char* akvr_hudsplit_layer_diag()
                     g_tgtN, g_tgtXY[0], g_tgtXY[1], g_tgtXY[2], g_tgtXY[3], g_targetRadius, g_markerHead ? "ON" : "off",
                     g_tgtOff[0], g_tgtOff[1], g_tgtOff[2], g_tgtOff[3], g_tgtXf[0], g_tgtXf[1], g_tgtXf[2], g_tgtXf[3],
                     g_frameFix ? "ON" : "off", (long)g_frameWorld, g_framePx, g_framePy);
+        for (int i = 0; i < g_tgtN && i < 8; ++i)   // TARGETANCHOR: every point (the single parts are the last ones)
+        {
+            const size_t l = strlen(d);
+            _snprintf_s(d + l, sizeof(d) - l, _TRUNCATE, "%s(%.3f, %.3f)", i ? " " : " | all points: ", g_tgtXY[i * 2], g_tgtXY[i * 2 + 1]);
+        }
         const size_t len2 = strlen(d);
         _snprintf_s(d + len2, sizeof(d) - len2, _TRUNCATE, " | %s", akvr_rain_frame_diag());   // RAINSPLIT
     }

@@ -588,3 +588,14 @@ turn your head", key `markerface`, default 1). Practice copy 13/13 + rerun clean
 (identical to tested). Also fixed: a repair re-run of the patch script reported 1m "not patched" (exit 2) on an already
 patched set. Package rebuilt with it (not uploaded). Ask JJ: markers keep their shape and stop turning when off to the
 side? Compare with the box off. Rollback: `diagnostics/before-TARGETFACE-20261002/`.
+**TARGETANCHOR (2026-10-02, DLL only, deployed, untested):** JJ on TARGETFACE: reticles hold their orientation but
+"sometimes appear to separate their elements a little" at the view edges; the distance marker does not face him and "is
+now flying off its fixed point in object space when turning the head". F2 x5 (18:34): the widget's point was (0.000,
+0.080) = screen centre in EVERY capture - the part K2/...1 has two children now, so the one-child walk stopped at the
+part, which never moves; the game moves K2/...1.1 (translations differ in each capture). Its "115m" label was drawn at
+its SHRUNK-box spot = not taken as on-target, except near the screen centre (in and out as the head turns). Now: each
+single on-target part's point = the node the game MOVES (earlyres part_anchor: the part if its translation changed in
+the last 3 s, else the one child whose subtree moves; 2+ moving children = their parent; remembered while still).
+Single parts' points are sent LAST (rows win over list markers: "last match wins"). Radius 0.12 -> 0.15 (the reticle's RB
+prompt sits 0.105 from its point). F2 status now lists "all points". Ask JJ: distance marker on its object, facing him,
+label in the right place; reticle elements together at the edges. Rollback DLL: `diagnostics/before-TARGETANCHOR-20261002/`.
