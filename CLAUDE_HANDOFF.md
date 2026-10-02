@@ -835,3 +835,12 @@ the pad from the game, so the trigger reads released). The first 3 aims of each 
 themselves: 1 s into head aiming (left trigger held), then 1.5 s after release (hooks.cpp, before akvr_hud_tick). On-foot
 gadget aim also counts, so the Batmobile aims should come first. Diff the two hudlayers.txt "shown" columns.
 Rollback: same as AIMRETICLE (`diagnostics/before-AIMRETICLE-20261003/`).
+**RETICLETICK (2026-10-03, settings only, game closed):** AIMSHOT captures 02:10:06-02:10:47 (3 aim / release pairs,
+pad 0 trigger seen fine). Diff of hudlayers "shown": the only part shown in all 3 aims and hidden after release is
+**K13/0.0.0.0.1.0.0.0** (96 kids, centred in K13/0.0.0.0.1.0.0 = stage 512,384 of 1024x768) - the same path as JJ's
+on-foot reticle K2/0.0.0.0.1.0.0.0, in the Batmobile's targets container. Set in akvr_settings.ini (backup
+`diagnostics/before-RETICLETICK-20261003/`): hudlayers + `K13/0.0.0.0.1.0.0.0:1.000:0.0000:0.0000:0:0:0:1` (on target),
+and hudcontainers K13 was EMPTY (never saved; the container came up as K14 in the 01:01 session) - filled with the
+fingerprint recomputed from capture 02:10:47 (scratch contfp.py: cont_tokens re-implemented from hudlayers.txt rows;
+validated vs saved K1/K2/K5/K11/K12 at 0.6-0.9 Jaccard; K13 self-similarity across sessions 0.81-1.0, vs K4 0.44 - K4
+shares its first tokens, so watch that the ids do not swap). Untested in the headset.
