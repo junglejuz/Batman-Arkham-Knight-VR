@@ -1901,7 +1901,7 @@ namespace
 
         ImGui::TextColored(ImVec4(1.0f, 0.85f, 0.2f, 1.0f), "Arkham Knight VR");
         ImGui::SameLine();
-        ImGui::TextDisabled("   build: AUDIOSYNC3  " __DATE__ " " __TIME__);   // the same tag as the status file
+        ImGui::TextDisabled("   build: HTBUTTON  " __DATE__ " " __TIME__);   // the same tag as the status file
 
         // ---- one status line ----------------------------------------------------
         // TIDY4 2026-09-27 (JJ: "cleaned up and reformatted to be a bit more consistent with the
@@ -1926,6 +1926,10 @@ namespace
         if (ImGui::Button("Recenter  (F12)")) akvr_head_recenter();
         ImGui::SameLine();
         if (ImGui::Button("Save capture  (F2)")) capture_all();
+        ImGui::SameLine();
+        // HTBUTTON 2026-10-02 — JJ: "Is there an overlay button for switching head tracking off? I'm not in front of the
+        // keyboard." (for the Batmobile enter/exit A/B)
+        if (ImGui::Button(akvr_head_state().on ? "Head tracking: ON  (F11)" : "Head tracking: OFF  (F11)")) akvr_head_toggle();
         if (g_traceRows || g_modeRows)
         { ImGui::SameLine(); ImGui::TextColored(kGreen, "saved"); }
         if (akvr_gamepad_menu())
@@ -2852,7 +2856,7 @@ namespace
             float pvRatio = 0.0f, pvFov = 0.0f; int pvHits = 0;
             akvr_projvr_diag(pvRatio, pvHits, pvFov);
             fprintf(f, "\npatches:\n");
-            fprintf(f, "   build: AUDIOSYNC3 " __DATE__ " " __TIME__ "\n");
+            fprintf(f, "   build: HTBUTTON " __DATE__ " " __TIME__ "\n");
             fprintf(f, "   zoom vignette: %s\n", akvr_xr_vig_diag());
             fprintf(f, "   %s\n", akvr_audiosync_diag());   // AUDIOSYNC
             fprintf(f, "   pause look: %s, %s now, main view through the player camera: %s, head writes into the paused camera: %ld, darken %.0f%%\n",
