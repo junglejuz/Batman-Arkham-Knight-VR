@@ -48,6 +48,7 @@ endif()
 add_library(akvr SHARED
     src/dllmain.cpp
     src/vrmode.cpp
+    src/audiosync.cpp
     src/earlyres.cpp
     src/${AKVR_PROXY}_proxy.cpp
     src/hooks.cpp

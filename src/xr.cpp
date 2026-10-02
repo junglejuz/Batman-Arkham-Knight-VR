@@ -1163,10 +1163,16 @@ void hud_eye_pair(const XrCompositionLayerQuad &q, XrCompositionLayerQuad &l, Xr
 ID3D11VertexShader *g_hcVS = nullptr;
 ID3D11PixelShader *g_hcPS = nullptr;
 ID3D11PixelShader *g_hcPS2 = nullptr;    // PAUSENOBACK: the same, dropping dark see-through pixels
+ID3D11PixelShader *g_hcPS3 = nullptr;    // MENUBACK: the same, dark pixels faded by cb0.x
+ID3D11Buffer *g_hcCB = nullptr;          // MENUBACK: cb0 = (opacity of the dark backing, 0, 0, 0)
 bool g_pauseNoBack = true;               // PAUSENOBACK setting
 // MENUNOBACK 2026-10-02 — JJ: "can the black background in the menu be removed? It's like a 2D element where I can see
 // the square shape of it when I look around": the live main menu's dark backing, on the HUD layer like the pause's.
 bool g_menuNoBack = true;
+// MENUBACK 2026-10-02 — JJ: with the backing gone "the menu items look a bit weird now ... maybe it was needed"; he
+// wants it back with "a slider for opacity". The live main menu's dark pixels are drawn at this opacity (1 = the game's
+// own look, 0 = gone); text and highlights untouched. Replaces MENUNOBACK's on/off.
+float g_menuBackOpacity = 1.0f;
 int g_hcState = 0;                       // 0 not built, 1 ok, -1 failed
 ID3D11ShaderResourceView *g_hcSRV = nullptr;
 ID3D11Texture2D *g_hcSRVTex = nullptr;
@@ -1225,6 +1231,31 @@ bool hud_conv_build() {
     if (FAILED(g_device->CreatePixelShader(pb2->GetBufferPointer(), pb2->GetBufferSize(), nullptr, &g_hcPS2))) g_hcPS2 = nullptr;
   if (err2) err2->Release();
   if (pb2) pb2->Release();
+  // MENUBACK: the plain conversion, with dark pixels (brightest channel under ~0.12, eased over 0.08-0.16 so the text's
+  // soft edges do not step) scaled by cb0.x. At 1 it is exactly the plain shader.
+  static const char ps3[] =
+      "Texture2DArray<float4> t : register(t0);"
+      "cbuffer K : register(b0) { float4 k; };"
+      "float3 lin(float3 c) { return c <= 0.04045 ? c / 12.92 : pow((c + 0.055) / 1.055, 2.4); }"
+      "float4 main(float4 pos : SV_Position) : SV_Target {"
+      " float4 p = t.Load(int4(pos.xy, 0, 0));"
+      " float a = saturate(p.a);"
+      " float3 c = a > 0.004 ? saturate(p.rgb / a) : saturate(p.rgb);"
+      " float m = max(c.r, max(c.g, c.b));"
+      " float3 o = a > 0.004 ? lin(c) * a : lin(c);"
+      " float f = lerp(saturate(k.x), 1.0, smoothstep(0.08, 0.16, m));"
+      " return float4(o, a) * f; }";
+  ID3DBlob *pb3 = nullptr, *err3 = nullptr;
+  if (ok && SUCCEEDED(compile(ps3, sizeof(ps3) - 1, "hudps3", nullptr, nullptr, "main", "ps_5_0", 0, 0, &pb3, &err3)) && pb3)
+    if (FAILED(g_device->CreatePixelShader(pb3->GetBufferPointer(), pb3->GetBufferSize(), nullptr, &g_hcPS3))) g_hcPS3 = nullptr;
+  if (err3) err3->Release();
+  if (pb3) pb3->Release();
+  if (g_hcPS3) {
+    D3D11_BUFFER_DESC bd{}; bd.ByteWidth = 16; bd.Usage = D3D11_USAGE_DEFAULT; bd.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
+    const float init[4] = { 1.0f, 0.0f, 0.0f, 0.0f };
+    D3D11_SUBRESOURCE_DATA sd{}; sd.pSysMem = init;
+    if (FAILED(g_device->CreateBuffer(&bd, &sd, &g_hcCB))) g_hcCB = nullptr;
+  }
   snprintf(g_hudConvDiag, sizeof(g_hudConvDiag), ok ? "colour conversion ready" : "colour shaders failed");
   g_hcState = ok ? 1 : -1;
   return ok;
@@ -1289,13 +1320,23 @@ bool hud_conv_draw(ID3D11Texture2D *src, uint32_t idx) {
   g_ctx->IASetInputLayout(nullptr);
   g_ctx->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
   g_ctx->VSSetShader(g_hcVS, nullptr, 0);
-  const bool noBack = (g_pauseLive && g_pauseNoBack) || (g_hudMenuNow && !g_pauseLive && g_menuNoBack);   // MENUNOBACK
-  g_ctx->PSSetShader(noBack && g_hcPS2 ? g_hcPS2 : g_hcPS, nullptr, 0);   // PAUSENOBACK
+  // PAUSENOBACK for the pause; MENUBACK (opacity) for the live main menu
+  const bool noBack = g_pauseLive && g_pauseNoBack;
+  const bool menuBack = g_hudMenuNow && !g_pauseLive && g_hcPS3 && g_hcCB && g_menuBackOpacity < 0.999f;
+  ID3D11Buffer *oCB = nullptr;
+  if (menuBack) {
+    g_ctx->PSGetConstantBuffers(0, 1, &oCB);
+    const float kk[4] = { g_menuBackOpacity, 0.0f, 0.0f, 0.0f };
+    g_ctx->UpdateSubresource(g_hcCB, 0, nullptr, kk, 0, 0);
+    g_ctx->PSSetConstantBuffers(0, 1, &g_hcCB);
+  }
+  g_ctx->PSSetShader(menuBack ? g_hcPS3 : (noBack && g_hcPS2 ? g_hcPS2 : g_hcPS), nullptr, 0);   // PAUSENOBACK / MENUBACK
   g_ctx->PSSetShaderResources(0, 1, &g_hcSRV);
   g_ctx->OMSetBlendState(nullptr, nullptr, 0xffffffff);
   g_ctx->OMSetDepthStencilState(nullptr, 0);
   g_ctx->RSSetState(nullptr);
   g_ctx->Draw(3, 0);
+  if (menuBack) { g_ctx->PSSetConstantBuffers(0, 1, &oCB); if (oCB) oCB->Release(); }   // MENUBACK: put the game's cb0 back
   ID3D11ShaderResourceView *none = nullptr;
   g_ctx->PSSetShaderResources(0, 1, &none);
   // restore
@@ -2946,6 +2987,7 @@ bool akvr_xr_menu3d_offset(float &dyawDeg, float &dpitchDeg) {
   return true;
 }
 bool akvr_xr_main_menu_detected() { return g_autoMainMenu && g_menuPhase == 1; }
+int  akvr_xr_menu_phase() { return g_autoMainMenu ? g_menuPhase : 2; }   // AUDIOSYNC: 0 = start-up
 void akvr_xr_set_anamorphic(bool on) { g_anamorphic = on; }
 void akvr_xr_set_screen_hold(bool on) { g_holdScreen = on; }
 void akvr_xr_set_camera_pos(bool ok, float x, float y, float z) {
@@ -3226,6 +3268,8 @@ float akvr_xr_pause_menu_size() { return g_pauseMenuScale; }                // P
 void  akvr_xr_pause_menu_size_set(float v) { g_pauseMenuScale = v < 0.2f ? 0.2f : (v > 1.0f ? 1.0f : v); }
 bool akvr_xr_pause_no_back() { return g_pauseNoBack; }                      // PAUSENOBACK
 void akvr_xr_pause_no_back_set(bool on) { g_pauseNoBack = on; }
+float akvr_xr_menu_back_opacity() { return g_menuBackOpacity; }             // MENUBACK
+void  akvr_xr_menu_back_opacity_set(float v) { g_menuBackOpacity = v < 0.0f ? 0.0f : (v > 1.0f ? 1.0f : v); }
 bool akvr_xr_menu_no_back() { return g_menuNoBack; }                        // MENUNOBACK
 void akvr_xr_menu_no_back_set(bool on) { g_menuNoBack = on; }
 int  akvr_xr_hud_eyes() { return g_hudEyes; }

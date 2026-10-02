@@ -2607,10 +2607,12 @@ namespace {
 // ---------------------------------------------------------------------------
 // entry point — called from DllMain, before the game runs
 // ---------------------------------------------------------------------------
+void akvr_audiosync_install();   // audiosync.cpp
 void akvr_early_init(HINSTANCE self)
 {
     if (g_installed) return;
     g_installed = true;
+    akvr_audiosync_install();   // AUDIOSYNC: before Wwise makes its audio engine
 
     load_settings(self);
 

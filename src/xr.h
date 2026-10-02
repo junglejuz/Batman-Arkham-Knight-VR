@@ -61,6 +61,8 @@ bool        akvr_xr_pause_no_back();               // PAUSENOBACK: the pause men
 void        akvr_xr_pause_no_back_set(bool on);
 bool        akvr_xr_menu_no_back();                // MENUNOBACK: the live main menu's dark backing left out of the layer
 void        akvr_xr_menu_no_back_set(bool on);
+float       akvr_xr_menu_back_opacity();           // MENUBACK: the live main menu's dark backing, 0..1
+void        akvr_xr_menu_back_opacity_set(float v);
 float       akvr_xr_pause_dim();                   // PAUSEDIM: how much darker the paused world is (0..0.9)
 void        akvr_xr_pause_dim_set(float v);
 bool        akvr_xr_screen_track();                // SCREENTRACK: head tracking in the floating screen
@@ -83,6 +85,7 @@ void        akvr_xr_pause_zoom_set(float v);
 bool        akvr_xr_auto_main_menu();              // treat the first camera-live stretch after launch as the main menu
 void        akvr_xr_auto_main_menu_set(bool on);
 bool        akvr_xr_main_menu_detected();          // currently in that main-menu phase
+int         akvr_xr_menu_phase();                  // AUDIOSYNC: 0 = start-up, 1 = main menu, 2 = after it
 void        akvr_xr_set_screen_hold(bool on);      // ENTRYHOLD: floating screen keeps its last picture
 void        akvr_xr_set_anamorphic(bool on);       // this frame's 3D went through projVR (present at its shape)
 const char* akvr_xr_mode_log();                   // timeline of mode changes since launch

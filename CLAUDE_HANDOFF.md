@@ -661,3 +661,14 @@ the audio continues" (sound effect before the menu, then music). Not diagnosed: 
 0); the mode timeline (22:09) had "2.9s 3D; 2.9s game; 5.9s MAIN MENU on" only. MENUGAP logs every frame gap of 300 ms+
 (max 12) into the mode timeline until the main menu closes: gaps = the game loading (HDD E:), none = it draws black.
 Read akvr_startup_log.txt "mode timeline" after JJ's next start. Rollback: `diagnostics/before-MENUNOBACK-20261002/`.
+**MENUBACK + AUDIOSYNC (2026-10-02, build AUDIOSYNC, DLL only, deployed, untested):** JJ on MENUNOBACK: "the menu items
+look a bit weird now ... maybe it was needed" - wants it back with "a slider for opacity": the live main menu layer now
+goes through ps3 (dark pixels scaled by cb0.x, eased 0.08-0.16 brightness; at 1 = the plain shader), key
+`menubackopacity` (default 1 = the game's own), panel slider in MENUS AND SCREENS; menunoback is ignored. MENUGAP result
+(22:21): "2.5s no frame 844 ms; 2.6s game; 2.6s 3D; 5.5s no frame 1687 ms; 5.7s MAIN MENU on" - the game stops its
+frames (loading; HUD search was 1 ms), the sound plays on. JJ: "maybe we need to pause the audio so it syncs up".
+AUDIOSYNC (src/audiosync.cpp): CoCreateInstance hooked in akvr_early_init (DllMain) to keep Wwise's XAudio2 2.7 engine
+(CLSID 5a508685-..., IID 8bcf1f58-...); a watcher thread calls IXAudio2::StopEngine (vtable 12) when no Present for 150 ms
+while menu phase is 0 (start-up), the next Present StartEngine (11); 8 s cap; resume on shutdown. Key `audiosync`
+(default 1), panel box + its diag ("game audio engine found / not seen", holds, ms). If the diag says "not seen", Wwise
+did not use XAudio2 2.7 (DirectSound fallback) - the feature is inert. Rollback: `diagnostics/before-AUDIOSYNC-20261002/`.

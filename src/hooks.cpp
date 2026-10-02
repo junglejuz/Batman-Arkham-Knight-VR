@@ -91,6 +91,11 @@ void        akvr_hud_menu_fill_set(bool on);
 bool        akvr_hud_global();                  // HUDAREA: also resize the game's UI rectangle
 void        akvr_hud_global_set(bool on);
 float       akvr_hud_raise();                   // HUDPOS: gameplay HUD up/down, fraction of height
+void        akvr_audiosync_frame();             // audiosync.cpp
+void        akvr_audiosync_shutdown();
+bool        akvr_audiosync();
+void        akvr_audiosync_set(bool on);
+const char* akvr_audiosync_diag();
 float       akvr_menu_text_left();              // MENUTEXT: main-menu text slides left, fraction of width
 void        akvr_menu_text_left_set(float f);
 void        akvr_hud_raise_set(float r);
@@ -855,7 +860,8 @@ namespace
         if (g_menuCapture) fprintf(f, "menucapture=1\n");             // MENUBLACK: written only when on
         fprintf(f, "farrain=%d\n", akvr_far_rain() ? 1 : 0);   // FARRAIN
         fprintf(f, "hudeyefollow=%d\npausenoback=%d\n", akvr_xr_hud_eye_follow() ? 1 : 0, akvr_xr_pause_no_back() ? 1 : 0);   // HUDEYES / PAUSENOBACK
-        fprintf(f, "menunoback=%d\n", akvr_xr_menu_no_back() ? 1 : 0);   // MENUNOBACK
+        fprintf(f, "menubackopacity=%.2f\n", akvr_xr_menu_back_opacity());   // MENUBACK (replaces menunoback)
+        fprintf(f, "audiosync=%d\n", akvr_audiosync() ? 1 : 0);   // AUDIOSYNC
         fprintf(f, "pausemenusize=%.2f\n", akvr_xr_pause_menu_size());   // PAUSESIZE
         fprintf(f, "pauseaspect=%.3f\n", akvr_xr_pause_aspect());
         fprintf(f, "automainmenu=%d\n", akvr_xr_auto_main_menu() ? 1 : 0);
@@ -990,7 +996,8 @@ namespace
             else if (sscanf(line, "farrain=%d", &iv) == 1) akvr_far_rain_set(iv != 0);   // FARRAIN
             else if (sscanf(line, "hudeyefollow=%d", &iv) == 1) akvr_xr_hud_eye_follow_set(iv != 0);   // HUDEYES
             else if (sscanf(line, "pausenoback=%d", &iv) == 1) akvr_xr_pause_no_back_set(iv != 0);   // PAUSENOBACK
-            else if (sscanf(line, "menunoback=%d", &iv) == 1) akvr_xr_menu_no_back_set(iv != 0);   // MENUNOBACK
+            else if (sscanf(line, "menubackopacity=%f", &v) == 1) akvr_xr_menu_back_opacity_set(v);   // MENUBACK
+            else if (sscanf(line, "audiosync=%d", &iv) == 1) akvr_audiosync_set(iv != 0);   // AUDIOSYNC
             else if (sscanf(line, "pausemenusize=%f", &v) == 1) akvr_xr_pause_menu_size_set(v);   // PAUSESIZE
             else if (sscanf(line, "pauseaspect=%f", &v) == 1) akvr_xr_pause_aspect_set(v);
             else if (sscanf(line, "automainmenu=%d", &iv) == 1) akvr_xr_auto_main_menu_set(iv != 0);
@@ -1892,7 +1899,7 @@ namespace
 
         ImGui::TextColored(ImVec4(1.0f, 0.85f, 0.2f, 1.0f), "Arkham Knight VR");
         ImGui::SameLine();
-        ImGui::TextDisabled("   build: MENUNOBACK  " __DATE__ " " __TIME__);   // the same tag as the status file
+        ImGui::TextDisabled("   build: AUDIOSYNC  " __DATE__ " " __TIME__);   // the same tag as the status file
 
         // ---- one status line ----------------------------------------------------
         // TIDY4 2026-09-27 (JJ: "cleaned up and reformatted to be a bit more consistent with the
@@ -2399,8 +2406,14 @@ namespace
             // right (MENUSIDE2), so head turns no longer swing it. The text slider is gone (no effect on that screen).
             if (SliderStep("main menu camera: left / right  (minus = Batman further right, 0 = the game's own)", &ms, -400.0f, 400.0f, "%.0f", ImGuiSliderFlags_AlwaysClamp))
             { akvr_head_menu_side_set(ms); settings_save(); }
-            bool mnb = akvr_xr_menu_no_back();   // MENUNOBACK (JJ: the menu's black background "like a 2D element")
-            if (ImGui::Checkbox("main menu: leave out the dark background behind the menu items", &mnb)) { akvr_xr_menu_no_back_set(mnb); settings_save(); }
+            // MENUBACK (JJ: the backing back, "a slider for opacity"; MENUNOBACK's on/off made the items "look a bit weird")
+            float mbo = akvr_xr_menu_back_opacity() * 100.0f;
+            if (SliderStep("main menu: dark background behind the items %  (100 = the game's own)", &mbo, 0.0f, 100.0f, "%.0f", ImGuiSliderFlags_AlwaysClamp))
+            { akvr_xr_menu_back_opacity_set(mbo / 100.0f); settings_save(); }
+            // AUDIOSYNC (JJ: "maybe we need to pause the audio so it syncs up with ... the menu screen appearing")
+            bool as = akvr_audiosync();
+            if (ImGui::Checkbox("start-up: hold the sound while the game loads the menu", &as)) { akvr_audiosync_set(as); settings_save(); }
+            ImGui::TextDisabled("   %s", akvr_audiosync_diag());
             float pscr = akvr_xr_pause_zoom() * 100.0f;
             if (SliderStep("map size %", &pscr, 10.0f, 100.0f, "%.0f"))   // PAUSESIZE: the pause menu has its own size now
                 akvr_xr_pause_zoom_set(pscr / 100.0f);
@@ -2833,8 +2846,9 @@ namespace
             float pvRatio = 0.0f, pvFov = 0.0f; int pvHits = 0;
             akvr_projvr_diag(pvRatio, pvHits, pvFov);
             fprintf(f, "\npatches:\n");
-            fprintf(f, "   build: MENUNOBACK " __DATE__ " " __TIME__ "\n");
+            fprintf(f, "   build: AUDIOSYNC " __DATE__ " " __TIME__ "\n");
             fprintf(f, "   zoom vignette: %s\n", akvr_xr_vig_diag());
+            fprintf(f, "   %s\n", akvr_audiosync_diag());   // AUDIOSYNC
             fprintf(f, "   pause look: %s, %s now, main view through the player camera: %s, head writes into the paused camera: %ld, darken %.0f%%\n",
                     akvr_xr_pause_look() ? "ON" : "off", akvr_xr_pause_live() ? "LIVE" : "not live",
                     akvr_camera_main_view_live() ? "yes" : "no", akvr_camera_pause_writes(), akvr_xr_pause_dim() * 100.0f);
@@ -3481,6 +3495,7 @@ namespace
         akvr_head_set_eye(akvr_xr_inject_eye());   // AER: which eye this frame renders for
         akvr_freecam_update();   // push our commanded camera in, if freecam is on
         akvr_head_update();      // compute head-pose delta for the additive hook (M4a-3)
+        akvr_audiosync_frame();  // AUDIOSYNC: a frame came - held start-up sound goes on
 
         // Render the UI panel into its OWN floating quad layer (clean, independent of
         // the game frame). Fallback: if we're not displaying in VR (e.g. monitor-only
@@ -4488,6 +4503,7 @@ void akvr_start()
 
 void akvr_stop()
 {
+    akvr_audiosync_shutdown();   // AUDIOSYNC: never leave the sound held
     akvr_camera_shutdown();
     if (!akvr_early_geo11()) kiero::shutdown();   // never initialised on the geo-11 path
 }
