@@ -407,10 +407,43 @@ namespace
     bool  g_smHave = false;
     volatile float g_smoothApplied[3] = {};
     volatile LONG g_smoothEvents = 0;
+    // TILTSMOOTH 2026-10-02 — JJ with CAMSMOOTH: getting out of the Batmobile "still pops". F2 23:23: the position jumps
+    // are gone; what is left is the game's own camera TILTING 3.3-3.5 deg in one frame (sometimes 1.6 more the next) from
+    // a still camera, with no sideways turn, at the start of each get in / get out. In every F2 since 1 Oct a still-camera
+    // tilt step of 1.5+ deg with under 0.3 deg of turn happens only there (36 times; never on the stick - its first steps
+    // come with turn or are smaller). Such a step is soaked up and let out at 0.3 deg a frame; steps over 25 deg are cuts.
+    float g_tsPrevYaw = 0.0f, g_tsPrevPitch = 0.0f, g_tsVel = 0.0f, g_tsCorr = 0.0f;
+    bool  g_tsHave = false;
+    volatile float g_tiltApplied = 0.0f;   // degrees added to the pitch field this finalize (CAMRESTORE puts the base back)
+    float wrap180(float a) { while (a > 180.0f) a -= 360.0f; while (a < -180.0f) a += 360.0f; return a; }
+    void tilt_smooth(uintptr_t cam)
+    {
+        g_tiltApplied = 0.0f;
+        if (!g_bYaw || !g_bPitch) return;
+        const float yaw = (float)(*g_bYaw) * ROT2DEG, pitch = (float)(*g_bPitch) * ROT2DEG;   // the game's own (saved by the stub)
+        if (!g_tsHave) { g_tsPrevYaw = yaw; g_tsPrevPitch = pitch; g_tsVel = 0.0f; g_tsCorr = 0.0f; g_tsHave = true; return; }
+        const float dy = wrap180(yaw - g_tsPrevYaw), dp = wrap180(pitch - g_tsPrevPitch);
+        g_tsPrevYaw = yaw; g_tsPrevPitch = pitch;
+        if (fabsf(dp) > 25.0f || fabsf(dy) > 25.0f) { g_tsVel = 0.0f; g_tsCorr = 0.0f; return; }   // a cut
+        g_tsCorr = g_tsCorr > 0.0f ? fmaxf(0.0f, g_tsCorr - 0.3f) : fminf(0.0f, g_tsCorr + 0.3f);
+        if (fabsf(dp - g_tsVel) >= 1.5f && fabsf(dy) < 0.3f && fabsf(g_tsVel) < 0.5f)
+        {
+            g_tsCorr -= dp;
+            InterlockedIncrement(&g_smoothEvents);
+        }
+        else
+            g_tsVel = 0.5f * g_tsVel + 0.5f * dp;
+        if (g_tsCorr != 0.0f)
+        {
+            *(int32_t*)(cam + OFF_PITCH) += (int32_t)(g_tsCorr / ROT2DEG);
+            g_tiltApplied = g_tsCorr;
+        }
+    }
     void __fastcall smooth_cb(uintptr_t cam)
     {
         __try
         {
+            if (g_camSmooth) tilt_smooth(cam); else { g_tsHave = false; g_tiltApplied = 0.0f; }   // TILTSMOOTH
             float* P = (float*)(cam + OFF_X);
             const float p[3] = { P[0], P[1], P[2] };
             g_smoothApplied[0] = g_smoothApplied[1] = g_smoothApplied[2] = 0.0f;

@@ -725,3 +725,9 @@ with capstone - OK, FOVABS block too) before our deltas: a step that leaves the 
 through. Replayed on three F2 camera.csv files (scratch smsim.py): jumps 62-72 -> 28-34, offsets <= ~40 (one 1 m during
 driving), 5-24 events per minute-plus. CAMRESTORE also takes the smoothing back. Setting `camsmooth` (default 1), VIEW
 box with a running count. Rollback: `diagnostics/before-CAMSMOOTH-20261002/`.
+**TILTSMOOTH (2026-10-02, build TILTSMOOTH, DLL only, deployed, untested):** JJ with CAMSMOOTH: getting out "still
+pops". F2 23:23: no position jumps left; the game's own camera tilts 3.3-3.5 deg in one frame (39.52: then 1.63 more)
+from a still camera, zero yaw, at each get in/out start. Rule (replayed on every F2 camera.csv since 1 Oct: 36 events,
+all at those moments, none on stick turns): a still-camera pitch step >= 1.5 deg with < 0.3 deg yaw is absorbed and let out
+at 0.3 deg/frame; > 25 deg = cut. Runs in smooth_cb (finalize stub), adds to the pitch field; CAMRESTORE puts the base
+back. Same `camsmooth` switch; the panel count includes these. Rollback: `diagnostics/before-TILTSMOOTH-20261002/`.
