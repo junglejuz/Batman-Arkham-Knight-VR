@@ -603,7 +603,7 @@ function Patch-TargetFace([string]$hash) {
     $bin = Join-Path $dm "$hash-vs.bin"
     if (-not (Test-Path $txt)) { return }
     $s = [System.IO.File]::ReadAllText($txt)
-    if ($s.Contains($faceMarker)) { Say "  $hash : target face already patched"; return }
+    if ($s.Contains($faceMarker) -or $s.Contains($upMarker)) { Say "  $hash : target face already patched"; return }   # 1r replaces 1q's block
     if (-not $s.Contains($multiMarker)) { Say "  $hash : target multi (1p) not applied - target face NOT patched" 'Red'; return }
     $nl = if ($s.Contains("`r`n")) { "`r`n" } else { "`n" }
     $sc = [regex]::Match($s, '(?m)^(?<i>[ \t]*)mad (?<w>r\d+)\.xw, (?<p>r\d+)\.xxxy, cb13\[4\]\.xxxy, cb13\[4\]\.zzzw[ \t]*\r?\n[ \t]*and \k<w>\.xw, \k<w>\.xxxw, (?<u>r\d+)\.zzzz[ \t]*\r?\n[ \t]*add \k<p>\.xy, \k<p>\.xyxx, \k<w>\.xwxx[ \t]*')
@@ -651,6 +651,72 @@ function Patch-TargetFace([string]$hash) {
     [System.IO.File]::WriteAllText($txt, $s, $utf8)
     if (Test-Path $bin) { Remove-Item $bin }
     Say "  $hash : target face patched (position $p, point $v, temps $a / $b)" 'Green'
+}
+
+# ---- 1r. TARGETUP: the on-target pieces also keep the world's up, so rolling the head no longer rolls them -------
+# JJ 2026-10-02 after 1q: the distance marker "is still rotating on the z-axis when rolling your head". 1q built the
+# facing plane's up from the picture's up, which rolls with the head. 1r replaces 1q's block: n = the unit line of sight
+# to the point, W = the world's up in the drawn camera's frame (cb13[11].xyz, AKVR; (0,1,0) when not sent), R = W x n
+# (normalised), U = n x R, P = n + dx R + dy U, x' = P.x / P.z. W = (0,1,0) gives exactly 1q. One more temp; CB13 -> 12.
+$upMarker = '// AKVR TARGETUP'
+function Patch-TargetUp([string]$hash) {
+    $txt = Join-Path $dm "$hash-vs.txt"
+    $bin = Join-Path $dm "$hash-vs.bin"
+    if (-not (Test-Path $txt)) { return }
+    $s = [System.IO.File]::ReadAllText($txt)
+    if ($s.Contains($upMarker)) { Say "  $hash : target up already patched"; return }
+    if (-not $s.Contains($faceMarker)) { Say "  $hash : target face (1q) not applied - target up NOT patched" 'Red'; return }
+    $nl = if ($s.Contains("`r`n")) { "`r`n" } else { "`n" }
+    $blk = [regex]::Match($s, '(?ms)^(?<i>[ \t]*)// AKVR TARGETFACE 2026-10-02:[^\r\n]*\r?\n[^\r\n]*\r?\n[ \t]*ne (?<a>r\d+)\.w, cb13\[3\]\.z, l\(0\.000000\)\r?\n[ \t]*and \k<a>\.w, \k<a>\.w, (?<u>r\d+)\.z\r?\n.*?^[ \t]*add (?<b>r\d+)\.xy, (?<p>r\d+)\.xyxx, -(?<v>r\d+)\.xyxx\r?\n.*?^[ \t]*endif[ \t]*\r?\n')
+    $cbd = [regex]::Matches($s, '(?m)^dcl_constantbuffer CB13\[11\], immediateIndexed[ \t]*$')
+    $tm = [regex]::Matches($s, '(?m)^dcl_temps (?<n>\d+)[ \t]*$')
+    if (-not $blk.Success -or $cbd.Count -ne 1 -or $tm.Count -ne 1) { Say "  $hash : 1q block not found - target up NOT patched" 'Red'; return }
+    $i = $blk.Groups['i'].Value; $a = $blk.Groups['a'].Value; $b = $blk.Groups['b'].Value
+    $u = $blk.Groups['u'].Value; $p = $blk.Groups['p'].Value; $v = $blk.Groups['v'].Value
+    $n = [int]$tm[0].Groups['n'].Value
+    $c = "r$n"
+    $lines = @(
+        "$upMarker 2026-10-02: an on-target piece faces the eye and keeps the world's up: its offset from its point is laid on",
+        "// the plane square to the line of sight, that plane's up along the world's (cb13[11] = world up in the drawn camera's",
+        "// frame, cb13[3] = tan half-angles h, v, on), so neither turning nor rolling the head turns it",
+        "ne $a.w, cb13[3].z, l(0.000000)",
+        "and $a.w, $a.w, $u.z",
+        "if_nz $a.w",
+        "  mul $a.xy, $v.xyxx, cb13[3].xyxx",
+        "  mov $a.z, l(1.000000)",
+        "  dp3 $a.w, $a.xyzx, $a.xyzx",
+        "  rsq $a.w, $a.w",
+        "  mul $a.xyz, $a.xyzx, $a.wwww",
+        "  dp3 $c.w, cb13[11].xyzx, cb13[11].xyzx",
+        "  lt $c.w, $c.w, l(0.010000)",
+        "  movc $c.xyz, $c.wwww, l(0.000000, 1.000000, 0.000000, 0.000000), cb13[11].xyzx",
+        "  mul $b.xyz, $c.yzxy, $a.zxyz",
+        "  mad $b.xyz, -$c.zxyz, $a.yzxy, $b.xyzx",
+        "  dp3 $b.w, $b.xyzx, $b.xyzx",
+        "  max $b.w, $b.w, l(0.000001)",
+        "  rsq $b.w, $b.w",
+        "  mul $b.xyz, $b.xyzx, $b.wwww",
+        "  mul $c.xyz, $a.yzxy, $b.zxyz",
+        "  mad $c.xyz, -$a.zxyz, $b.yzxy, $c.xyzx",
+        "  add $c.w, $p.x, -$v.x",
+        "  mul $c.w, $c.w, cb13[3].x",
+        "  add $a.w, $p.y, -$v.y",
+        "  mul $a.w, $a.w, cb13[3].y",
+        "  mad $a.xyz, $b.xyzx, $c.wwww, $a.xyzx",
+        "  mad $a.xyz, $c.xyzx, $a.wwww, $a.xyzx",
+        "  max $a.z, $a.z, l(0.050000)",
+        "  div $a.xy, $a.xyxx, $a.zzzz",
+        "  div $p.xy, $a.xyxx, cb13[3].xyxx",
+        "endif"
+    )
+    $s = $s.Substring(0, $blk.Index) + (($lines | ForEach-Object { $i + $_ }) -join $nl) + $nl + $s.Substring($blk.Index + $blk.Length)
+    $s = [regex]::Replace($s, '(?m)^dcl_constantbuffer CB13\[11\], immediateIndexed', 'dcl_constantbuffer CB13[12], immediateIndexed')
+    $s = [regex]::Replace($s, '(?m)^dcl_temps \d+', "dcl_temps $($n + 1)")
+    Backup-Once $txt $bakDm
+    Backup-Once $bin $bakDm
+    [System.IO.File]::WriteAllText($txt, $s, $utf8)
+    if (Test-Path $bin) { Remove-Item $bin }
+    Say "  $hash : target up patched (position $p, point $v, temps $a / $b / $c)" 'Green'
 }
 
 # ---- 1l. RAINSTRETCH: optional - the world rain streaks without the per-frame camera term (cb0[12]) ----------
@@ -1190,6 +1256,7 @@ switch ($Mode) {
         foreach ($h in $hudVs) { Patch-TargetScale $h }
         foreach ($h in $hudVs) { Patch-TargetMulti $h }
         foreach ($h in $hudVs) { Patch-TargetFace $h }
+        foreach ($h in $hudVs) { Patch-TargetUp $h }
         Patch-NearRain
         Patch-RainStretch
         Patch-RainLag

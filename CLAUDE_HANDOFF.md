@@ -599,3 +599,11 @@ the last 3 s, else the one child whose subtree moves; 2+ moving children = their
 Single parts' points are sent LAST (rows win over list markers: "last match wins"). Radius 0.12 -> 0.15 (the reticle's RB
 prompt sits 0.105 from its point). F2 status now lists "all points". Ask JJ: distance marker on its object, facing him,
 label in the right place; reticle elements together at the edges. Rollback DLL: `diagnostics/before-TARGETANCHOR-20261002/`.
+**TARGETANCHOR2 + TARGETUP (2026-10-02, build TARGETUP + fix step 1r, deployed, untested):** JJ: on foot the distance
+marker is better but "still rotating on the z-axis when rolling your head"; in the Batmobile it still turns and "flying
+off to different positions". F2 18:51 (Batmobile): the widget part held TWO moving children (.1.0 and .1.1, two
+objectives) and "2+ moving children = parent" fell back to the still part -> point (0.000, 0.080) again. Now every moving
+child is its own point (up to 4 per part, near-duplicates < 0.05 merged); a node counts as moving for 30 s after its last
+move (was 3 s). TARGETUP (fix 1r) replaces 1q's block: the facing plane's up = the world's up (cb13 row 11 from the drawn
+camera, one Present back), so head roll no longer rolls the markers. cb13 is now 12 rows / 192 bytes. Rollback:
+`diagnostics/before-TARGETUP-20261002/`. Ask JJ: roll the head (marker stays upright), Batmobile (marker on its object).

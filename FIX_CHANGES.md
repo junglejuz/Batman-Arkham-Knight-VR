@@ -659,6 +659,27 @@ Rollback: `akvr/diagnostics/before-TARGETFACE-20261002/` (13 texts, DLL, setting
 
 ---
 
+## 1r. ShaderFixesDM: the on-target pieces keep the world's up, so rolling the head no longer rolls them (AKVR, TARGETUP, 2026-10-02)
+
+**Files:** all 13 HUD `-vs.txt` (after 1q); `-vs.bin` deleted.
+
+**Why:** JJ after 1q + TARGETANCHOR: the distance marker "is still rotating on the z-axis when rolling your head". 1q laid
+each piece on the plane facing the eye but took that plane's up from the picture, which rolls with the head.
+
+**Edit (per file):** 1q's block (from its `// AKVR TARGETFACE` comment to its `endif`) is REPLACED by a 3D version, one more
+temp `rC`, `CB13[11]` -> `CB13[12]`: n = normalize(u, v, 1) (the point's tangents, cb13[3].xy); W = cb13[11].xyz (the
+world's up in the drawn camera's frame, x right / y up / z forward), (0, 1, 0) if |W|^2 < 0.01; R = normalize(W x n);
+U = n x R; P = n + dx R + dy U (dx, dy = the vertex's offset from the point in tangent units); x' = P.x / max(P.z, 0.05)
+/ tanH, likewise y. W = (0, 1, 0) gives exactly 1q (checked numerically, and a 20 deg roll keeps an up-offset along W).
+AKVR sends row 11 = the drawn camera's axes' world-z components (right.z, up.z, fwd.z, from the camera recorded one
+Present back) with the face rows. Row 11 zero / unbound = 1q's behaviour. 1q's patch now counts 1r as already patched.
+
+**Detect:** `// AKVR TARGETUP`. **Reference:** `Patch-TargetUp` (step 1r). Practice copy: 13 patched, rerun 0, no
+TARGETFACE block left. **Driver test:** 13/13 assembled and loaded OK. **Applied** 2026-10-02 to JJ's game (identical to
+the tested copies). Untested in the headset. Rollback: `akvr/diagnostics/before-TARGETUP-20261002/`.
+
+---
+
 ## 2. d3dxdm.ini
 
 | Key / section | Baseline | AKVR value | Status and reason |
@@ -923,3 +944,4 @@ baseline versions). Needs JJ: where the 2026-09-26 update came from, or an in-ga
 | 2026-10-02 | TARGETSCALE | 13 HUD vertex shaders: on-target pieces mapped per vertex back to the movie's own layout (CB13[5]); replaces 1m's move | 1n |
 | 2026-10-02 | VRLAUNCH (mod + installer) | VR via shortcut/flag/-akvr, Steam = 2D; BmSystemSettings.ini + GFX store swapped per mode (akvr_profiles); installer edits the VR copies only | 6 |
 | 2026-10-02 | TARGETFACE | 13 HUD vertex shaders: on-target pieces laid on the plane facing the eye about their point (CB13[3] = tan half-angles, on) | 1q |
+| 2026-10-02 | TARGETUP | 13 HUD vertex shaders: 1q block replaced, on-target pieces keep the world's up (CB13[11]) | 1r |

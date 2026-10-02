@@ -3904,9 +3904,14 @@ void  akvr_hud_room_all_set(bool on) { g_roomAll = on; g_autoDirty = true; }
 namespace {
     struct MoveRec { uintptr_t node; float tx, ty; DWORD moved; };
     MoveRec g_mvRec[256]; int g_mvN = 0, g_mvNext = 0;
-    struct AnchorRec { uintptr_t part, anchor; };
+    // TARGETANCHOR2 2026-10-02 — JJ: in the Batmobile the distance marker still turns and is "flying off to different
+    // positions". F2 18:51: the widget holds TWO moving children there (.1.0 and .1.1, two objectives; one off screen),
+    // and "2+ moving children = their parent" picked the still part again (point (0.000, 0.080) in every capture). Each
+    // moving child is now its own point; points closer than 0.05 clip are merged by the caller (the reticle's pulsing
+    // pieces when the reticle itself is still).
+    struct AnchorRec { uintptr_t part; uintptr_t anchor[4]; int n; };
     AnchorRec g_anchor[8] = {};
-    // true when this node's local translation changed by more than 20 units within the last 3 s
+    // true when this node's local translation changed by more than 20 units within the last 30 s (TARGETANCHOR2: 3 s let a still reticle hand over to its pulsing pieces)
     bool node_moved_recently(uintptr_t node, const float* m, DWORD now)
     {
         for (int i = 0; i < g_mvN; ++i)
@@ -3914,29 +3919,23 @@ namespace {
             MoveRec& r = g_mvRec[i];
             if (r.node != node) continue;
             if (fabsf(m[3] - r.tx) > 20.0f || fabsf(m[7] - r.ty) > 20.0f) { r.tx = m[3]; r.ty = m[7]; r.moved = now; }
-            return r.moved != 0 && now - r.moved < 3000;
+            return r.moved != 0 && now - r.moved < 30000;
         }
         MoveRec& r = g_mvN < 256 ? g_mvRec[g_mvN++] : g_mvRec[g_mvNext++ & 255];
         r.node = node; r.tx = m[3]; r.ty = m[7]; r.moved = 0;
         return false;
     }
-    // the moving node under `node` (inclusive), 0 = nothing in this visible 2D subtree moved
-    uintptr_t moving_anchor(uintptr_t node, int depth, DWORD now, int& budget)
+    // the moving nodes under `node` (inclusive; a moving node ends its branch), into out[] (max 4)
+    void moving_anchors(uintptr_t node, int depth, DWORD now, int& budget, uintptr_t* out, int& n)
     {
-        if (--budget < 0) return 0;
+        if (--budget < 0 || n >= 4) return;
         float m[12]; int fl = 0;
-        if (!node_matrix(node, m, &fl) || !(fl & 1) || (fl & 0x200)) return 0;   // hidden or 3D
-        if (node_moved_recently(node, m, now)) return node;
-        if (depth >= 6) return 0;
+        if (!node_matrix(node, m, &fl) || !(fl & 1) || (fl & 0x200)) return;   // hidden or 3D
+        if (node_moved_recently(node, m, now)) { out[n++] = node; return; }
+        if (depth >= 6) return;
         uintptr_t kids[32];
         const int k = node_children(node, kids, 32);
-        uintptr_t found = 0; int nf = 0;
-        for (int c = 0; c < k; ++c)
-        {
-            const uintptr_t a = moving_anchor(kids[c], depth + 1, now, budget);
-            if (a) { found = a; ++nf; }
-        }
-        return nf == 1 ? found : (nf >= 2 ? node : 0);
+        for (int c = 0; c < k; ++c) moving_anchors(kids[c], depth + 1, now, budget, out, n);
     }
     bool is_under(uintptr_t node, uintptr_t part)
     {
@@ -3950,21 +3949,30 @@ namespace {
         }
         return false;
     }
-    uintptr_t part_anchor(uintptr_t part, uintptr_t fallback, DWORD now)
+    // the part's anchors (max 4): the moving nodes now, else the last ones still under it and visible, else fallback
+    int part_anchors(uintptr_t part, uintptr_t fallback, DWORD now, uintptr_t* out)
     {
-        int budget = 96;
-        const uintptr_t a = moving_anchor(part, 0, now, budget);
+        int budget = 96, n = 0;
+        moving_anchors(part, 0, now, budget, out, n);
         int slot = -1;
         for (int i = 0; i < 8; ++i) if (g_anchor[i].part == part) { slot = i; break; }
         if (slot < 0) for (int i = 0; i < 8; ++i) if (!g_anchor[i].part) { slot = i; break; }
         if (slot < 0) slot = (int)(part >> 4) & 7;
-        if (a) { g_anchor[slot] = { part, a }; return a; }
-        if (g_anchor[slot].part == part && g_anchor[slot].anchor && is_under(g_anchor[slot].anchor, part))
+        AnchorRec& rec = g_anchor[slot];
+        if (n > 0)
         {
-            float m[12]; int fl = 0;
-            if (node_matrix(g_anchor[slot].anchor, m, &fl) && (fl & 1)) return g_anchor[slot].anchor;
+            rec.part = part; rec.n = n;
+            for (int i = 0; i < n; ++i) rec.anchor[i] = out[i];
+            return n;
         }
-        return fallback;
+        if (rec.part == part)
+            for (int i = 0; i < rec.n; ++i)
+            {
+                float m[12]; int fl = 0;
+                if (is_under(rec.anchor[i], part) && node_matrix(rec.anchor[i], m, &fl) && (fl & 1)) out[n++] = rec.anchor[i];
+            }
+        if (n == 0) out[n++] = fallback;
+        return n;
     }
 }
 
@@ -4050,11 +4058,18 @@ int akvr_hud_target_points(float* xy, int max, int rtW, int rtH, float* off, flo
             }
             continue;
         }
-        if (ns >= 8) continue;
-        const uintptr_t anchor = part_anchor(want[w].node, node, now);   // TARGETANCHOR
-        float cx = 0.0f, cy = 0.0f;
-        if (!point_of(anchor, want[w], cx, cy)) continue;
-        sxy[ns * 2] = cx; sxy[ns * 2 + 1] = cy; ++ns;
+        uintptr_t anchors[4];
+        const int na = part_anchors(want[w].node, node, now, anchors);   // TARGETANCHOR2
+        for (int a = 0; a < na && ns < 8; ++a)
+        {
+            float cx = 0.0f, cy = 0.0f;
+            if (!point_of(anchors[a], want[w], cx, cy) || fabsf(cx) > 1.1f || fabsf(cy) > 1.1f) continue;
+            bool dup = false;   // the reticle's pulsing pieces: one point
+            for (int j = 0; j < ns && !dup; ++j)
+                dup = fabsf(sxy[j * 2] - cx) < 0.05f && fabsf(sxy[j * 2 + 1] - cy) < 0.05f;
+            if (dup) continue;
+            sxy[ns * 2] = cx; sxy[ns * 2 + 1] = cy; ++ns;
+        }
     }
     if (ns > max) ns = max;
     const int nList = nl < max - ns ? nl : max - ns;

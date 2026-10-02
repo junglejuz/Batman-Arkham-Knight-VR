@@ -131,7 +131,7 @@ namespace {
     // at the view edges JJ saw the reticle "separate their elements a little". Every other HUD part is room-marked, so the
     // wider circle only takes pieces of on-target parts.
     float g_targetRadius = 0.15f;            // clip units (the drawn HUD box)
-    float g_tgtSent[40] = { -9.0f };   // TARGETMULTI: cb13 rows 1-10
+    float g_tgtSent[44] = { -9.0f };   // TARGETMULTI: cb13 rows 1-10; TARGETUP: + row 11
     float g_tgtXf[4] = {};                   // TARGETSCALE: cb13 row 4 sent last frame (kx-1, ky-1, bx, by)
     float g_framePx = 0.0f, g_framePy = 0.0f;   // FRAMEPAIR: the markers' one-frame shift (clip), for the diag
     int   g_tgtN = 0; float g_tgtXY[16] = {};   // TARGETANCHOR: all points (list markers first, single parts last)
@@ -1683,8 +1683,8 @@ namespace {
         // TARGETDEPTH (fix step 1k): three rows - row 0 as before, rows 1 / 2 = the "stays on its target" points.
         // TARGETMOVE (fix step 1m): + row 3 = the points' screen offsets for the head turn.
         // TARGETSCALE (fix step 1n): + row 4 = the map from AKVR's HUD box back to the movie's own layout.
-        const float v1[44] = { 1 }, v2[44] = { 2 }, v0[44] = { 0 };   // TARGETMULTI: 11 rows
-        D3D11_BUFFER_DESC bd{}; bd.ByteWidth = 176; bd.Usage = D3D11_USAGE_DEFAULT; bd.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
+        const float v1[48] = { 1 }, v2[48] = { 2 }, v0[48] = { 0 };   // TARGETMULTI: 11 rows; TARGETUP (fix 1r): 12
+        D3D11_BUFFER_DESC bd{}; bd.ByteWidth = 192; bd.Usage = D3D11_USAGE_DEFAULT; bd.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
         g_bandSent = -1.0f;   // written with the band line on first use
         D3D11_SUBRESOURCE_DATA sd{};
         sd.pSysMem = v1; if (!g_cbFlat && FAILED(dev->CreateBuffer(&bd, &sd, &g_cbFlat))) g_cbFlat = nullptr;
@@ -1721,7 +1721,7 @@ namespace {
             const int nTp = (akvr_hud_room_all() && g_targetWant && g_Hw > 0 && g_Hh > 0)
                           ? akvr_hud_target_points(tp, 8, g_Hw, g_Hh, toff, txf) : 0;
             g_tgtN = nTp; memcpy(g_tgtXY, tp, sizeof(g_tgtXY));
-            float rows[40] = {};                                   // cb13 rows 1-10
+            float rows[44] = {};                                   // cb13 rows 1-11
             for (int k = 0; k < nTp; ++k)
             {
                 const int r = k < 2 ? k + 1 : k + 3;               // 1, 2, 5, 6, ... 10
@@ -1741,13 +1741,20 @@ namespace {
                 float fh = 0.0f, fv = 0.0f;
                 akvr_xr_game_tan(fh, fv);
                 if (fh > 0.0f && fv > 0.0f) { rows[8] = fh; rows[9] = fv; rows[10] = 1.0f; }
+                // TARGETUP (fix step 1r) 2026-10-02 — JJ: the distance marker "is still rotating on the z-axis when rolling
+                // your head". Row 11 = the world's up in the drawn camera's frame (x right, y up, z forward): the shaders
+                // keep each on-target piece's up along it, so the marker stays upright in the world when the head rolls.
+                // Level camera = (0, 1, 0) = 1q. The camera recorded one Present back (the HUD's frame; roll is slow).
+                float cf[3], cr[3], cu[3], cp[3];
+                if (akvr_camera_pose_ago(1, cf, cr, cu, cp)) { rows[40] = cr[2]; rows[41] = cu[2]; rows[42] = cf[2]; }
+                else rows[41] = 1.0f;
             }
             if (g_testTools) tgt_record(nTp, tp);   // TARGETTRACE
             if (g_cbFlat && g_cbDepth && (g_bandSent != band || memcmp(rows, g_tgtSent, sizeof(rows)) != 0 ||
                                           fabsf(th - g_tanSent[0]) > 1e-4f || fabsf(tv - g_tanSent[1]) > 1e-4f))
             {   // .y = the band line in clip y (0 = no band); .zw = tan half-angles (0 = no squash fix)
                 const float y = band > 0.5f ? 1.0f - 2.0f * band / 100.0f : 0.0f;
-                float f1[44] = { 1, y, th, tv }, f2[44] = { 2, y, th, tv };   // 11 rows = the buffer's 176 bytes
+                float f1[48] = { 1, y, th, tv }, f2[48] = { 2, y, th, tv };   // 12 rows = the buffer's 192 bytes
                 memcpy(f1 + 4, rows, sizeof(rows)); memcpy(f2 + 4, rows, sizeof(rows));
                 g_gameCtx->UpdateSubresource(g_cbFlat, 0, nullptr, f1, 0, 0);
                 g_gameCtx->UpdateSubresource(g_cbDepth, 0, nullptr, f2, 0, 0);
