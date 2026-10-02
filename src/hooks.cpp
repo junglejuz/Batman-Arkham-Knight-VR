@@ -827,6 +827,7 @@ namespace
         fprintf(f, "wide=%d\n",      akvr_head_wide_render() ? 1 : 0);
         fprintf(f, "leanscale=%.4f\n", akvr_head_pos_scale() / kLeanAt1);
         fprintf(f, "shoulder=%.3f\n", akvr_head_shoulder());
+        fprintf(f, "menuside=%.1f\n", akvr_head_menu_side());   // MENUSIDE
         fprintf(f, "pitchkeep=%.3f\n", akvr_head_pitch_keep());
         fprintf(f, "pitchunlink=%d\n", akvr_head_pitch_unlink());
         fprintf(f, "sbsswapchain=%d\n", akvr_xr_sbs_one() ? 1 : 0);
@@ -952,6 +953,7 @@ namespace
             else if (sscanf(line, "leanscale=%f",  &v) == 1) akvr_head_pos_scale_set(v * kLeanAt1);
             else if (sscanf(line, "lean=%f",       &v) == 1) akvr_head_pos_scale_set(v);
             else if (sscanf(line, "shoulder=%f",   &v) == 1) akvr_head_shoulder_set(v);
+            else if (sscanf(line, "menuside=%f",   &v) == 1) akvr_head_menu_side_set(v);   // MENUSIDE
             else if (sscanf(line, "pitchkeep=%f",  &v) == 1) akvr_head_pitch_keep_set(0.0f);   // settled: view level (v ignored)
             else if (sscanf(line, "pitchunlink=%d", &iv) == 1) akvr_head_pitch_unlink_set(iv == 2 ? 2 : 0);   // 1 (horizon-level tilt) retired; 2 = UEVR-style
             else if (sscanf(line, "stickheight=%f", &v) == 1) akvr_head_stick_height_set(v);
@@ -1882,7 +1884,7 @@ namespace
 
         ImGui::TextColored(ImVec4(1.0f, 0.85f, 0.2f, 1.0f), "Arkham Knight VR");
         ImGui::SameLine();
-        ImGui::TextDisabled("   build: TARGETUP2  " __DATE__ " " __TIME__);   // the same tag as the status file
+        ImGui::TextDisabled("   build: MENUSIDE  " __DATE__ " " __TIME__);   // the same tag as the status file
 
         // ---- one status line ----------------------------------------------------
         // TIDY4 2026-09-27 (JJ: "cleaned up and reformatted to be a bit more consistent with the
@@ -2379,6 +2381,10 @@ namespace
             if (SliderStep("main menu size %", &scr, 10.0f, 100.0f, "%.0f"))
                 akvr_xr_menu_zoom_set(scr / 100.0f);
             if (ImGui::IsItemDeactivatedAfterEdit()) settings_save();
+            // MENUSIDE 2026-10-02 (JJ: move the main-menu camera left so Batman sits right of the menu items)
+            float ms = akvr_head_menu_side();
+            if (SliderStep("main menu camera: left / right  (minus = Batman further right)", &ms, -400.0f, 400.0f, "%.0f", ImGuiSliderFlags_AlwaysClamp))
+            { akvr_head_menu_side_set(ms); settings_save(); }
             float pscr = akvr_xr_pause_zoom() * 100.0f;
             if (SliderStep("map size %", &pscr, 10.0f, 100.0f, "%.0f"))   // PAUSESIZE: the pause menu has its own size now
                 akvr_xr_pause_zoom_set(pscr / 100.0f);
@@ -2811,7 +2817,7 @@ namespace
             float pvRatio = 0.0f, pvFov = 0.0f; int pvHits = 0;
             akvr_projvr_diag(pvRatio, pvHits, pvFov);
             fprintf(f, "\npatches:\n");
-            fprintf(f, "   build: TARGETUP2 " __DATE__ " " __TIME__ "\n");
+            fprintf(f, "   build: MENUSIDE " __DATE__ " " __TIME__ "\n");
             fprintf(f, "   zoom vignette: %s\n", akvr_xr_vig_diag());
             fprintf(f, "   pause look: %s, %s now, main view through the player camera: %s, head writes into the paused camera: %ld, darken %.0f%%\n",
                     akvr_xr_pause_look() ? "ON" : "off", akvr_xr_pause_live() ? "LIVE" : "not live",

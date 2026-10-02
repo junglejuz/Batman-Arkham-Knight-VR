@@ -4052,6 +4052,12 @@ int akvr_hud_target_points(float* xy, int max, int rtW, int rtH, float* off, flo
             {
                 float m[12]; int fl = 0;
                 if (!node_matrix(kids[c], m, &fl) || !(fl & 1)) continue;   // hidden marker
+                // LISTMOVING 2026-10-02 — JJ: "a small narrow band within the top half of the field of view where if the
+                // marker is within that band it loses its lock on and kind of moves a little". F2 x7 (21:27): 6-7 of the 8
+                // points were the same every capture, y 0.1-0.2 - K4/...0 then held 30 STILL pieces of a centred HUD
+                // element, not world markers, and pieces of the real markers near them took their point. A world marker
+                // moves whenever the view does; a child that never moved is not one.
+                if (!node_moved_recently(kids[c], m, now)) continue;
                 float cx = 0.0f, cy = 0.0f;
                 if (!point_of(kids[c], want[w], cx, cy) || fabsf(cx) > 1.1f || fabsf(cy) > 1.1f) continue;
                 lxy[nl * 2] = cx; lxy[nl * 2 + 1] = cy; ++nl;

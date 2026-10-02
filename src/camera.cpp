@@ -390,6 +390,10 @@ namespace
     // right vector, in world units. Cancels Arkham's over-the-shoulder framing so you
     // stand where you're looking. 0 = the game's own framing. Positive = move right.
     float g_shoulderUU = 0.0f;
+    // MENUSIDE 2026-10-02 — JJ: on the main menu "the camera is looking straight at Batman, with the menu items on the
+    // left ... move the camera over to the left a bit so that Batman is more to the right and the menu items are a bit
+    // more readable". A slide along the camera's right vector while the main menu is detected (negative = left).
+    float g_menuSideUU = -80.0f;
 
     // DECOUPLED PITCH — 2026-09-26 (vrframework guide 09 section 7). JJ: correct at
     // eye level, but with the camera lowered or raised high, looking left/right also
@@ -1555,13 +1559,16 @@ void akvr_head_update()
     // is the pre-2026-08-05 expression, character for character.
     const float stickLiftUU = (g_pitchUnlink == 0 && g_basePitchKeep < 0.001f && !screenFrozen)
                             ? -sinf(b2pitch) * g_stickHeightM * g_posScale : 0.0f;   // STICKHEIGHT
+    const float menuSideUU = akvr_xr_main_menu_detected() ? g_menuSideUU : 0.0f;   // MENUSIDE
+    ox += gRight.x * menuSideUU;
+    oy += gRight.y * menuSideUU;
     if (g_camFixOn)
     {
         ox += gRight.x * g_shoulderUU + gUp.x * g_offUpUU + gFwd.x * g_offFwdUU;
         oy += gRight.y * g_shoulderUU + gUp.y * g_offUpUU + gFwd.y * g_offFwdUU;
         *g_dPosX = ox;
         *g_dPosY = oy;
-        *g_dPosZ = upAmt * g_posScale + gRight.z * (eyeUU + g_shoulderUU)
+        *g_dPosZ = upAmt * g_posScale + gRight.z * (eyeUU + g_shoulderUU + menuSideUU)
                  + gUp.z * g_offUpUU + gFwd.z * g_offFwdUU + stickLiftUU;
     }
     else
@@ -1570,7 +1577,7 @@ void akvr_head_update()
         oy += gRight.y * g_shoulderUU;
         *g_dPosX = ox;
         *g_dPosY = oy;
-        *g_dPosZ = upAmt * g_posScale + gRight.z * (eyeUU + g_shoulderUU) + stickLiftUU;
+        *g_dPosZ = upAmt * g_posScale + gRight.z * (eyeUU + g_shoulderUU + menuSideUU) + stickLiftUU;
     }
 
     // --- Trace ---------------------------------------------------------------
@@ -1769,6 +1776,8 @@ void  akvr_head_shoulder_set(float v)
     if (g_shoulderUU >  200.0f) g_shoulderUU =  200.0f;
 }
 float akvr_head_shoulder() { return g_shoulderUU; }
+void  akvr_head_menu_side_set(float v) { g_menuSideUU = v < -400.0f ? -400.0f : (v > 400.0f ? 400.0f : v); }   // MENUSIDE
+float akvr_head_menu_side() { return g_menuSideUU; }
 void  akvr_head_pitch_keep_set(float v) { g_basePitchKeep = v < 0.0f ? 0.0f : (v > 1.0f ? 1.0f : v); }
 float akvr_head_pitch_keep() { return g_basePitchKeep; }
 void  akvr_head_pitch_unlink_set(int mode) { g_pitchUnlink = mode < 0 ? 0 : (mode > 2 ? 2 : mode); }

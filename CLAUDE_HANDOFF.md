@@ -614,3 +614,11 @@ and the correction lagged the roll. Now read from the live camera fields at HUD 
 Panel slider "upright timing" (key `markeruplag`, 0 = live, k = ring k-1; 2 = the old build) for an A/B if it still
 fights. Unproven assumption: the live fields still hold the drawn frame's camera when the HUD draws (OneFrameThreadLag
 False). Rollback: `diagnostics/before-TARGETUP2-20261002/`.
+**LISTMOVING + MENUSIDE (2026-10-02, build MENUSIDE, DLL only, deployed, untested):** JJ: TARGETUP2 "much better"; left:
+"a small narrow band within the top half of the field of view" where a marker "loses its lock on and kind of moves a
+little". F2 x7 (21:27): 6-7 of the 8 points identical every capture at y 0.1-0.2 - K4/0.0.0.0.1.0.0.0 then held 30 STILL
+pieces of a centred, symmetric HUD element (not the 74 world markers it held before: container content changes), and
+pieces of the real markers near them took their point. List children now count only if they moved (node_moved_recently,
+earlyres). MENUSIDE: JJ wants the main-menu camera moved left so Batman sits right of the menu items. camera.cpp slides
+the camera along its right vector by `menuside` (default -80 UU) while the main menu is detected; panel "main menu
+camera: left / right" in MENUS AND SCREENS; README row. Rollback: `diagnostics/before-MENUSIDE-20261002/`.

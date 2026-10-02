@@ -91,6 +91,8 @@ void           akvr_head_stereo_set(float v);     // set depth strength directly
 // ---- Shoulder cancel: slide the viewpoint sideways out of AK's over-the-shoulder framing ----
 void           akvr_head_shoulder_set(float v);   // world units; + = viewpoint moves RIGHT
 float          akvr_head_shoulder();
+void           akvr_head_menu_side_set(float v);   // MENUSIDE: main menu only; world units, - = viewpoint moves LEFT
+float          akvr_head_menu_side();
 void           akvr_head_shoulder_add(float d);
 // ---- Decoupled pitch: how much of the game camera's own tilt survives in gameplay ----
 void           akvr_head_pitch_keep_set(float v); // 0 = level horizon, 1 = game's full tilt
