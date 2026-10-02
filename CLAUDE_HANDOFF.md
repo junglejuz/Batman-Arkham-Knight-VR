@@ -809,3 +809,13 @@ every pause), but "a flicker when entering and exiting pause".
   a live pause. Exit flicker cause is INFERRED (no per-frame HUD log); if it remains, ask JJ what flickers (world or
   menu/HUD) and take an F2 right after unpausing.
 Rollback: `diagnostics/before-PAUSEEDGE-20261003/`.
+**PAUSEEDGE result (JJ):** pause "better". But "we've lost head aiming in the Batmobile again"; JJ confirmed he HOLDS
+the left trigger for battle mode (not toggle).
+**AIMTRIGGER2 (2026-10-03, build AIMTRIGGER2, DLL only, deployed, untested):** cause NOT known - no F2. Suspect: the trigger
+was only looked for in the game's reads of pad slot 0 (a second, e.g. virtual, pad would be missed). Now the game's
+reads of any slot count, plus our own poll of all four slots (connected slots every 30 ms, empty ones every 2 s - an
+empty slot is slow to ask). Panel: "AIMING" / "(trigger not held)" next to the aim switch; status "head aiming:" line
+(on now, frames so far, last game read / own poll with pad slot, highest trigger value). If the light comes on but the
+aim still does not follow, detection is fine and the aim reads something else: compare with camaimhead behaviour
+before AIMTRIGGER (AIMHEAD build) - F2 while holding the trigger.
+Rollback: `diagnostics/before-AIMTRIGGER2-20261003/`.

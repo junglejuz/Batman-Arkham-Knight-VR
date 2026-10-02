@@ -99,6 +99,8 @@ void        akvr_cam_smooth_set(bool on);
 long        akvr_cam_smooth_events();
 bool        akvr_cam_swing();                   // camera.cpp: SWINGEASE
 bool        akvr_cam_aim_head();                // camera.cpp: AIMHEAD
+bool        akvr_cam_aim_head_now();            // camera.cpp: AIMTRIGGER2
+long        akvr_cam_aim_head_frames();
 void        akvr_cam_aim_head_set(bool on);
 void        akvr_cam_swing_set(bool on);
 void        akvr_cam_restore_set(bool on);
@@ -1920,7 +1922,7 @@ namespace
 
         ImGui::TextColored(ImVec4(1.0f, 0.85f, 0.2f, 1.0f), "Arkham Knight VR");
         ImGui::SameLine();
-        ImGui::TextDisabled("   build: PAUSEEDGE  " __DATE__ " " __TIME__);   // the same tag as the status file
+        ImGui::TextDisabled("   build: AIMTRIGGER2  " __DATE__ " " __TIME__);   // the same tag as the status file
 
         // ---- one status line ----------------------------------------------------
         // TIDY4 2026-09-27 (JJ: "cleaned up and reformatted to be a bit more consistent with the
@@ -2089,6 +2091,9 @@ namespace
             // AIMHEAD 2026-10-03 (JJ: the Batmobile's weapon reticle no longer follows the head)
             bool aih = akvr_cam_aim_head();
             if (ImGui::Checkbox("aim with your head while holding the left trigger  (Batmobile battle mode, gadget aim)", &aih)) { akvr_cam_aim_head_set(aih); settings_save(); }
+            ImGui::SameLine();
+            if (akvr_cam_aim_head_now()) ImGui::TextColored(ImVec4(0.3f, 1.0f, 0.3f, 1.0f), "AIMING");
+            else ImGui::TextDisabled("(trigger not held)");
             // CAMSMOOTH 2026-10-02 (JJ: getting out of the Batmobile still pops - the game's camera jumps ~30 cm in a frame)
             bool csm = akvr_cam_smooth();
             if (ImGui::Checkbox("soften the game's sudden camera jumps  (fix - compare on / off)", &csm)) { akvr_cam_smooth_set(csm); settings_save(); }
@@ -2899,13 +2904,15 @@ namespace
             float pvRatio = 0.0f, pvFov = 0.0f; int pvHits = 0;
             akvr_projvr_diag(pvRatio, pvHits, pvFov);
             fprintf(f, "\npatches:\n");
-            fprintf(f, "   build: PAUSEEDGE " __DATE__ " " __TIME__ "\n");
+            fprintf(f, "   build: AIMTRIGGER2 " __DATE__ " " __TIME__ "\n");
             fprintf(f, "   zoom vignette: %s\n", akvr_xr_vig_diag());
             fprintf(f, "   %s\n", akvr_audiosync_diag());   // AUDIOSYNC
             fprintf(f, "   pause look: %s, %s now, main view through the player camera: %s, head writes into the paused camera: %ld, darken %.0f%%\n",
                     akvr_xr_pause_look() ? "ON" : "off", akvr_xr_pause_live() ? "LIVE" : "not live",
                     akvr_camera_main_view_live() ? "yes" : "no", akvr_camera_pause_writes(), akvr_xr_pause_dim() * 100.0f);
             fprintf(f, "   pause test: %s\n", akvr_camera_main_view_diag());   // PAUSEFOV2
+            fprintf(f, "   head aiming: %s now, %ld frames so far | %s\n", akvr_cam_aim_head_now() ? "ON" : "off",
+                    akvr_cam_aim_head_frames(), akvr_gamepad_trigger_diag());   // AIMTRIGGER2
             fprintf(f, "   rain probe: %s | every draw off %d, all compute off %d, see-through off %d, world rain streak cut %d\n",
                     akvr_probe_diag(), akvr_probe_every_draw() ? 1 : 0, akvr_probe_all_cs() ? 1 : 0, akvr_probe_all_but_rain() ? 1 : 0,
                     akvr_probe_rain_parts());   // DRAWPROBE, RAINPARTS

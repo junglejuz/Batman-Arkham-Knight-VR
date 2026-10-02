@@ -3,6 +3,7 @@
 #include <xinput.h>
 #include <MinHook.h>
 #include "imgui.h"
+#include <cstdio>
 
 namespace
 {
@@ -12,6 +13,8 @@ namespace
     bool   g_menu   = false;
     volatile ULONGLONG g_rsAt = 0;   // SWINGEASE: the last game read with the right stick off centre
     volatile ULONGLONG g_ltAt = 0;   // AIMTRIGGER: the last game read with the left trigger (aim / battle mode) held
+    volatile int g_ltIdx = -1, g_ltMax = 0, g_ltRealIdx = -1;   // AIMTRIGGER2 diag: which pad, highest value
+    volatile ULONGLONG g_ltRealAt = 0;   // AIMTRIGGER2: our own poll of every pad slot found it held
 
     // Our interception: pass through normally, but while menu mode is on, blank out
     // controller 0 for the CALLER (the game) so it acts as if no buttons/sticks are
@@ -26,11 +29,15 @@ namespace
     DWORD WINAPI hkXIGS(DWORD idx, XINPUT_STATE* st)
     {
         DWORD r = oXIGS ? oXIGS(idx, st) : ERROR_DEVICE_NOT_CONNECTED;
+        // AIMTRIGGER2 2026-10-03 - JJ holds the left trigger but head aiming was lost: the trigger was only looked
+        // for on pad slot 0. Any slot the game reads counts for the trigger now (menu blanking stays slot 0).
+        if (r == ERROR_SUCCESS && st && idx != 0 && idx < 4 && st->Gamepad.bLeftTrigger > 64) { g_ltAt = GetTickCount64(); g_ltIdx = (int)idx; }
         if (r == ERROR_SUCCESS && st && idx == 0)
         {
             if (abs(st->Gamepad.sThumbRX) > XINPUT_GAMEPAD_RIGHT_THUMB_DEADZONE ||
                 abs(st->Gamepad.sThumbRY) > XINPUT_GAMEPAD_RIGHT_THUMB_DEADZONE) g_rsAt = GetTickCount64();   // SWINGEASE
-            if (st->Gamepad.bLeftTrigger > 64) g_ltAt = GetTickCount64();   // AIMTRIGGER
+            if (st->Gamepad.bLeftTrigger > 64) { g_ltAt = GetTickCount64(); g_ltIdx = 0; }   // AIMTRIGGER
+            if (st->Gamepad.bLeftTrigger > g_ltMax) g_ltMax = st->Gamepad.bLeftTrigger;
             if (g_menu)
                 ZeroMemory(&st->Gamepad, sizeof(st->Gamepad));
             // Hide the chord from the game while it's being held.
@@ -145,4 +152,35 @@ void akvr_gamepad_feed_imgui(bool muteLeftRight)
 // SWINGEASE: ms since the game last read the right stick off centre (huge = never)
 unsigned long long akvr_gamepad_right_stick_ms() { return g_rsAt ? GetTickCount64() - g_rsAt : ~0ull; }
 // AIMTRIGGER: ms since the game last read the left trigger held (huge = never)
-unsigned long long akvr_gamepad_left_trigger_ms() { return g_ltAt ? GetTickCount64() - g_ltAt : ~0ull; }
+unsigned long long akvr_gamepad_left_trigger_ms()
+{   // AIMTRIGGER2: the game's reads OR our own poll of all four pad slots (polled at most every 30 ms)
+    static ULONGLONG s_poll = 0;
+    const ULONGLONG now = GetTickCount64();
+    if (now - s_poll >= 30)
+    {
+        s_poll = now;
+        static bool s_conn[4] = { true, true, true, true };   // an empty slot is slow to ask: every 2 s only
+        static ULONGLONG s_try[4] = {};
+        for (DWORD i = 0; i < 4; ++i)
+        {
+            if (!s_conn[i] && now - s_try[i] < 2000) continue;
+            s_try[i] = now;
+            XINPUT_STATE st{};
+            const DWORD r = oXIGS ? oXIGS(i, &st) : XInputGetState(i, &st);
+            s_conn[i] = r == ERROR_SUCCESS;
+            if (r != ERROR_SUCCESS) continue;
+            if (st.Gamepad.bLeftTrigger > g_ltMax) g_ltMax = st.Gamepad.bLeftTrigger;
+            if (st.Gamepad.bLeftTrigger > 64) { g_ltRealAt = now; g_ltRealIdx = (int)i; }
+        }
+    }
+    const ULONGLONG a = g_ltAt > g_ltRealAt ? g_ltAt : g_ltRealAt;
+    return a ? now - a : ~0ull;
+}
+const char* akvr_gamepad_trigger_diag()
+{
+    static char s[160];
+    const ULONGLONG now = GetTickCount64();
+    snprintf(s, sizeof(s), "left trigger: game read %lld ms ago (pad %d), own poll %lld ms ago (pad %d), highest %d",
+             g_ltAt ? (long long)(now - g_ltAt) : -1ll, g_ltIdx, g_ltRealAt ? (long long)(now - g_ltRealAt) : -1ll, g_ltRealIdx, g_ltMax);
+    return s;
+}

@@ -419,6 +419,7 @@ namespace
     volatile float g_tiltApplied = 0.0f;   // degrees added to the pitch field this finalize (CAMRESTORE puts the base back)
     volatile float g_copyApplied[2] = {};   // AIMHEAD: the copied head taken off this finalize (degrees, yaw / pitch)
     bool g_rbHead = false;   // AIMTRIGGER: the last read-back kept the head in the rotation (left trigger held)
+    long g_aimFrames = 0;    // AIMTRIGGER2 diag: frames the head was left in for aiming
     float wrap180(float a) { while (a > 180.0f) a -= 360.0f; while (a < -180.0f) a += 360.0f; return a; }
     // SWINGEASE 2026-10-02 — JJ with TILTSMOOTH: "I still notice the pop when getting out of the Batmobile"; and "is this
     // fix going to be applicable if there are other vehicles in the game or other situations". F2 23:29: no one-frame
@@ -1931,6 +1932,7 @@ void akvr_head_update()
             // mode / gadget aim), when the head stays in for aiming. Transitions start from the game's own camera.
             const bool aimNow = g_aimHead && akvr_gamepad_left_trigger_ms() < 300;
             g_rbHead = aimNow;
+            if (aimNow) ++g_aimFrames;
             if (aimNow)
             {   // AIMHEAD: the rotation keeps the head (the Batmobile aims with it); only our corrections come off
                 *(int32_t*)(cb + OFF_YAW)   -= (int32_t)(rsCopy[0] / ROT2DEG);
@@ -2220,4 +2222,6 @@ long akvr_cam_smooth_events() { return g_smoothEvents; }
 bool akvr_cam_swing() { return g_swingEase; }                  // SWINGEASE
 void akvr_cam_swing_set(bool on) { g_swingEase = on; }
 bool akvr_cam_aim_head() { return g_aimHead; }                 // AIMHEAD
+bool akvr_cam_aim_head_now() { return g_rbHead; }              // AIMTRIGGER2: the head is in the read-back now
+long akvr_cam_aim_head_frames() { return g_aimFrames; }
 void akvr_cam_aim_head_set(bool on) { g_aimHead = on; }
