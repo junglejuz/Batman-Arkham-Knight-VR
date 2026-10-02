@@ -1922,7 +1922,7 @@ namespace
 
         ImGui::TextColored(ImVec4(1.0f, 0.85f, 0.2f, 1.0f), "Arkham Knight VR");
         ImGui::SameLine();
-        ImGui::TextDisabled("   build: AIMRETICLE  " __DATE__ " " __TIME__);   // the same tag as the status file
+        ImGui::TextDisabled("   build: AIMSHOT  " __DATE__ " " __TIME__);   // the same tag as the status file
 
         // ---- one status line ----------------------------------------------------
         // TIDY4 2026-09-27 (JJ: "cleaned up and reformatted to be a bit more consistent with the
@@ -2904,7 +2904,7 @@ namespace
             float pvRatio = 0.0f, pvFov = 0.0f; int pvHits = 0;
             akvr_projvr_diag(pvRatio, pvHits, pvFov);
             fprintf(f, "\npatches:\n");
-            fprintf(f, "   build: AIMRETICLE " __DATE__ " " __TIME__ "\n");
+            fprintf(f, "   build: AIMSHOT " __DATE__ " " __TIME__ "\n");
             fprintf(f, "   zoom vignette: %s\n", akvr_xr_vig_diag());
             fprintf(f, "   %s\n", akvr_audiosync_diag());   // AUDIOSYNC
             fprintf(f, "   pause look: %s, %s now, main view through the player camera: %s, head writes into the paused camera: %ld, darken %.0f%%\n",
@@ -3480,6 +3480,30 @@ namespace
         // later and changed the pause menu's layout mid-fade-in)
         akvr_hud_gameplay(g_lastGameplay && !akvr_xr_pause_live());   // don't shrink a screen that IS the UI
         akvr_hud_anamorphic(g_lastAnamorphic);
+        {   // AIMSHOT 2026-10-03 - JJ can't press F2 while aiming (opening the panel with both sticks takes the pad from
+            // the game, so the trigger reads as released). The first 3 aims of a session save a full capture by
+            // themselves: 1 s into holding the left trigger, then 1.5 s after letting go (to find the gun reticle part).
+            static int s_shots = 0; static ULONGLONG s_aimSince = 0, s_relSince = 0; static bool s_aimDone = false;
+            const ULONGLONG t = GetTickCount64();
+            if (s_shots < 6)
+            {
+                if (akvr_cam_aim_head_now())
+                {
+                    s_relSince = 0;
+                    if (!s_aimSince) s_aimSince = t;
+                    if (!s_aimDone && !(s_shots & 1) && t - s_aimSince >= 1000) { capture_all(); ++s_shots; s_aimDone = true; }
+                }
+                else
+                {
+                    s_aimSince = 0;
+                    if (s_aimDone)
+                    {
+                        if (!s_relSince) s_relSince = t;
+                        if (t - s_relSince >= 1500) { capture_all(); ++s_shots; s_aimDone = false; s_relSince = 0; }
+                    }
+                }
+            }
+        }
         akvr_hud_tick();         // hold the Scaleform reference resolution at our HUD size
         viewport_frame_tick();   // snapshot the largest scene viewport this frame
         rt_frame_tick();         // snapshot this frame's render-target list

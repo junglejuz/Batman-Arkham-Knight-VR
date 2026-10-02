@@ -830,3 +830,8 @@ tick that part "stays on its target" in hudlayers (8th field = 1, keep every oth
 on-target parts are drawn into the game picture (head-locked when the game's camera includes the head while aiming).
 If it should also follow the head when NOT aiming, that is the same tick.
 Rollback: `diagnostics/before-AIMRETICLE-20261003/`.
+**AIMSHOT (2026-10-03, build AIMSHOT, DLL only, deployed):** JJ can't press F2 while aiming (both-stick panel chord takes
+the pad from the game, so the trigger reads released). The first 3 aims of each session now save a full capture by
+themselves: 1 s into head aiming (left trigger held), then 1.5 s after release (hooks.cpp, before akvr_hud_tick). On-foot
+gadget aim also counts, so the Batmobile aims should come first. Diff the two hudlayers.txt "shown" columns.
+Rollback: same as AIMRETICLE (`diagnostics/before-AIMRETICLE-20261003/`).
