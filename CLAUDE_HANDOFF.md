@@ -607,3 +607,10 @@ child is its own point (up to 4 per part, near-duplicates < 0.05 merged); a node
 move (was 3 s). TARGETUP (fix 1r) replaces 1q's block: the facing plane's up = the world's up (cb13 row 11 from the drawn
 camera, one Present back), so head roll no longer rolls the markers. cb13 is now 12 rows / 192 bytes. Rollback:
 `diagnostics/before-TARGETUP-20261002/`. Ask JJ: roll the head (marker stays upright), Batmobile (marker on its object).
+**TARGETUP2 (2026-10-02, DLL only, deployed, untested):** JJ: rolling the head, the reticle and the distance marker are
+"kind of trying to roll but then trying to stay upright at the same time". TARGETUP's world-up came from the camera ring
+1 Present back; the ring is written at Present after the head update for the NEXT frame, so it trailed the drawn frame
+and the correction lagged the roll. Now read from the live camera fields at HUD draw (camera.cpp akvr_camera_live_axes).
+Panel slider "upright timing" (key `markeruplag`, 0 = live, k = ring k-1; 2 = the old build) for an A/B if it still
+fights. Unproven assumption: the live fields still hold the drawn frame's camera when the HUD draws (OneFrameThreadLag
+False). Rollback: `diagnostics/before-TARGETUP2-20261002/`.

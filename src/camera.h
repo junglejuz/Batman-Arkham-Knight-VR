@@ -21,6 +21,7 @@ CameraView   akvr_camera_read();     // snapshot of the live camera fields
 float        akvr_camera_game_fov(); // ZOOMVIG: the game's own FOV this frame (deg, before the headset lock)
 bool         akvr_camera_main_view_live();   // PAUSELOOK: main view still drawn through the player camera
 bool         akvr_camera_base_axes(float fwd[3], float right[3], float up[3]);   // NEARRAIN: game camera without the head
+bool         akvr_camera_live_axes(float fwd[3], float right[3], float up[3]);   // TARGETUP2: the drawn camera now (live fields)
 void         akvr_camera_record_rotators();   // NEARRAIN2: once per Present
 bool         akvr_camera_pos_delta_ago(int k, float d[3]);   // NEARRAIN3: the head's position offset k Presents ago
 bool         akvr_camera_pose_ago(int k, float f[3], float r[3], float u[3], float pos[3]);   // FRAMEPAIR: drawn camera k Presents ago

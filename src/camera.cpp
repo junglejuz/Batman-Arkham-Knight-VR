@@ -1639,6 +1639,21 @@ void akvr_camera_record_rotators()   // once per Present, after the head update 
     g_camRing[h & 15] = rec;
     InterlockedExchange(&g_camHead, h);
 }
+// TARGETUP2 2026-10-02 — JJ: rolling the head, the reticle and the distance marker are "kind of trying to roll but then
+// trying to stay upright at the same time". TARGETUP took the world's up from the camera recorded one Present back; the
+// ring is written at Present, AFTER the head update for the NEXT frame, so ring 1 is two head updates older than the
+// frame whose HUD is being drawn - the correction trailed the roll. The live fields (the last finalize = the frame being
+// rendered) are read here instead.
+bool akvr_camera_live_axes(float fwd[3], float right[3], float up[3])
+{
+    const uintptr_t b = cam_base();
+    if (!g_htOn || !b) return false;
+    int32_t y = 0, p = 0, r = 0;
+    __try { y = *(int32_t*)(b + OFF_YAW); p = *(int32_t*)(b + OFF_PITCH); r = *(int32_t*)(b + OFF_ROLL); }
+    __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
+    ue3_axes(y, p, r, fwd, right, up);
+    return true;
+}
 bool akvr_camera_base_axes(float fwd[3], float right[3], float up[3])
 {
     if (!g_htOn || !g_dYaw || !g_bYaw) return false;

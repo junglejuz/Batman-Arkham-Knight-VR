@@ -139,6 +139,9 @@ namespace {
     bool  g_markerHead = true;
     // TARGETFACE (fix step 1q, 2026-10-02): the on-target parts face the eye (cb13 row 3 = tan half-angles, on)
     bool  g_markerFace = true;
+    // TARGETUP2: which camera gives the world's up: 0 = the live fields (the frame being drawn), k = the one recorded
+    // k-1 Presents back (2 = TARGETUP's first build, which JJ saw "fighting" the roll)
+    int   g_markerUpLag = 0;
     int   g_markerLag = -1;                 // the drawn camera: k Presents back; -1 = the pose delay in use - 1
     int   g_markerHudLag = 1;                // TARGETMOVE2: the markers' camera is this many Presents older (0 = off)
     float g_tgtOff[4] = {};
@@ -1746,7 +1749,9 @@ namespace {
                 // keep each on-target piece's up along it, so the marker stays upright in the world when the head rolls.
                 // Level camera = (0, 1, 0) = 1q. The camera recorded one Present back (the HUD's frame; roll is slow).
                 float cf[3], cr[3], cu[3], cp[3];
-                if (akvr_camera_pose_ago(1, cf, cr, cu, cp)) { rows[40] = cr[2]; rows[41] = cu[2]; rows[42] = cf[2]; }
+                const bool upOk = g_markerUpLag <= 0 ? akvr_camera_live_axes(cf, cr, cu)
+                                                     : akvr_camera_pose_ago(g_markerUpLag - 1, cf, cr, cu, cp);   // TARGETUP2
+                if (upOk) { rows[40] = cr[2]; rows[41] = cu[2]; rows[42] = cf[2]; }
                 else rows[41] = 1.0f;
             }
             if (g_testTools) tgt_record(nTp, tp);   // TARGETTRACE
@@ -2351,6 +2356,8 @@ void akvr_frame_world_set(int k) { InterlockedExchange(&g_frameWorld, k < 1 ? 1 
 bool akvr_marker_head() { return g_markerHead; }                        // TARGETMOVE
 void akvr_marker_head_set(bool on) { g_markerHead = on; }
 bool akvr_marker_face() { return g_markerFace; }                        // TARGETFACE
+int  akvr_marker_up_lag() { return g_markerUpLag; }                     // TARGETUP2
+void akvr_marker_up_lag_set(int k) { g_markerUpLag = k < 0 ? 0 : (k > 4 ? 4 : k); }
 void akvr_marker_face_set(bool on) { g_markerFace = on; }
 int  akvr_marker_lag() { return g_markerLag; }
 void akvr_marker_lag_set(int k) { g_markerLag = k < -1 ? -1 : (k > 8 ? 8 : k); }
