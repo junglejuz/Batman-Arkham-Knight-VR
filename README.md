@@ -213,6 +213,7 @@ your head, then untick it to get the picture back.
 | Floating screen size | How big that screen is. |
 | Main menu size | How big the main menu looks. |
 | Main menu camera: left / right | Slides the main menu's camera sideways. Minus moves Batman further right, clear of the menu text; 0 is the game's own framing. |
+| Main menu: leave out the dark background | On (normal): the dark panel the game draws behind the main menu items is left out, so no flat square floats in front of you. |
 | Map size | How big the map looks. |
 | Pause menu size | How big the pause menu looks over the world, so you don't have to turn your head to read it. |
 | Pause: darken the world | How much the world around you darkens while the game is paused. |

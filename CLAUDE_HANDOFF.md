@@ -652,3 +652,12 @@ node counts as moving at 5 units (was 20) so markers get their point within a fr
 longer "wigs out", but at -80 "Batman is way off to the right"; -35 now (live + package). He also said the menu "looks fine
 when coming back to the menu from gameplay": the slide applies only to the launch-order main menu (g_menuPhase 1), so the
 menu after gameplay has no slide. Rollback: `diagnostics/before-HUDWAIT-20261002/`.
+**MENUNOBACK + MENUGAP (2026-10-02, build MENUNOBACK, DLL only, deployed, untested):** JJ: "can the black background in
+the menu be removed? It's like a 2D element where I can see the square shape of it when I look around". The live main
+menu goes whole onto the HUD layer (menuLive, layer gate "menu"), dark gradient backing included; PAUSENOBACK's shader
+(drops dark pixels, lifts dim text) now runs for the live main menu too (`menunoback`, default 1; panel box in MENUS AND
+SCREENS). JJ also: from the start-up screens into the first menu "a pause of a few seconds where everything's black, but
+the audio continues" (sound effect before the menu, then music). Not diagnosed: MENUSTART capture is off (menucapture
+0); the mode timeline (22:09) had "2.9s 3D; 2.9s game; 5.9s MAIN MENU on" only. MENUGAP logs every frame gap of 300 ms+
+(max 12) into the mode timeline until the main menu closes: gaps = the game loading (HDD E:), none = it draws black.
+Read akvr_startup_log.txt "mode timeline" after JJ's next start. Rollback: `diagnostics/before-MENUNOBACK-20261002/`.

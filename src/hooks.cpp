@@ -855,6 +855,7 @@ namespace
         if (g_menuCapture) fprintf(f, "menucapture=1\n");             // MENUBLACK: written only when on
         fprintf(f, "farrain=%d\n", akvr_far_rain() ? 1 : 0);   // FARRAIN
         fprintf(f, "hudeyefollow=%d\npausenoback=%d\n", akvr_xr_hud_eye_follow() ? 1 : 0, akvr_xr_pause_no_back() ? 1 : 0);   // HUDEYES / PAUSENOBACK
+        fprintf(f, "menunoback=%d\n", akvr_xr_menu_no_back() ? 1 : 0);   // MENUNOBACK
         fprintf(f, "pausemenusize=%.2f\n", akvr_xr_pause_menu_size());   // PAUSESIZE
         fprintf(f, "pauseaspect=%.3f\n", akvr_xr_pause_aspect());
         fprintf(f, "automainmenu=%d\n", akvr_xr_auto_main_menu() ? 1 : 0);
@@ -989,6 +990,7 @@ namespace
             else if (sscanf(line, "farrain=%d", &iv) == 1) akvr_far_rain_set(iv != 0);   // FARRAIN
             else if (sscanf(line, "hudeyefollow=%d", &iv) == 1) akvr_xr_hud_eye_follow_set(iv != 0);   // HUDEYES
             else if (sscanf(line, "pausenoback=%d", &iv) == 1) akvr_xr_pause_no_back_set(iv != 0);   // PAUSENOBACK
+            else if (sscanf(line, "menunoback=%d", &iv) == 1) akvr_xr_menu_no_back_set(iv != 0);   // MENUNOBACK
             else if (sscanf(line, "pausemenusize=%f", &v) == 1) akvr_xr_pause_menu_size_set(v);   // PAUSESIZE
             else if (sscanf(line, "pauseaspect=%f", &v) == 1) akvr_xr_pause_aspect_set(v);
             else if (sscanf(line, "automainmenu=%d", &iv) == 1) akvr_xr_auto_main_menu_set(iv != 0);
@@ -1890,7 +1892,7 @@ namespace
 
         ImGui::TextColored(ImVec4(1.0f, 0.85f, 0.2f, 1.0f), "Arkham Knight VR");
         ImGui::SameLine();
-        ImGui::TextDisabled("   build: HUDWAIT  " __DATE__ " " __TIME__);   // the same tag as the status file
+        ImGui::TextDisabled("   build: MENUNOBACK  " __DATE__ " " __TIME__);   // the same tag as the status file
 
         // ---- one status line ----------------------------------------------------
         // TIDY4 2026-09-27 (JJ: "cleaned up and reformatted to be a bit more consistent with the
@@ -2397,6 +2399,8 @@ namespace
             // right (MENUSIDE2), so head turns no longer swing it. The text slider is gone (no effect on that screen).
             if (SliderStep("main menu camera: left / right  (minus = Batman further right, 0 = the game's own)", &ms, -400.0f, 400.0f, "%.0f", ImGuiSliderFlags_AlwaysClamp))
             { akvr_head_menu_side_set(ms); settings_save(); }
+            bool mnb = akvr_xr_menu_no_back();   // MENUNOBACK (JJ: the menu's black background "like a 2D element")
+            if (ImGui::Checkbox("main menu: leave out the dark background behind the menu items", &mnb)) { akvr_xr_menu_no_back_set(mnb); settings_save(); }
             float pscr = akvr_xr_pause_zoom() * 100.0f;
             if (SliderStep("map size %", &pscr, 10.0f, 100.0f, "%.0f"))   // PAUSESIZE: the pause menu has its own size now
                 akvr_xr_pause_zoom_set(pscr / 100.0f);
@@ -2829,7 +2833,7 @@ namespace
             float pvRatio = 0.0f, pvFov = 0.0f; int pvHits = 0;
             akvr_projvr_diag(pvRatio, pvHits, pvFov);
             fprintf(f, "\npatches:\n");
-            fprintf(f, "   build: HUDWAIT " __DATE__ " " __TIME__ "\n");
+            fprintf(f, "   build: MENUNOBACK " __DATE__ " " __TIME__ "\n");
             fprintf(f, "   zoom vignette: %s\n", akvr_xr_vig_diag());
             fprintf(f, "   pause look: %s, %s now, main view through the player camera: %s, head writes into the paused camera: %ld, darken %.0f%%\n",
                     akvr_xr_pause_look() ? "ON" : "off", akvr_xr_pause_live() ? "LIVE" : "not live",

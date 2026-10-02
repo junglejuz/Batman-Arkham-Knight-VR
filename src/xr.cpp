@@ -1164,6 +1164,9 @@ ID3D11VertexShader *g_hcVS = nullptr;
 ID3D11PixelShader *g_hcPS = nullptr;
 ID3D11PixelShader *g_hcPS2 = nullptr;    // PAUSENOBACK: the same, dropping dark see-through pixels
 bool g_pauseNoBack = true;               // PAUSENOBACK setting
+// MENUNOBACK 2026-10-02 — JJ: "can the black background in the menu be removed? It's like a 2D element where I can see
+// the square shape of it when I look around": the live main menu's dark backing, on the HUD layer like the pause's.
+bool g_menuNoBack = true;
 int g_hcState = 0;                       // 0 not built, 1 ok, -1 failed
 ID3D11ShaderResourceView *g_hcSRV = nullptr;
 ID3D11Texture2D *g_hcSRVTex = nullptr;
@@ -1286,7 +1289,8 @@ bool hud_conv_draw(ID3D11Texture2D *src, uint32_t idx) {
   g_ctx->IASetInputLayout(nullptr);
   g_ctx->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
   g_ctx->VSSetShader(g_hcVS, nullptr, 0);
-  g_ctx->PSSetShader(g_pauseLive && g_pauseNoBack && g_hcPS2 ? g_hcPS2 : g_hcPS, nullptr, 0);   // PAUSENOBACK
+  const bool noBack = (g_pauseLive && g_pauseNoBack) || (g_hudMenuNow && !g_pauseLive && g_menuNoBack);   // MENUNOBACK
+  g_ctx->PSSetShader(noBack && g_hcPS2 ? g_hcPS2 : g_hcPS, nullptr, 0);   // PAUSENOBACK
   g_ctx->PSSetShaderResources(0, 1, &g_hcSRV);
   g_ctx->OMSetBlendState(nullptr, nullptr, 0xffffffff);
   g_ctx->OMSetDepthStencilState(nullptr, 0);
@@ -2118,6 +2122,18 @@ void akvr_xr_frame_submit(IDXGISwapChain *swapChain, float gameFovDeg,
     static int s_lastG = -1, s_lastA = -1;
     if ((int)gameplay != s_lastG) { mode_log(gameplay ? "game" : "screen"); s_lastG = gameplay; }
     if ((int)g_anamorphic != s_lastA) { mode_log(g_anamorphic ? "3D" : "flat"); s_lastA = g_anamorphic; }
+    // MENUGAP 2026-10-02 — JJ: from the start-up screens into the first menu "there's a pause of a few seconds where
+    // everything's black, but the audio continues". Every gap of 300 ms+ between frames is logged until the main menu
+    // has closed: frames stopping = the game is loading; frames running = it draws black.
+    static ULONGLONG s_lastFrame = 0;
+    const ULONGLONG tf = GetTickCount64();
+    static int s_gaps = 0;   // at most 12, so the timeline keeps room
+    if (s_lastFrame && tf - s_lastFrame >= 300 && (!g_autoMainMenu || g_menuPhase <= 1) && s_gaps < 12) {
+      ++s_gaps;
+      char gap[40]; snprintf(gap, sizeof(gap), "no frame %llu ms", (unsigned long long)(tf - s_lastFrame));
+      mode_log(gap);
+    }
+    s_lastFrame = tf;
   }
   if (g_autoMainMenu) {
     const ULONGLONG now = GetTickCount64();
@@ -3210,6 +3226,8 @@ float akvr_xr_pause_menu_size() { return g_pauseMenuScale; }                // P
 void  akvr_xr_pause_menu_size_set(float v) { g_pauseMenuScale = v < 0.2f ? 0.2f : (v > 1.0f ? 1.0f : v); }
 bool akvr_xr_pause_no_back() { return g_pauseNoBack; }                      // PAUSENOBACK
 void akvr_xr_pause_no_back_set(bool on) { g_pauseNoBack = on; }
+bool akvr_xr_menu_no_back() { return g_menuNoBack; }                        // MENUNOBACK
+void akvr_xr_menu_no_back_set(bool on) { g_menuNoBack = on; }
 int  akvr_xr_hud_eyes() { return g_hudEyes; }
 void akvr_xr_hud_eyes_set(int v) { g_hudEyes = v ? 1 : 0; }
 int  akvr_xr_hud_lazy() { return g_hudLazy; }

@@ -59,6 +59,8 @@ float       akvr_xr_pause_menu_size();             // PAUSESIZE: the pause menu'
 void        akvr_xr_pause_menu_size_set(float v);
 bool        akvr_xr_pause_no_back();               // PAUSENOBACK: the pause menu's dark backing left out of the layer
 void        akvr_xr_pause_no_back_set(bool on);
+bool        akvr_xr_menu_no_back();                // MENUNOBACK: the live main menu's dark backing left out of the layer
+void        akvr_xr_menu_no_back_set(bool on);
 float       akvr_xr_pause_dim();                   // PAUSEDIM: how much darker the paused world is (0..0.9)
 void        akvr_xr_pause_dim_set(float v);
 bool        akvr_xr_screen_track();                // SCREENTRACK: head tracking in the floating screen
