@@ -72,6 +72,11 @@ namespace {
     // square when projVR's square view is the target (the normal case), 16:9 only
     // for comparing against the flat view.
     int  g_renderH   = 2880;     // the render size (height); width follows the shape
+    // RESMAX 2026-10-05 — JJ: a picture size above the installer's High (2860) for sharper
+    // headsets. Ceiling raised from 4320 to 5760 tall (2x High). The width is capped at 8192
+    // per eye so geo-11's two-eye surface stays inside D3D11's 16384 texture limit.
+    const int kMaxEyeH = 5760;
+    const int kMaxEyeW = 8192;
     bool g_square    = true;     // true -> WxH = HxH; false -> 16:9
     int  g_chrome    = 29;       // caption+border the game subtracts from the work area
     int  g_taskbar   = 48;       // work-area shrink we pretend the taskbar causes
@@ -2544,11 +2549,14 @@ namespace {
         CloseHandle(h);
 
         if (g_renderH < 720)  g_renderH = 720;
-        if (g_renderH > 4320) g_renderH = 4320;
+        if (g_renderH > kMaxEyeH) g_renderH = kMaxEyeH;
         if (g_chrome  < 0)    g_chrome  = 0;
         if (g_chrome  > 200)  g_chrome  = 200;
         if (g_engineH && g_engineH < 720)  g_engineH = 720;
-        if (g_engineH > 4320) g_engineH = 4320;
+        if (g_engineH > kMaxEyeH) g_engineH = kMaxEyeH;
+        // RESMAX: the window size and the size ceiling read g_renderH, so it follows the engine
+        // size. (The panel changes only engineres; rendersize is saved as the live size.)
+        if (g_engineH >= 720) g_renderH = g_engineH;
         if (g_engineShape < 300)  g_engineShape = 300;    // 0.30 .. 3.00 wide:tall
         if (g_engineShape > 3000) g_engineShape = 3000;
 
@@ -2657,6 +2665,13 @@ void akvr_early_init(HINSTANCE self)
             g_engW = (int)(((long long)g_engineH * shape) / 1000) & ~7;
         }
     }
+    // RESMAX: keep the width inside kMaxEyeW, shrinking the height with it so the shape holds.
+    if (g_engH && g_engW > kMaxEyeW)
+    {
+        log_add("bigres: %dx%d is wider than %d - scaled down to keep the shape", g_engW, g_engH, kMaxEyeW);
+        g_engH = (int)(((long long)g_engH * kMaxEyeW) / g_engW) & ~7;
+        g_engW = kMaxEyeW;
+    }
 
     // Before the engine reads a single config line — so a brand-new install is right
     // on its FIRST launch, not its second.
@@ -2741,7 +2756,8 @@ int         akvr_early_chrome()     { return g_chrome; }
 int         akvr_early_patched()    { return g_patched; }
 long        akvr_early_calls()      { return g_calls; }
 void        akvr_early_enable(bool on)   { g_enabled = on; }       // takes effect next launch
-void        akvr_early_size_set(int h)   { if (h >= 720 && h <= 4320) g_renderH = h; }
+void        akvr_early_size_set(int h)   { if (h >= 720 && h <= kMaxEyeH) g_renderH = h; }
+int         akvr_early_max_height()      { return kMaxEyeH; }   // RESMAX
 void        akvr_early_square_set(bool s){ g_square = s; }
 
 // ---- HUD size — LIVE. Call akvr_hud_tick() once per frame from Present.
@@ -4396,7 +4412,7 @@ const char* akvr_hud_diag()     { return g_hudFound ? g_hudDiag : "hud: signatur
 int   akvr_engine_res()            { return g_engineH; }
 int   akvr_geo11_shape()           { return g_geo11Shape; }   // GEO11SHAPE, persisted by hooks.cpp
 void  akvr_geo11_shape_set(int s)  { g_geo11Shape = s < 700 ? 700 : (s > 2400 ? 2400 : s); }   // next launch
-void  akvr_engine_res_set(int h)   { g_engineH = (h && h < 720) ? 720 : (h > 4320 ? 4320 : h); }
+void  akvr_engine_res_set(int h)   { g_engineH = (h && h < 720) ? 720 : (h > kMaxEyeH ? kMaxEyeH : h); }
 int   akvr_engine_shape()          { return g_engineShape; }
 void  akvr_engine_shape_set(int s) { g_engineShape = s < 300 ? 300 : (s > 3000 ? 3000 : s); }
 bool  akvr_engine_res_on()         { return g_engOn; }

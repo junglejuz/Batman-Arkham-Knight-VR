@@ -58,6 +58,7 @@ int         akvr_early_patched();
 long        akvr_early_calls();
 void        akvr_early_enable(bool on);
 void        akvr_early_size_set(int h);
+int         akvr_early_max_height();                   // RESMAX: largest picture height allowed
 void        akvr_early_square_set(bool s);
 void        akvr_early_note(const char* s);            // append to the startup transcript
 void        akvr_early_fake_screen(int& w, int& h);    // the desktop size we claim
@@ -1922,7 +1923,7 @@ namespace
 
         ImGui::TextColored(ImVec4(1.0f, 0.85f, 0.2f, 1.0f), "Arkham Knight VR");
         ImGui::SameLine();
-        ImGui::TextDisabled("   build: RELEASE1003  " __DATE__ " " __TIME__);   // the same tag as the status file
+        ImGui::TextDisabled("   build: FPSSLIDER-0.2.0  " __DATE__ " " __TIME__);   // the same tag as the status file
 
         // ---- one status line ----------------------------------------------------
         // TIDY4 2026-09-27 (JJ: "cleaned up and reformatted to be a bit more consistent with the
@@ -2038,16 +2039,47 @@ namespace
             }
 
             // Picture size (the engine's own render height; width follows the shape).
+            // RESMAX 2026-10-05 — JJ: "a slider for resolution that can increase even more than our
+            // existing high setting for people with better headsets". The 1-pixel 0..4320 slider is now
+            // a scale of the installer's High (2860 tall, the tested size) like Batman City's
+            // resolution scale, 0.50x .. 2.00x, plus the installer's sizes and three above High.
+            // rendersize follows engineres (the installer writes both; the window height reads it).
             {
+                const int kHigh = 2860;
+                const int maxH = akvr_early_max_height();
+                auto set_h = [&](int h) {
+                    akvr_engine_res_set(h);
+                    if (akvr_engine_res() > 0) akvr_early_size_set(akvr_engine_res());
+                    g_sliderDirty = true;
+                };
                 uint32_t bbw = 0, bbh = 0; akvr_xr_backbuffer_size(bbw, bbh);
-                int engH = akvr_engine_res();
-                if (ImGui::SliderInt("picture height per eye  (restart)", &engH, 0, 4320, "%d"))
-                { akvr_engine_res_set(engH); g_sliderDirty = true; }
-                if (ImGui::IsItemDeactivatedAfterEdit()) settings_save();
+                const int cur = akvr_engine_res();
+                float sc = (float)(cur > 0 ? cur : kHigh) / (float)kHigh;
+                if (SliderStep("picture size per eye  (1.00 = High, restart)", &sc, 0.50f, (float)maxH / (float)kHigh, "%.2f",
+                               ImGuiSliderFlags_AlwaysClamp))
+                    set_h(((int)lroundf(sc * (float)kHigh) + 2) & ~3);   // steps of 4, so 1.00 stays exactly High
+                static const struct { const char* name; int h; } kSizes[] = {
+                    {"Low", 2016}, {"Medium", 2432}, {"High", 2860}, {"Very high", 3600}, {"Ultra", 4320}, {"Max", 5760} };
+                ImGui::TextUnformatted("   ");
+                for (const auto& s : kSizes)
+                {
+                    ImGui::SameLine();
+                    char lbl[48]; snprintf(lbl, sizeof(lbl), "%s##res%d", s.name, s.h);
+                    if (ImGui::RadioButton(lbl, cur == s.h)) { set_h(s.h > maxH ? maxH : s.h); settings_save(); }
+                }
                 const int h = akvr_engine_res();
                 const int w = (akvr_xr_native() ? (h * akvr_geo11_shape()) / 1000 : (h * akvr_engine_shape()) / 1000) & ~7;
                 if (h)
-                    ImGui::TextDisabled("   now %u x %u per eye  ->  next launch %d x %d  (higher = sharper, slower)", bbw, bbh, w, h);
+                {
+                    ImGui::TextDisabled("   now %u x %u per eye  ->  next launch %d x %d  (%.1f million pixels per eye; higher = sharper, slower)",
+                                        bbw, bbh, w, h, (float)w * (float)h / 1e6f);
+                    if (h > kHigh)
+                        ImGui::TextColored(kAmber, "   above High: for sharper headsets and faster graphics cards than the tested RTX 4070 Ti. Every picture is drawn twice.");
+                    uint32_t rw = 0, rh = 0, mw = 0, mh = 0;
+                    akvr_xr_recommended_size(rw, rh, mw, mh);
+                    if (mw && mh && ((uint32_t)w > mw || (uint32_t)h > mh))
+                        ImGui::TextColored(kAmber, "   bigger than this headset accepts (%u x %u per eye): it may show black. Pick a smaller size.", mw, mh);
+                }
                 else
                     ImGui::TextDisabled("   off: the game picks its own size (now %u x %u)", bbw, bbh);
             }
@@ -2523,11 +2555,23 @@ namespace
                 int lock = akvr_xr_fps_lock();
                 // FPSNOTE 2026-09-27 — JJ expected "repeat the frame" to raise the frame rate:
                 // both in-between modes hold the GAME at the chosen rate; only "off" frees it.
-                ImGui::TextUnformatted("hold the game at:");
-                ImGui::SameLine(); if (ImGui::RadioButton("off", lock == 0))  { akvr_xr_fps_lock_set(0);  settings_save(); }
-                ImGui::SameLine(); if (ImGui::RadioButton("45", lock == 45))  { akvr_xr_fps_lock_set(45); settings_save(); }
-                ImGui::SameLine(); if (ImGui::RadioButton("40", lock == 40))  { akvr_xr_fps_lock_set(40); settings_save(); }
-                ImGui::SameLine(); if (ImGui::RadioButton("30", lock == 30))  { akvr_xr_fps_lock_set(30); settings_save(); }
+                // FPS72 + FPSMORE + FPSSLIDER 2026-10-05 — JJ: more rates, then "change this to a slider that
+                // just goes between these values only". 30 .. 120, then "off" (no limit) at the far right.
+                {
+                    const int* rates = nullptr;
+                    const int nr = akvr_xr_fps_lock_choices(&rates);
+                    int idx = nr;   // off
+                    for (int i = 0; i < nr; ++i)
+                        if (rates[i] == lock) idx = i;
+                    char txt[32];
+                    if (idx >= nr) snprintf(txt, sizeof(txt), "off (no limit)");
+                    else snprintf(txt, sizeof(txt), "%d fps", rates[idx]);
+                    if (ImGui::SliderInt("hold the game at", &idx, 0, nr, txt, ImGuiSliderFlags_AlwaysClamp | ImGuiSliderFlags_NoInput))
+                    {
+                        akvr_xr_fps_lock_set(idx < nr ? rates[idx] : 0);
+                        g_sliderDirty = true;
+                    }
+                }
                 lock = akvr_xr_fps_lock();
                 // FPSSHOW 2026-09-28 — JJ: "the option for double frames or SSW seems to be gone" (it was only
                 // drawn while a lock rate was chosen, and his lock was off). Always shown now, with a note.
@@ -2537,7 +2581,7 @@ namespace
                     ImGui::SameLine(); if (ImGui::RadioButton("repeat the frame", !ssw)) { akvr_xr_fps_lock_ssw_set(false); settings_save(); }
                     ImGui::SameLine(); if (ImGui::RadioButton("Virtual Desktop SSW", ssw)) { akvr_xr_fps_lock_ssw_set(true); settings_save(); }
                     if (!lock)
-                        ImGui::TextColored(kAmber, "   only used when the game is held at a rate (45 / 40 / 30). With 'off' the HUD layer moves only when the game draws.");
+                        ImGui::TextColored(kAmber, "   only used when the game is held at a rate. With 'off' the HUD layer moves only when the game draws.");
                 }
                 if (lock)
                 {
@@ -2560,9 +2604,31 @@ namespace
                             ImGui::TextDisabled("   headset %.0f Hz: each frame shown %d times = %.1f fps;  late frames %ld of %ld",
                                                 hz, div, got, late, frames);
                         if (fabs(got - lock) > 0.5)
-                            ImGui::TextColored(kAmber, "   %d fps needs the headset at %s Hz (Virtual Desktop setting). Running %.0f now.",
-                                               lock, lock == 40 ? "80 or 120" : (lock == 45 ? "90" : "90 or 120"), got);
+                        {
+                            // The Quest 3 rates through Virtual Desktop that are a whole multiple of the lock.
+                            char fit[32] = ""; int nf = 0;
+                            for (int q : {72, 80, 90, 120})
+                                if (q % lock == 0)
+                                {
+                                    const size_t len = strlen(fit);
+                                    snprintf(fit + len, sizeof(fit) - len, "%s%d", nf++ ? " or " : "", q);
+                                }
+                            if (nf)
+                                ImGui::TextColored(kAmber, "   %d fps needs the headset at %s Hz (Virtual Desktop setting). Running %.0f now.",
+                                                   lock, fit, got);
+                            else
+                                ImGui::TextColored(kAmber, "   %d fps needs a headset rate that is a multiple of it; the Quest 3 has none (72 / 80 / 90 / 120 Hz), so it runs %.0f.",
+                                                   lock, got);
+                        }
                     }
+                    // FPS72 / FPSMORE: the mod switches the headset's rate itself when the runtime allows it.
+                    const char* rd = akvr_xr_refresh_diag();
+                    if (akvr_xr_refresh_ext())
+                        ImGui::TextDisabled("   headset refresh: %s", rd[0] ? rd : "waiting for VR");
+                    else
+                        ImGui::TextDisabled("   Virtual Desktop does not let the mod change the refresh rate: set it in its Streaming tab.");
+                    ImGui::TextDisabled("   %d fps needs the game to finish a frame in under %.0f ms: if 'late frames' climbs, lower the picture size.",
+                                        lock, 1000.0 / lock);
                 }
             }
             int poseDelay = akvr_xr_pose_delay();
@@ -2904,7 +2970,7 @@ namespace
             float pvRatio = 0.0f, pvFov = 0.0f; int pvHits = 0;
             akvr_projvr_diag(pvRatio, pvHits, pvFov);
             fprintf(f, "\npatches:\n");
-            fprintf(f, "   build: RELEASE1003 " __DATE__ " " __TIME__ "\n");
+            fprintf(f, "   build: FPSSLIDER-0.2.0 " __DATE__ " " __TIME__ "\n");
             fprintf(f, "   zoom vignette: %s\n", akvr_xr_vig_diag());
             fprintf(f, "   %s\n", akvr_audiosync_diag());   // AUDIOSYNC
             fprintf(f, "   pause look: %s, %s now, main view through the player camera: %s, head writes into the paused camera: %ld, darken %.0f%%\n",
@@ -2944,6 +3010,8 @@ namespace
                             akvr_xr_fps_lock(), hz, div, hz > 0 ? hz / div : 0.0, late, frames);
                 else
                     fprintf(f, "   steady frame rate: off\n");
+                fprintf(f, "   refresh-rate extension: %s  %s\n", akvr_xr_refresh_ext() ? "yes" : "no",
+                        akvr_xr_refresh_diag());   // FPS72
             }
             fprintf(f, "   head-pose delay: %d fixed, %d used now (%s); exact matches so far: %s\n", akvr_xr_pose_delay(),
                     akvr_xr_pose_delay_used(), akvr_xr_pose_matched() ? "EXACT" : "fixed", akvr_xr_pose_delay_hist());

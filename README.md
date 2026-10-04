@@ -131,7 +131,8 @@ on or off.
 
 ## The VR settings panel
 
-Press **F8** to show or hide the panel. With the controller, hold both stick clicks (L3 + R3):
+Press **F8** to show or hide the panel. It opens upright in front of you, a little below eye level.
+With the controller, hold both stick clicks (L3 + R3):
 the left stick moves, **A** selects or changes, **B** goes back, and both stick clicks close it.
 The game ignores the controller while the panel is open. Everything you change is saved.
 
@@ -144,7 +145,7 @@ for troubleshooting.
 |---|---|
 | World scale | How big the world feels. 1.00 is life size; higher makes the world feel bigger around you. |
 | Extra view at the sides | Draws a little past the edges of the lenses, so no black edges show when you turn quickly. |
-| Picture height per eye | Sharpness against speed. The installer's Low / Medium / High are 2016 / 2432 / 2860. Takes effect after a restart. |
+| Picture size per eye | Sharpness against speed, as a scale of High (1.00 = 2860 pixels tall, 0.50 to 2.01). Quick picks: Low / Medium / High (the installer's 2016 / 2432 / 2860) and, for sharper headsets and faster graphics cards, Very high / Ultra / Max (3600 / 4320 / 5760). Takes effect after a restart. |
 | Aim with your head while holding the left trigger | While the left trigger is held (Batmobile battle mode, gadget aim) you aim where you look. The panel shows **AIMING** while it is on. |
 | Where you stand | Moves your viewpoint left or right, down or up, back or forward. **Reset position** undoes it. |
 
@@ -186,7 +187,7 @@ The reticle and distance-marker switches are on by default; leave them on.
 
 | Setting | What it does |
 |---|---|
-| Hold the game at | Keeps the game at a steady 45, 40 or 30 frames per second, which is smoother than an uneven rate. **Off** lets it run as fast as it can. |
+| Hold the game at | A slider: 30, 36, 40, 45, 48, 50, 60, 72, 80, 90, 96, 100 or 120 frames per second, or **off** (as fast as it can) at the right end. A steady rate is smoother than an uneven one. Each rate needs a headset refresh rate that is a whole multiple of it (72 needs 72 Hz, 60 needs 120 Hz, 45 needs 90 Hz); the mod switches the headset to one when the headset software allows it, otherwise the panel says which rate to set. A Quest 3 has no rate that suits 48, 50, 96 or 100. |
 | Between game frames | What the headset shows between game frames: **repeat the frame**, or **Virtual Desktop SSW** (Virtual Desktop only; set its SSW to Always). |
 | Head-pose delay | Leave it at 2. |
 

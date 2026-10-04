@@ -401,6 +401,22 @@ bool has_d3d11_ext() {
   return false;
 }
 
+// FPS72: does the runtime advertise this extension? (playbook PERF-004: enable an optional
+// lever only when it is advertised, and still check every call.)
+bool g_fbRefresh = false;   // XR_FB_display_refresh_rate advertised AND enabled on our instance
+bool runtime_has_ext(const char *name) {
+  uint32_t n = 0;
+  if (XR_FAILED(xrEnumerateInstanceExtensionProperties(nullptr, 0, &n, nullptr)) || n == 0)
+    return false;
+  std::vector<XrExtensionProperties> props(n, {XR_TYPE_EXTENSION_PROPERTIES});
+  if (XR_FAILED(xrEnumerateInstanceExtensionProperties(nullptr, n, &n, props.data())))
+    return false;
+  for (auto &p : props)
+    if (strcmp(p.extensionName, name) == 0)
+      return true;
+  return false;
+}
+
 void quat_to_euler(const XrQuaternionf &q, float &yaw, float &pitch,
                    float &roll) {
   // OpenXR: right-handed, +Y up, -Z forward. yaw=around Y, pitch=around X,
@@ -1780,14 +1796,24 @@ void akvr_xr_try_init() {
   }
 
   if (g_inst == XR_NULL_HANDLE) {
-    const char *exts[] = {XR_KHR_D3D11_ENABLE_EXTENSION_NAME};
+    // FPS72: the refresh-rate extension, only when the runtime lists it (the 72 lock asks
+    // the headset for 72 Hz through it; without it the panel tells the player to set VD).
+    g_fbRefresh = runtime_has_ext(XR_FB_DISPLAY_REFRESH_RATE_EXTENSION_NAME);
+    const char *exts[] = {XR_KHR_D3D11_ENABLE_EXTENSION_NAME,
+                          XR_FB_DISPLAY_REFRESH_RATE_EXTENSION_NAME};
     XrInstanceCreateInfo ci{XR_TYPE_INSTANCE_CREATE_INFO};
     std::strcpy(ci.applicationInfo.applicationName, "AKVR");
     ci.applicationInfo.apiVersion =
         XR_MAKE_VERSION(1, 0, 0); // 1.0 = universally supported
-    ci.enabledExtensionCount = 1;
+    ci.enabledExtensionCount = g_fbRefresh ? 2 : 1;
     ci.enabledExtensionNames = exts;
     XrResult r = xrCreateInstance(&ci, &g_inst);
+    if (XR_FAILED(r) && g_fbRefresh) {   // FPS72: never let the optional extension cost the session
+      g_fbRefresh = false;
+      g_inst = XR_NULL_HANDLE;
+      ci.enabledExtensionCount = 1;
+      r = xrCreateInstance(&ci, &g_inst);
+    }
     if (XR_FAILED(r)) {
       snprintf(g_status, sizeof(g_status),
                "OpenXR: xrCreateInstance failed (%d)", (int)r);
@@ -1876,7 +1902,7 @@ double akvr_xr_wait_ms() { return s_waitMs; }
 // for the in-between refreshes (legal: a layer references the swapchain's last
 // released image), then the new frame takes the slot N refreshes after the last.
 // The game renders freely meanwhile; only an early frame is held back.
-int    g_fpsLock = 0;          // 0 = off, else the target (45 / 40 / 30)
+int    g_fpsLock = 0;          // 0 = off, else the target (120 / 100 / 90 / 80 / 72 / 60 / 50 / 45 / 40 / 36 / 30)
 static inline int fps_lock_eff() { return g_ofxr ? 0 : g_fpsLock; }
 int    g_lockDiv = 1;          // refreshes per game frame actually used
 int    g_lockRepeats = 0;      // repeat submissions before the current frame
@@ -1913,7 +1939,107 @@ bool akvr_xr_fps_lock_ssw() { return g_lockSkip; }
 void akvr_xr_fps_lock_ssw_set(bool on) { g_lockSkip = on; }
 long akvr_xr_fps_lock_early() { return g_lockEarly; }
 int  akvr_xr_fps_lock() { return g_fpsLock; }
-void akvr_xr_fps_lock_set(int fps) { g_fpsLock = (fps == 45 || fps == 40 || fps == 30) ? fps : 0; }
+// FPSMORE 2026-10-05: 90 / 80 / 60 / 36 added (JJ: "also add 90, 80, 60, and 36"), then 120, 50, 100,
+// 48 and 96. FPSSLIDER: the panel is a slider that stops only on these (ascending).
+static const int kLockRates[] = {30, 36, 40, 45, 48, 50, 60, 72, 80, 90, 96, 100, 120};
+int akvr_xr_fps_lock_choices(const int **list) {
+  *list = kLockRates;
+  return (int)(sizeof(kLockRates) / sizeof(kLockRates[0]));
+}
+void akvr_xr_fps_lock_set(int fps) {
+  g_fpsLock = 0;
+  for (int r : kLockRates)
+    if (fps == r) g_fpsLock = fps;
+}
+
+// FPS72 2026-10-05 — JJ: "Add a setting to lock the frame rate at 72 FPS." The lock holds
+// every game frame for a WHOLE number of refreshes (see FPSLOCK above), so a rate is only even
+// when the headset's refresh is a multiple of it: 72 at 90 Hz rounds to every refresh (= no
+// lock), and a 72-in-90 mix is exactly the 1-or-2-refresh judder FPSLOCK was built to remove.
+// FPSMORE 2026-10-05 (90 / 80 / 60 / 36 added) made this general: when a lock is picked and the
+// headset's rate is not a multiple of it, we ask for the LOWEST listed rate that is (60 -> 120,
+// 36 -> 72, 30 -> 90; 45 at 90 Hz is left alone), through XR_FB_display_refresh_rate (playbook
+// PERF-004: only when advertised, every call checked). "off" puts the original rate back.
+// Without the extension the panel tells the player which rate to set in Virtual Desktop.
+static PFN_xrRequestDisplayRefreshRateFB s_reqRate = nullptr;
+static PFN_xrGetDisplayRefreshRateFB s_getRate = nullptr;
+static PFN_xrEnumerateDisplayRefreshRatesFB s_enumRates = nullptr;
+static XrSession s_rateSession = XR_NULL_HANDLE;
+static float s_rateOrig = 0.0f;   // the headset's rate before our first request (0 = nothing to restore)
+static int s_lockDone = -1;       // the lock value already handled, so each change is acted on once
+static int s_lockSeen = -1;       // FPSSLIDER: the lock last seen, and since when (settle before switching)
+static ULONGLONG s_lockSince = 0;
+static char g_rateDiag[160] = "";
+static bool rate_fits(float hz, int lock) {   // hz is a whole multiple of the lock
+  const int k = (int)floorf(hz / (float)lock + 0.5f);
+  return k >= 1 && fabsf(hz - (float)(k * lock)) < 0.5f;
+}
+static void refresh_rate_tick() {
+  if (!g_fbRefresh || g_session == XR_NULL_HANDLE)
+    return;
+  if (s_rateSession != g_session) {   // a new session: resolve the calls once
+    s_rateSession = g_session;
+    s_rateOrig = 0.0f;
+    s_lockDone = -1;
+    s_lockSeen = -1;
+    s_reqRate = nullptr; s_getRate = nullptr; s_enumRates = nullptr;
+    if (XR_FAILED(xrGetInstanceProcAddr(g_inst, "xrRequestDisplayRefreshRateFB", (PFN_xrVoidFunction *)&s_reqRate)))
+      s_reqRate = nullptr;
+    if (XR_FAILED(xrGetInstanceProcAddr(g_inst, "xrGetDisplayRefreshRateFB", (PFN_xrVoidFunction *)&s_getRate)))
+      s_getRate = nullptr;
+    if (XR_FAILED(xrGetInstanceProcAddr(g_inst, "xrEnumerateDisplayRefreshRatesFB", (PFN_xrVoidFunction *)&s_enumRates)))
+      s_enumRates = nullptr;
+    if (!s_reqRate || !s_getRate || !s_enumRates)
+      snprintf(g_rateDiag, sizeof(g_rateDiag), "refresh-rate calls missing from the runtime");
+  }
+  if (!s_reqRate || !s_getRate || !s_enumRates)
+    return;
+  const int lock = fps_lock_eff();
+  if (lock != s_lockSeen) {
+    s_lockSeen = lock;
+    s_lockSince = GetTickCount64();
+  }
+  if (lock == s_lockDone)
+    return;
+  // FPSSLIDER: wait until the slider has rested for a second - one headset switch, not one per step.
+  if (s_lockDone != -1 && GetTickCount64() - s_lockSince < 1000)
+    return;
+  s_lockDone = lock;
+  float cur = 0.0f;
+  if (XR_FAILED(s_getRate(g_session, &cur)))
+    cur = 0.0f;
+  if (lock == 0) {   // off: put back what the headset had before our first request
+    if (s_rateOrig > 0.0f && fabsf(cur - s_rateOrig) >= 0.5f) {
+      const XrResult r = s_reqRate(g_session, s_rateOrig);
+      snprintf(g_rateDiag, sizeof(g_rateDiag), "put the headset back to %.0f Hz (was %.0f): %s", s_rateOrig, cur,
+               XR_SUCCEEDED(r) ? "accepted" : "refused");
+    }
+    s_rateOrig = 0.0f;
+    return;
+  }
+  if (cur > 0.0f && rate_fits(cur, lock)) {
+    snprintf(g_rateDiag, sizeof(g_rateDiag), "headset at %.0f Hz already suits %d fps", cur, lock);
+    return;
+  }
+  uint32_t n = 0;
+  float rates[16] = {};
+  float best = 0.0f;
+  if (XR_SUCCEEDED(s_enumRates(g_session, 16, &n, rates)))
+    for (uint32_t i = 0; i < n && i < 16; ++i)
+      if (rates[i] >= (float)lock - 0.5f && rate_fits(rates[i], lock) && (best == 0.0f || rates[i] < best))
+        best = rates[i];
+  if (best == 0.0f) {
+    snprintf(g_rateDiag, sizeof(g_rateDiag), "no headset rate shows %d fps evenly (%u rates listed, now %.0f Hz)", lock, n, cur);
+    return;
+  }
+  if (s_rateOrig <= 0.0f)
+    s_rateOrig = cur;
+  const XrResult r = s_reqRate(g_session, best);
+  snprintf(g_rateDiag, sizeof(g_rateDiag), "asked the headset for %.0f Hz (was %.0f): %s", best, cur,
+           XR_SUCCEEDED(r) ? "accepted" : "refused");
+}
+bool akvr_xr_refresh_ext() { return g_fbRefresh; }
+const char *akvr_xr_refresh_diag() { return g_rateDiag; }
 void akvr_xr_fps_lock_info(int &div, double &hz, long &late, long &frames) {
   div = g_lockDiv; late = g_lockLate; frames = g_lockFrames;
   hz = g_displayPeriod > 0 ? 1e9 / (double)g_displayPeriod : 0.0;
@@ -1956,6 +2082,7 @@ void akvr_xr_frame_begin() {
   }
   if (!g_running)
     return;
+  refresh_rate_tick();   // FPS72: does nothing unless the lock moved to or from 72
 
   XrFrameWaitInfo fwi{XR_TYPE_FRAME_WAIT_INFO};
   XrFrameState fs{XR_TYPE_FRAME_STATE};
@@ -2903,10 +3030,21 @@ void akvr_xr_frame_submit(IDXGISwapChain *swapChain, float gameFovDeg,
   // (requested 2026-07-25). It re-anchors each time you re-open the panel so it always
   // spawns in front of wherever you're looking. (Earlier it was submitted VIEW-space;
   // Virtual Desktop mishandled that and scaled it backwards as you leaned.)
+  // PANELUPRIGHT 2026-10-05 — JJ: "make the VR overlay always open perfectly vertical in world
+  // space, not head-orientated". Only the head's HEADING is used: the panel stands upright (no
+  // pitch, no roll; local space is gravity-aligned), 1.30 m ahead and 0.10 m below eye height.
   if (!g_ovAnchored) {
-    const XrVector3f localOff{0.0f, -0.10f, -1.30f};
-    XrVector3f off = quat_rotate(g_curPose.orientation, localOff);
-    g_ovAnchor.orientation = g_curPose.orientation;
+    const XrVector3f f = quat_rotate(g_curPose.orientation, XrVector3f{0.0f, 0.0f, -1.0f});
+    float fx = f.x, fz = f.z;
+    if (fx * fx + fz * fz < 0.01f) {   // looking straight up or down: the head's up axis gives the heading
+      const XrVector3f u = quat_rotate(g_curPose.orientation, XrVector3f{0.0f, 1.0f, 0.0f});
+      fx = f.y < 0.0f ? u.x : -u.x;
+      fz = f.y < 0.0f ? u.z : -u.z;
+    }
+    const float yaw = atan2f(-fx, -fz);   // about +Y; yaw 0 faces -Z
+    const XrQuaternionf upright{0.0f, sinf(0.5f * yaw), 0.0f, cosf(0.5f * yaw)};
+    const XrVector3f off = quat_rotate(upright, XrVector3f{0.0f, -0.10f, -1.30f});
+    g_ovAnchor.orientation = upright;
     g_ovAnchor.position = {g_curPose.position.x + off.x,
                            g_curPose.position.y + off.y,
                            g_curPose.position.z + off.z};

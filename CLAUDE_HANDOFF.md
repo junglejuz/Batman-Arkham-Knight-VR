@@ -29,6 +29,32 @@ build-by-build log of this session's HUD work). Every change to the 3D fix's fil
 
 ## Where things stand
 
+**2026-10-05, build FPSSLIDER-0.2.0 — deployed to JJ's game, released as PRE-release v0.2.0, passed on the fake
+headset, NOT yet tried in the real headset.** JJ's requests this session, all in this build:
+- **Picture size (RESMAX):** panel "picture size per eye" = scale of High (2860), 0.50-2.01x, plus Low/Medium/High/
+  Very high/Ultra/Max (2016/2432/2860/3600/4320/5760). Ceiling 4320 -> 5760 (`kMaxEyeH`); width capped at 8192 per
+  eye (geo-11's two-eye surface <= 16384). Steps of 4 px so 1.00 stays exactly 2860. earlyres.cpp now sets
+  `rendersize` = `engineres` at load (the window height reads rendersize; the panel's save wrote the live value).
+- **Frame rate (FPS72 / FPSMORE / FPSSLIDER):** "hold the game at" is a slider over 30 36 40 45 48 50 60 72 80 90 96
+  100 120, then "off (no limit)" at the right end. The lock repeats whole refreshes, so the mod asks the headset for
+  the LOWEST listed rate that is a multiple of the lock (XR_FB_display_refresh_rate, enabled only if advertised,
+  retry without it if instance creation fails; playbook PERF-004), leaves a suitable rate alone (45 at 90), waits
+  1 s after the slider rests, and restores the original rate on "off". Quest 3 rates 72/80/90/120 suit none of
+  48/50/96/100 (the panel says so).
+- **Panel upright (PANELUPRIGHT):** the panel opens with the head's heading only: upright, 1.30 m ahead, 0.10 m
+  below eye height (xr.cpp anchor).
+- Fake-headset evidence (`diagnostics/RESMAX72-sim/`; AKVR on xrsim = BatmanAK.exe started directly with
+  SteamAppId=208650, `-akvr`, XR_RUNTIME_JSON per process): Ultra 4360x4320 shown in both eyes; lock 72 -> sim
+  90->72 Hz; lock 60 -> 120 Hz; lock 36 -> 72 Hz; lock 48 -> "no headset rate shows 48 fps evenly", stays 90; Very
+  high 3632x3600 with rendersize 2860 in the file; panel opened with the head pitched -35 / rolled 20 sits upright at
+  (-0.65, 1.50, -1.126) for heading 30. Steam start = plain 2D (no OpenXR/geo-11 loaded).
+- The sim had a view-matrix bug (quads drawn with the head's yaw mirrored): fixed in ac6vr/tools/xrsim/xrsim_math.h
+  (`mat4_view_from_pose`); it also gained XR_FB_display_refresh_rate (72/80/90/120). Batman City's own sim copy may
+  have the same view bug.
+- Still open: does the REAL Virtual Desktop advertise/accept the refresh request? Status file line
+  "refresh-rate extension: yes/no ..." answers it. AK at High takes ~21 ms/frame, so 72+ needs a smaller picture.
+- Backups: `diagnostics/before-RESMAX72-20261005/` (previous dll + settings). JJ's settings restored (2860, lock off).
+
 **JJ's game** (`E:\Games\Steam\steamapps\common\Batman Arkham Knight`) runs build **LOADSIZE** (commit cdd674f) with
 fix step 1g (PARTTAG5) applied. Everything since HUDWORLD is **deployed to JJ's game only**. The GitHub release
 v0.1.0 still holds the 2026-09-29 package (GameWorks + game-finder + picture-sharpness installer, mod build

@@ -99,8 +99,11 @@ void        akvr_xr_full_view_set(bool on);
 bool        akvr_xr_tilt_fill();                   // TILTFILL: pitch the pose down to fill the bottom
 void        akvr_xr_tilt_fill_set(bool on);
 float       akvr_xr_tilt_used_deg();               // tilt applied to the last sampled pose
-int         akvr_xr_fps_lock();                    // FPSLOCK: 0 off, 45 / 40 / 30
+int         akvr_xr_fps_lock();                    // FPSLOCK: 0 off, 120 / 100 / 90 / 80 / 72 / 60 / 50 / 45 / 40 / 36 / 30
 void        akvr_xr_fps_lock_set(int fps);
+int         akvr_xr_fps_lock_choices(const int **list);   // FPSSLIDER: the allowed rates, ascending
+bool        akvr_xr_refresh_ext();                 // FPS72: the runtime lets us set the headset's refresh rate
+const char* akvr_xr_refresh_diag();                // FPS72: last refresh-rate request and its answer
 void        akvr_xr_fps_lock_info(int &div, double &hz, long &late, long &frames);
 bool        akvr_xr_sbs_one();                     // SBSONE: native mode = one side-by-side swapchain
 void        akvr_xr_sbs_one_set(bool on);
