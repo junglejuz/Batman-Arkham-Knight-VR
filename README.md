@@ -46,8 +46,8 @@ correct depth.
 
 ## Installing
 
-You download the mod and the 3D fix, then run the installer. It puts everything into the game
-folder (the one with `BatmanAK.exe`) and sets it up for VR, so you don't copy or unpack
+You download the mod and run the installer. It downloads the 3D fix itself, puts everything into
+the game folder (the one with `BatmanAK.exe`) and sets it up for VR, so you don't copy or unpack
 anything there yourself.
 
 ### What you need
@@ -65,9 +65,10 @@ geo-11 comes with the mod, so you don't need to download it.
 1. **Download the mod.** Under **Releases** on this page, open the newest release and download
    the `AKVR-ArkhamKnight` zip. Right-click it, choose **Extract All...**, and extract it in
    your Downloads folder.
-2. **Download the 3D fix:**
+2. **The 3D fix** comes from its author's page:
    [Batman_Arkham_Knight_geo11_fix.7z](https://masterotaku.s3.amazonaws.com/Batman+Arkham+Knight/Batman_Arkham_Knight_geo11_fix.7z).
-   Leave it in Downloads without unpacking it.
+   The installer downloads it for you. If you already have it in Downloads, leave it there
+   without unpacking it and the installer uses that copy.
 3. **Run the installer.** Close the game, open the `AKVR-ArkhamKnight` folder and double-click
    `Install-AKVR.bat`.
    - If Windows says "Windows protected your PC", click **More info**, then **Run anyway**.

@@ -850,3 +850,16 @@ only, no cost in play): "pause test" and "head aiming" status lines, hudlayers "
 panel AIMING light. Package settings = JJ's live akvr_settings.ini (menuside -25, screen 0.70, the K13 reticle tick +
 K13 fingerprint). make_package.py now refuses testtools=1. README: AIMING light noted. Uploaded to release v0.1.0
 (--clobber), downloaded back and hash-compared. Local commits are NOT pushed (origin/main is 56+ behind).
+**FIXDOWNLOAD release (2026-10-04):** JJ: package with the right settings, the new shaders and every file, installer that
+downloads the 3D fix itself, deploy to GitHub. Install-AKVR.ps1 now downloads the fix (as SKVR: into %TEMP%\AKVR-fix-
+download, reused on reinstall) when it is not in Downloads; tested on its own in Windows PowerShell 5.1 (MD5 319c77b2...
+= the official file, Last-Modified 2026-09-25; second run reuses it); full installer parses clean. A full practice
+install was NOT run (it would repoint JJ's real VR shortcut and touch his Documents store). Shaders: the fresh fix
+patched by AKVR-fix-patches.ps1 in a scratch folder - 15 files, all assemble + load in the driver (vstest OK, dcl_temps
+covers); 13 byte-identical to JJ's game, 2 (05154232, 9938094a) differ only in temp register numbers (RETNEAR/PARTTAG
+order; carried r14.x not rewritten before its later use). d3dxdm.ini identical; d3dx.ini differs only in
+load_library_redirect (installer sets it). Settings = JJ's live file (unchanged since RELEASE1003). README + release
+notes: the installer downloads the fix. Repo is now junglejuz/Batman-Arkham-Knight-VR.
+NOTE for making the repo public (JJ asked): the fix's LICENSE.txt (Alejandro Rodriguez Solis / masterotaku) is
+personal, non-commercial, and says "You may not modify, adapt ... or create derivative works"; the patch script
+edits the fix on the player's machine and contains fragments of its shader text. Get the author's OK first.

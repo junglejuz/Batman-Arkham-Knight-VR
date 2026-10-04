@@ -1,8 +1,9 @@
 ﻿<#
   AKVR installer: sets up the Batman: Arkham Knight geo-11 3D fix for VR and installs the mod.
 
-  Double-click Install-AKVR.bat. It finds the game and your downloads by itself, backs up
-  anything it replaces, and asks if it cannot find something. See the README, "Installing".
+  Double-click Install-AKVR.bat. It finds the game by itself, downloads the 3D fix if it is not in
+  your Downloads folder, backs up anything it replaces, and asks if it cannot find something.
+  See the README, "Installing".
 
   Optional, to skip the searching:
     -GameDir "<the game's folder>" -FixArchive "<fix .7z>" -ModDll "<dinput8.dll>" -Picture Low|Medium|High
@@ -366,8 +367,26 @@ if ($Game.PictureSizes -and -not (Test-Path (Join-Path $GameDir 'akvr_settings.i
 Step '2. Finding your downloads'
 if (-not $FixArchive) { $f = Find-Download $Game.FixMatch; if ($f) { $FixArchive = $f.FullName } }
 if (-not $FixArchive) {
-    Say "   Could not find the $($Game.Name) geo-11 fix in your Downloads folder."
-    Say "   Please pick the file you downloaded from $($Game.FixPage)"
+    # FIXDOWNLOAD 2026-10-04 (as SKVR's installer): not downloaded yet - fetch it into a folder of the installer's own
+    # under TEMP (nothing left on the desktop or in Downloads; a reinstall uses the copy there).
+    $dlDir = Join-Path $env:TEMP "$($Game.Mod)-fix-download"
+    $target = Join-Path $dlDir ([Uri]::UnescapeDataString((Split-Path $Game.FixPage -Leaf)))
+    if ((Test-Path $target) -and (Get-Item $target).Length -gt 100KB) { $FixArchive = $target }
+}
+if (-not $FixArchive) {
+    New-Item -ItemType Directory -Force -Path $dlDir | Out-Null
+    Say "   The $($Game.Name) geo-11 fix is not in your Downloads folder - downloading it from"
+    Say "   $($Game.FixPage)"
+    try {
+        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+        $oldProgress = $ProgressPreference; $ProgressPreference = 'SilentlyContinue'   # the progress bar slows it down a lot
+        Invoke-WebRequest -Uri $Game.FixPage -OutFile $target -UseBasicParsing
+        $ProgressPreference = $oldProgress
+        if ((Get-Item $target).Length -gt 100KB) { $FixArchive = $target }
+    } catch { Say "   the download failed: $($_.Exception.Message)" 'Yellow' }
+}
+if (-not $FixArchive) {
+    Say "   Please download the fix from $($Game.FixPage) and pick the file."
     $FixArchive = Select-File "Pick the $($Game.Name) geo-11 fix you downloaded"
 }
 if (-not $FixArchive -or -not (Test-Path $FixArchive)) { Fail "no 3D fix to install. Download it from $($Game.FixPage)" }
