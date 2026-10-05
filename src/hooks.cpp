@@ -102,6 +102,8 @@ bool        akvr_cam_swing();                   // camera.cpp: SWINGEASE
 bool        akvr_cam_aim_head();                // camera.cpp: AIMHEAD
 bool        akvr_cam_aim_head_now();            // camera.cpp: AIMTRIGGER2
 long        akvr_cam_aim_head_frames();
+long        akvr_cam_exact_writes();            // camera.cpp: DIVEFIX
+bool        akvr_cam_exact_on();
 void        akvr_cam_aim_head_set(bool on);
 void        akvr_cam_swing_set(bool on);
 void        akvr_cam_restore_set(bool on);
@@ -1923,7 +1925,7 @@ namespace
 
         ImGui::TextColored(ImVec4(1.0f, 0.85f, 0.2f, 1.0f), "Arkham Knight VR");
         ImGui::SameLine();
-        ImGui::TextDisabled("   build: FPSSLIDER-0.2.0  " __DATE__ " " __TIME__);   // the same tag as the status file
+        ImGui::TextDisabled("   build: DIVEFIX2-0.2.1  " __DATE__ " " __TIME__);   // the same tag as the status file
 
         // ---- one status line ----------------------------------------------------
         // TIDY4 2026-09-27 (JJ: "cleaned up and reformatted to be a bit more consistent with the
@@ -2970,7 +2972,7 @@ namespace
             float pvRatio = 0.0f, pvFov = 0.0f; int pvHits = 0;
             akvr_projvr_diag(pvRatio, pvHits, pvFov);
             fprintf(f, "\npatches:\n");
-            fprintf(f, "   build: FPSSLIDER-0.2.0 " __DATE__ " " __TIME__ "\n");
+            fprintf(f, "   build: DIVEFIX2-0.2.1 " __DATE__ " " __TIME__ "\n");
             fprintf(f, "   zoom vignette: %s\n", akvr_xr_vig_diag());
             fprintf(f, "   %s\n", akvr_audiosync_diag());   // AUDIOSYNC
             fprintf(f, "   pause look: %s, %s now, main view through the player camera: %s, head writes into the paused camera: %ld, darken %.0f%%\n",
@@ -2979,6 +2981,8 @@ namespace
             fprintf(f, "   pause test: %s\n", akvr_camera_main_view_diag());   // PAUSEFOV2
             fprintf(f, "   head aiming: %s now, %ld frames so far | %s\n", akvr_cam_aim_head_now() ? "ON" : "off",
                     akvr_cam_aim_head_frames(), akvr_gamepad_trigger_diag());   // AIMTRIGGER2
+            fprintf(f, "   head on the shown camera (dive fix): %s, %ld camera frames so far\n", akvr_cam_exact_on() ? "on" : "off",
+                    akvr_cam_exact_writes());   // DIVEFIX
             fprintf(f, "   rain probe: %s | every draw off %d, all compute off %d, see-through off %d, world rain streak cut %d\n",
                     akvr_probe_diag(), akvr_probe_every_draw() ? 1 : 0, akvr_probe_all_cs() ? 1 : 0, akvr_probe_all_but_rain() ? 1 : 0,
                     akvr_probe_rain_parts());   // DRAWPROBE, RAINPARTS

@@ -119,14 +119,14 @@ never changed.
 
 - Windowed mode and the picture size. Don't change the display mode or resolution in the
   game's menu.
-- Motion blur, chromatic aberration and film grain off
+- Motion blur, chromatic aberration, film grain and depth of field (the distance blur) off
 - V-sync off (the headset sets the pace)
 - A game timing setting that keeps the HUD markers and the rain in step with the world
 
 If you turn GameWorks effects back on and the world jitters when you turn your head, try a
 **head-pose delay** of 3 (F8, under **Frame rate**).
 
-The fix has its own keys: **F6** turns depth of field on or off, and **L** turns lens flares
+The fix has its own keys: **F6** turns the blur behind some menus on or off, and **L** turns lens flares
 on or off.
 
 ## The VR settings panel

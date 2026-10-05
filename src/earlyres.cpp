@@ -666,6 +666,12 @@ namespace {
         { "DefaultChromaticAberration=", "False" , false },
         { "FilmGrain=",                "False" , false },
         { "DefaultFilmGrain=",         "False" , false },
+        // DOFOFF 2026-10-05 - a player (RTX 4090): higher picture sizes left "the city background" no sharper, but "when
+        // you back out to the main menu, there's a split second where everything looks crystal clear". The game's
+        // depth of field was still on (DepthOfField=True in buckets 2-5 and the top block); the 3D fix's F6 only skips
+        // a menu blur shader. A distance blur does not sharpen with resolution. VR_ESSENTIALS 7: force it off.
+        { "DepthOfField=",             "False" , false },
+        { "DefaultDepthOfField=",      "False" , false },
         { "UseVsync=",                 "False" , false },
         { "DefaultUseVsync=",          "False" , false },
         { "UseAdaptiveVsync=",         "False" , false },

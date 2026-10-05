@@ -3545,7 +3545,14 @@ void  akvr_xr_vig_clear_set(float d) { g_vigClearDeg = d < 5.0f ? 5.0f : (d > 60
 float akvr_xr_vig_below() { return g_vigBelowDeg; }
 void  akvr_xr_vig_below_set(float d) { g_vigBelowDeg = d < 0.0f ? 0.0f : (d > 120.0f ? 120.0f : d); }
 void  akvr_xr_vig_preview(bool on) { g_vigPreview = on; }
-bool  akvr_xr_vig_active() { return g_vigAmt > 0.0f && !g_vigPreview; }   // ZOOMHIDE: zoomed right now
+// ZOOMHIDE: zoomed right now. ZOOMHIDE0 2026-10-05 - a player: "It won't let me fully disable zoom vignette. When I put
+// it at 0.0 vignette sticks to my screen". The game's own 2D zoom overlay was hidden only while OUR vignette showed, so
+// strength 0 brought the game's overlay back. It now follows the zoom itself, whatever the strength.
+bool  akvr_xr_vig_active() {
+  const float fov = akvr_camera_game_fov();
+  const bool zoomed = g_eyeWantGameplay && fov > 1.0f && fov < g_vigBelowDeg;
+  return (g_vigAmt > 0.0f && !g_vigPreview) || zoomed;
+}
 const char *akvr_xr_vig_diag() {
   static char d[200];
   snprintf(d, sizeof(d), "game's own view now %.1f deg (lowest %.1f, widest %.1f this session) | vignette %s%s",

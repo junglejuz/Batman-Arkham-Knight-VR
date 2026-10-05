@@ -556,12 +556,32 @@ namespace
         *(int32_t*)(cam + OFF_PITCH) += (int32_t)(c[1] / ROT2DEG);
         g_copyApplied[0] = c[0]; g_copyApplied[1] = c[1];
     }
+    // DIVEFIX 2026-10-05 — a player: "when diving camera sometimes spazzes out, not all the time" (video: the view
+    // flips during a dive from a high tower). The head was composed onto the game's OWN pitch (akvr_head_update, one
+    // frame earlier) and handed over as Euler deltas, but the stub adds them to the game's pitch PLUS SWINGEASE's lag
+    // (up to ~26 deg in a dive) and the copy fix. Once the game's dive tilt (its limit is -71.4) plus a head looking
+    // down passes straight down, the deltas are the flipped Euler form (yaw and roll +180), so the eased lag was then
+    // added the wrong way round. Replay (tools/divesim.py, game -8 -> -71.4 in 0.35 s, head 25 deg down): a 78 deg
+    // one-frame jump; with the head also turned 15-30 deg the view sat 60-70 deg off for the whole ease. Now, in the
+    // rigid mode (pitchunlink 2), the stub's callback composes the head again onto the camera it is about to show
+    // (the game's fresh angle + the copy fix + the ease), every finalize, and writes that rotation. Replay: worst step
+    // 1.5 deg (the ease itself), 0 deg off. The head pose comes from the last akvr_head_update (seqlock).
+    volatile LONG g_exSeq = 0;       // odd while akvr_head_update is writing the head below
+    float g_exHead[3] = {};          // head yaw / pitch / roll as composed (radians, g_htYaw.. signs)
+    float g_exQ[4] = {};             // the headset orientation they came from (HUDSTEADY ring)
+    volatile bool g_exOn = false;    // rigid mode with the head live
+    struct ExRec { int32_t y, p, r; float q[4]; };
+    ExRec g_exRec = {};              // the last rotation written by exact_head, as (field - saved base)
+    volatile LONG g_exRecSeq = 0;
+    LONG g_exWrites = 0;
+    void exact_head(uintptr_t cam);  // below decompose_basis
     void __fastcall smooth_cb(uintptr_t cam)
     {
         __try
         {
             copy_fix(cam);      // AIMHEAD: the get in / out copy of the head taken off
             tilt_smooth(cam);   // SWINGEASE (its own switch; replaced TILTSMOOTH)
+            if (g_exOn) exact_head(cam);   // DIVEFIX: the head onto the camera as it will be shown
             float* P = (float*)(cam + OFF_X);
             const float p[3] = { P[0], P[1], P[2] };
             g_smoothApplied[0] = g_smoothApplied[1] = g_smoothApplied[2] = 0.0f;
@@ -878,6 +898,65 @@ namespace
         V3 right0 = { -sinf(yaw), cosf(yaw), 0.0f };
         V3 up0 = v_cross(fwd, right0);
         roll = atan2f(v_dot(right, up0), v_dot(right, right0));
+    }
+    float wrap_pi(float a) { while (a > 3.14159265f) a -= 6.2831853f; while (a < -3.14159265f) a += 6.2831853f; return a; }
+    // DIVEFIX: (yaw + 180, +-180 - pitch, roll + 180) is the same rotation. Past straight down decompose_basis gives
+    // that flipped form (yaw and roll 180 away from the base); take whichever form is nearer the base, so the deltas
+    // stay small and carry on smoothly through the pole (pitch may then pass -90, which the engine draws as is).
+    void euler_nearest(float& y, float& p, float& r, float by, float bp, float br)
+    {
+        const float ay = y + 3.14159265f, ap = (p < 0.0f ? -3.14159265f : 3.14159265f) - p, ar = r + 3.14159265f;
+        const float now = fabsf(wrap_pi(y - by)) + fabsf(wrap_pi(p - bp)) + fabsf(wrap_pi(r - br));
+        const float alt = fabsf(wrap_pi(ay - by)) + fabsf(wrap_pi(ap - bp)) + fabsf(wrap_pi(ar - br));
+        if (alt < now) { y = ay; p = ap; r = ar; }
+    }
+    // DIVEFIX (see g_exSeq): the rigid composition of akvr_head_update (TIPPED + ROLLSIGN), done again in the finalize
+    // stub onto the camera about to be shown - the game's fresh angle plus copy_fix and tilt_smooth, exactly as they
+    // added them to the fields.
+    void exact_head(uintptr_t cam)
+    {
+        if (!g_bYaw || !g_bPitch || !g_bRoll) return;
+        float h[3], q[4];
+        for (int tries = 0;; ++tries)
+        {
+            const LONG s0 = g_exSeq;
+            MemoryBarrier();
+            memcpy(h, g_exHead, sizeof(h)); memcpy(q, g_exQ, sizeof(q));
+            MemoryBarrier();
+            if (!(s0 & 1) && s0 == g_exSeq) break;
+            if (tries > 64) return;   // the stub's own add stands this frame
+            YieldProcessor();
+        }
+        const int32_t cY = (int32_t)(g_copyApplied[0] / ROT2DEG), cP = (int32_t)(g_copyApplied[1] / ROT2DEG);
+        const int32_t tP = (int32_t)(g_tiltApplied / ROT2DEG);
+        const int32_t sYaw = (int32_t)((uint32_t)*g_bYaw + (uint32_t)cY);
+        const int32_t sPitch = (int32_t)((uint32_t)*g_bPitch + (uint32_t)cP + (uint32_t)tP);
+        const int32_t sRoll = *g_bRoll;
+        V3 fwd, right, up;
+        build_basis((float)sYaw * ROT2DEG * DEG2RAD, (float)sPitch * ROT2DEG * DEG2RAD, (float)sRoll * ROT2DEG * DEG2RAD, fwd, right, up);
+        float b2yaw, b2pitch, b2roll; decompose_basis(fwd, right, b2yaw, b2pitch, b2roll);
+        euler_nearest(b2yaw, b2pitch, b2roll, (float)sYaw * ROT2DEG * DEG2RAD, (float)sPitch * ROT2DEG * DEG2RAD, (float)sRoll * ROT2DEG * DEG2RAD);   // DIVEFIX2
+        V3 bf, br, bu; build_basis(b2yaw, b2pitch, 0.0f, bf, br, bu);
+        V3 hf, hr, hu; build_basis(h[0], -h[1], -h[2], hf, hr, hu);   // -gp: PITCH_SIGN note; -gr: ROLLSIGN
+        auto toCam = [&](V3 v) { return v_add(v_add(v_scale(bf, v.x), v_scale(br, v.y)), v_scale(bu, v.z)); };
+        fwd = v_norm(toCam(hf)); right = v_norm(toCam(hr));
+        float fyaw, fpitch, froll; decompose_basis(fwd, right, fyaw, fpitch, froll);
+        froll = -froll;                                                // ROLLSIGN: UE3's roll direction
+        euler_nearest(fyaw, fpitch, froll, b2yaw, b2pitch, b2roll);
+        const float RAD2ROT = 65536.0f / (2.0f * 3.14159265f);
+        const int32_t dY = (int32_t)(wrap_pi(fyaw - b2yaw) * RAD2ROT);
+        const int32_t dP = (int32_t)(wrap_pi(fpitch - b2pitch) * RAD2ROT);
+        const int32_t dR = (int32_t)(wrap_pi(froll - b2roll) * RAD2ROT);
+        *(int32_t*)(cam + OFF_YAW)   = (int32_t)((uint32_t)sYaw   + (uint32_t)dY);
+        *(int32_t*)(cam + OFF_PITCH) = (int32_t)((uint32_t)sPitch + (uint32_t)dP);
+        *(int32_t*)(cam + OFF_ROLL)  = (int32_t)((uint32_t)sRoll  + (uint32_t)dR);
+        InterlockedIncrement(&g_exRecSeq);
+        g_exRec.y = (int32_t)((uint32_t)cY + (uint32_t)dY);
+        g_exRec.p = (int32_t)((uint32_t)cP + (uint32_t)tP + (uint32_t)dP);
+        g_exRec.r = dR;
+        memcpy(g_exRec.q, q, sizeof(q));
+        InterlockedIncrement(&g_exRecSeq);
+        ++g_exWrites;
     }
 }
 
@@ -1323,6 +1402,12 @@ bool akvr_head_frame_quat(float q[4], int* age)
     __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
     const uint32_t dy = (cy - (uint32_t)*g_bYaw) & 0xFFFF, dp = (cp - (uint32_t)*g_bPitch) & 0xFFFF,
                    dr = (cr - (uint32_t)*g_bRoll) & 0xFFFF;
+    if (g_exOn)
+    {   // DIVEFIX: the finalize callback wrote the rotation itself (head + the copy fix + the ease)
+        ExRec e; LONG s0 = g_exRecSeq; MemoryBarrier(); e = g_exRec; MemoryBarrier();
+        if (!(s0 & 1) && s0 == g_exRecSeq && ((uint32_t)e.y & 0xFFFF) == dy && ((uint32_t)e.p & 0xFFFF) == dp && ((uint32_t)e.r & 0xFFFF) == dr)
+        { memcpy(q, e.q, sizeof(e.q)); if (age) *age = 0; return true; }
+    }
     const LONG h = g_dHead;
     for (int k = 0; k < 32 && k < h; ++k)
     {
@@ -1516,6 +1601,7 @@ void akvr_head_toggle()
     }
     else
     {
+        g_exOn = false;   // DIVEFIX
         head_apply(false);
         // Do NOT unpatch the projection hook here. Removing live code was the crash
         // (see write_code) and it isn't needed: with head-tracking off the cave's
@@ -1577,13 +1663,13 @@ long akvr_camera_pause_writes() { return g_pauseWrites; }
 
 void akvr_head_update()
 {
-    if (!g_htOn || !g_dYaw) { g_pauseWriting = false; return; }
+    if (!g_htOn || !g_dYaw) { g_pauseWriting = false; g_exOn = false; return; }
     if (!akvr_xr_session_running())
     {   // pass base through unchanged (FULL rotator = base, so the overwrite is a
         // no-op) and drop the additive lean/fov — never write 0 rotation or the
         // stub would snap the camera to a zero orientation.
         *g_dYaw = *g_dPitch = *g_dRoll = 0;   // ORBITFIX: zero delta = the game's own angle
-        *g_dPosX = *g_dPosY = *g_dPosZ = 0.0f; *g_dFov = 0.0f; if (g_fovAbs) *g_fovAbs = 0; g_pauseWriting = false; return; }
+        *g_dPosX = *g_dPosY = *g_dPosZ = 0.0f; *g_dFov = 0.0f; if (g_fovAbs) *g_fovAbs = 0; g_pauseWriting = false; g_exOn = false; return; }
 
     // CAMRESTORE: what the stub added at the finalize that just ran (the slots are rewritten below)
     const uint64_t rsFc = akvr_camera_finalize_count();
@@ -1605,6 +1691,13 @@ void akvr_head_update()
     float broll  = (float)(*g_bRoll)  * ROT2DEG * DEG2RAD;
     V3 fwd, right, up; build_basis(byaw, bpitch, broll, fwd, right, up);
     float b2yaw, b2pitch, b2roll; decompose_basis(fwd, right, b2yaw, b2pitch, b2roll);   // base reference
+    // DIVEFIX2 2026-10-05 — JJ with DIVEFIX: "the camera still seems to flip out when doing a high dive". F2 23:07:
+    // the game's OWN pitch goes past straight down in a dive (-90.5 .. -93.1; the -71.4 "limit" was only the traces
+    // we had), and each crossing is a 175-180 deg one-frame step in the shown view (t 226.27, 272.77, 295.97, 298.06).
+    // Past -90 decompose_basis returns the base as (yaw + 180, -89, roll 180); the rigid composition builds the base
+    // frame from yaw/pitch only, so that roll 180 was dropped and the world turned upside down. Keep the base in the
+    // game's own form (the nearest one), which build_basis handles past the pole.
+    euler_nearest(b2yaw, b2pitch, b2roll, byaw, bpitch, broll);
 
     // Head offset: strip ONLY the recenter heading (delta = Ry(-refYaw) * cur), which
     // leaves pitch/roll gravity-absolute — see g_refYawDeg. Note neither plain
@@ -1775,6 +1868,13 @@ void akvr_head_update()
 
     float fyaw, fpitch, froll; decompose_basis(fwd, right, fyaw, fpitch, froll);
     if (tipped) froll = -froll;                 // ROLLSIGN: back into UE3's roll direction
+    euler_nearest(fyaw, fpitch, froll, b2yaw, b2pitch, b2roll);   // DIVEFIX: no 180 flip in the deltas past straight down
+    // DIVEFIX: the head for the stub's callback, which composes it again onto the camera as shown (rigid mode only)
+    InterlockedIncrement(&g_exSeq);
+    g_exHead[0] = gy; g_exHead[1] = gp; g_exHead[2] = gr;
+    g_exQ[0] = qx; g_exQ[1] = qy; g_exQ[2] = qz; g_exQ[3] = qw;
+    InterlockedIncrement(&g_exSeq);
+    g_exOn = tipped && !g_testNoRot;
     // The eye separation must ride the GAME'S ACTUAL rendered right — which comes from the
     // rotator we're about to write (fyaw/fpitch/froll), NOT the pre-decompose `right`.
     // decompose_basis isn't a perfect inverse for roll, so `right` and the game's rendered
@@ -2223,5 +2323,7 @@ bool akvr_cam_swing() { return g_swingEase; }                  // SWINGEASE
 void akvr_cam_swing_set(bool on) { g_swingEase = on; }
 bool akvr_cam_aim_head() { return g_aimHead; }                 // AIMHEAD
 bool akvr_cam_aim_head_now() { return g_rbHead; }              // AIMTRIGGER2: the head is in the read-back now
+long akvr_cam_exact_writes() { return g_exWrites; }            // DIVEFIX: finalizes whose rotation exact_head wrote
+bool akvr_cam_exact_on() { return g_exOn; }
 long akvr_cam_aim_head_frames() { return g_aimFrames; }
 void akvr_cam_aim_head_set(bool on) { g_aimHead = on; }

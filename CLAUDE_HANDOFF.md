@@ -29,6 +29,38 @@ build-by-build log of this session's HUD work). Every change to the 3D fix's fil
 
 ## Where things stand
 
+**DIVEFIX2 (2026-10-05, DLL deployed, hash checked, untested).** JJ with DIVEFIX: background "looks better" (DOFOFF);
+dive "still seems to flip out". F2 23:07 (the camera trace holds the last ~108 s, so after-the-fact F2s work): the
+GAME's own pitch passes straight down in dives (-90.5 .. -93.1; DIVEFIX's "-71.4 limit" came from older traces
+without dives). At each crossing the shown view stepped 175-180 deg (226.27, 226.53, 272.71, 272.99, 295.97,
+298.06 s). Cause: decompose_basis returns a past-vertical base as (yaw+180, -89, roll 180); the rigid composition
+builds the base frame from yaw+pitch only, dropping that roll 180 -> upside down. Fix: euler_nearest puts the base
+back into the game's own form (head_update and exact_head). Replay of the trace (tools/dive_replay.py): old maths
+reproduces all 6 flips at the recorded times, new = none; 7982 frames with game pitch inside +-89 identical
+(0.0000 deg). Rollback: `diagnostics/before-DIVEFIX2-20261005/`.
+
+**2026-10-05, build DIVEFIX-0.2.1 — DLL deployed to JJ's game (hash checked), NOT tested (another Steam game, SWBF2,
+was running, so no fake-headset run), NOT packaged.** Three reports from a public user (RTX 4090):
+- **Dive camera "spazzes out ... not all the time"** (video: the view flips diving from a tower). Cause (code +
+  replay, tools/divesim.py): in rigid mode (pitchunlink 2) the head was composed onto the game's OWN pitch and
+  handed to the stub as Euler deltas, but the stub adds them to the game's pitch plus SWINGEASE's lag (up to ~26 deg in
+  a dive) and copy_fix. Past straight down (game limit -71.4 + head down > ~19 deg) the deltas were the flipped form
+  (yaw/roll +180), so the eased lag went the wrong way: replay = 78 deg one-frame jump, 60-70 deg off target with
+  the head turned. Fix: smooth_cb -> exact_head composes the head again onto the camera as shown (game + copy + ease)
+  every finalize and writes the rotation (nearest Euler form, pitch may pass -90); deltas use the nearest form too;
+  HUDSTEADY's frame-quat lookup checks exact_head's record first. Replay: worst step 1.5 deg, 0 off. Status line
+  "head on the shown camera (dive fix)". Watch: Batmobile get in/out (copy fix + ease now composed exactly), menu
+  camera (also rigid), HUD steadiness lookups.
+- **Zoom vignette at 0 "sticks to my screen"**: ZOOMHIDE hid the game's 2D zoom overlay only while OUR vignette
+  showed, so strength 0 brought the game's overlay back. akvr_xr_vig_active now also follows the zoom itself
+  (ZOOMHIDE0). "0.1 still very visible" is NOT explained (0.1 = 10% black at the edges); if it persists, it may be
+  the user's HUD container ids not matching the shipped K1 tick - ask for an F2.
+- **Distant city does not sharpen with picture size; "a split second where everything looks crystal clear" going
+  back to the main menu**: DepthOfField=True in the game config (the fix's F6 only skips a menu DoF shader,
+  b64752d194fe1143). DOFOFF forces DepthOfField/DefaultDepthOfField False (VR launch only; FIX_CHANGES 6). Likely,
+  NOT measured: compare an F2 of the skyline before/after. Also told: VD quality/bitrate cap what reaches the eye.
+- Backups: `diagnostics/before-DIVEFIX-20261005/` (dll, settings, both BmSystemSettings copies).
+
 **2026-10-05, build FPSSLIDER-0.2.0 — deployed to JJ's game, released as PRE-release v0.2.0, passed on the fake
 headset, NOT yet tried in the real headset.** JJ's requests this session, all in this build:
 - **Picture size (RESMAX):** panel "picture size per eye" = scale of High (2860), 0.50-2.01x, plus Low/Medium/High/

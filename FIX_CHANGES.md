@@ -983,3 +983,4 @@ baseline versions). Needs JJ: where the 2026-09-26 update came from, or an in-ga
 | 2026-10-02 | TARGETFACE | 13 HUD vertex shaders: on-target pieces laid on the plane facing the eye about their point (CB13[3] = tan half-angles, on) | 1q |
 | 2026-10-02 | TARGETUP | 13 HUD vertex shaders: 1q block replaced, on-target pieces keep the world's up (CB13[11]) | 1r |
 | 2026-10-02 | TARGETDIST | 13 HUD vertex shaders: a known object distance (point row .w) replaces the depth search result | 1s |
+| 2026-10-05 | DOFOFF (mod) | BmSystemSettings DepthOfField / DefaultDepthOfField forced False in every section, VR launch only (earlyres comfort list; the 2D profile keeps its own) | 6 |
