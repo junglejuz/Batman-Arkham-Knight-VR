@@ -29,6 +29,12 @@ build-by-build log of this session's HUD work). Every change to the 3D fix's fil
 
 ## Where things stand
 
+**RELEASE v0.2.1 (2026-10-05, PRE-release, commit 19d752d pushed):** JJ: "package it up with all the settings and
+everything and deploy it". Package = build DIVEFIX2 (same hash as JJ's game) + JJ's live akvr_settings.ini (only the
+K1 hudcontainers fingerprint differed from the last package); make_package checks OK; downloaded back, hash equal.
+Pre-release because the dive fix is replay-tested only; flip to Latest once JJ confirms a dive. Answered from F2
+23:07: Virtual Desktop DOES accept the refresh-rate request ("refresh-rate extension: yes").
+
 **DIVEFIX2 (2026-10-05, DLL deployed, hash checked, untested).** JJ with DIVEFIX: background "looks better" (DOFOFF);
 dive "still seems to flip out". F2 23:07 (the camera trace holds the last ~108 s, so after-the-fact F2s work): the
 GAME's own pitch passes straight down in dives (-90.5 .. -93.1; DIVEFIX's "-71.4 limit" came from older traces
