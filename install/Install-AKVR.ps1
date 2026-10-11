@@ -291,37 +291,9 @@ foreach ($l in $Game.Launchers.Keys) {
 }
 Say '   everything is there' 'Green'
 
-# ---- 3. an older version of this mod (geo-11) -----------------------------------------------
-# Versions up to 0.2.1 used geo-11 and masterotaku's 3D fix (geo-11 renamed to geo11.dll by our installer). This
-# version does not need them: remove them so nothing of the old setup is left behind.
+# ---- 3. back up what is there now (before anything is removed: the old 3D fix's uninstall.bat also deletes XInput9_1_0.dll) ----------------------------------------------------------
 
-$oldGeo = (Test-Path (Join-Path $GameDir 'geo11.dll')) -or (Test-Path (Join-Path $GameDir 'dxgi.dll.wrapmode'))
-if ($oldGeo) {
-    Step '3. An older version of the mod (with geo-11) is installed'
-    Say '   This version does not need geo-11 or the 3D fix any more.'
-    $go = $Yes
-    if (-not $go) { $go = (Read-Host '   Remove geo-11 and the 3D fix now? Recommended. (Y/N)') -match '^\s*[Yy]' }
-    if ($go) {
-        if (Test-Path (Join-Path $GameDir 'uninstall.bat')) {
-            # the fix author's own list; its DEL lines are relative, so it must run IN the game folder
-            Start-Process -FilePath "$env:SystemRoot\System32\cmd.exe" -ArgumentList '/c', 'uninstall.bat' -WorkingDirectory $GameDir -WindowStyle Hidden -Wait
-        }
-        $n = 0
-        foreach ($f in 'geo11.dll', 'dxgi.dll.wrapmode', 'akvr_fix_backup', 'd3dx.ini', 'd3dxdm.ini', 'd3dx_user.ini', 'd3d11.dll', 'dxgi.dll',
-                       'nvapi64.dll', 'd3d11_log.txt', 'dxgi_log.txt', 'nvapi_log.txt', 'ShaderFixes', 'ShaderFixesDM', 'ShaderCache',
-                       'ShaderCacheDM', 'DMAutoPatchCache', 'DMAutoPatchFailures', 'uninstall.bat', 'AKVR-Launch-VR-EngineStereo.bat',
-                       'AKVR-Launch-VR-EngineStereo-SteamVR.bat') {
-            $n += Remove-IfThere (Join-Path $GameDir $f)
-        }
-        Say "   geo-11 and the 3D fix removed ($n files and folders)" 'Green'
-    } else {
-        Say '   kept. The mod works either way; the uninstaller removes them later.' 'Yellow'
-    }
-}
-
-# ---- 4. back up what is there now ----------------------------------------------------------
-
-Step '4. Backing up your current files'
+Step '3. Backing up your current files'
 $backup = Join-Path $GameDir ('vrmod_backup_' + (Get-Date -Format 'yyyy-MM-dd_HHmmss'))
 $saved = 0
 foreach ($n in $Game.ModFiles.Keys) {
@@ -350,6 +322,34 @@ if (-not (Test-Path $gfxBackup) -and -not (Test-Path (Join-Path $GameDir 'akvr_s
     }
     @("BmSystemSettings.ini: $iniNote", "GFXSettings store: $storeNote") | Set-Content -LiteralPath (Join-Path $gfxBackup 'README.txt')
     Say '   your graphics settings saved (vrmod_graphics_backup) - the uninstaller puts them back' 'Green'
+}
+
+# ---- 4. an older version of this mod (geo-11) -----------------------------------------------
+# Versions up to 0.2.1 used geo-11 and masterotaku's 3D fix (geo-11 renamed to geo11.dll by our installer). This
+# version does not need them: remove them so nothing of the old setup is left behind.
+
+$oldGeo = (Test-Path (Join-Path $GameDir 'geo11.dll')) -or (Test-Path (Join-Path $GameDir 'dxgi.dll.wrapmode'))
+if ($oldGeo) {
+    Step '4. An older version of the mod (with geo-11) is installed'
+    Say '   This version does not need geo-11 or the 3D fix any more.'
+    $go = $Yes
+    if (-not $go) { $go = (Read-Host '   Remove geo-11 and the 3D fix now? Recommended. (Y/N)') -match '^\s*[Yy]' }
+    if ($go) {
+        if (Test-Path (Join-Path $GameDir 'uninstall.bat')) {
+            # the fix author's own list; its DEL lines are relative, so it must run IN the game folder
+            Start-Process -FilePath "$env:SystemRoot\System32\cmd.exe" -ArgumentList '/c', 'uninstall.bat' -WorkingDirectory $GameDir -WindowStyle Hidden -Wait
+        }
+        $n = 0
+        foreach ($f in 'geo11.dll', 'dxgi.dll.wrapmode', 'akvr_fix_backup', 'd3dx.ini', 'd3dxdm.ini', 'd3dx_user.ini', 'd3d11.dll', 'dxgi.dll',
+                       'nvapi64.dll', 'd3d11_log.txt', 'dxgi_log.txt', 'nvapi_log.txt', 'ShaderFixes', 'ShaderFixesDM', 'ShaderCache',
+                       'ShaderCacheDM', 'DMAutoPatchCache', 'DMAutoPatchFailures', 'uninstall.bat', 'AKVR-Launch-VR-EngineStereo.bat',
+                       'AKVR-Launch-VR-EngineStereo-SteamVR.bat') {
+            $n += Remove-IfThere (Join-Path $GameDir $f)
+        }
+        Say "   geo-11 and the 3D fix removed ($n files and folders)" 'Green'
+    } else {
+        Say '   kept. The mod works either way; the uninstaller removes them later.' 'Yellow'
+    }
 }
 
 # ---- 5. the mod ---------------------------------------------------------------------------

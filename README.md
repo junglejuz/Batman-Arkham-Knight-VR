@@ -29,7 +29,6 @@ behind when the camera swings.
 - **Menus, the map and loading screens** on a large screen in the room; the main menu in live 3D.
 - **An in-headset VR menu**: hold both thumbsticks down (or press F8). World scale, DLSS, HUD size and distance, render
   size, picture look (grading and glow), comfort options, and more. Settings are saved.
-- **A first-person view** (optional, in the VR menu, or click both thumbsticks twice quickly).
 
 ## What you need
 
@@ -61,7 +60,6 @@ The installer saves your own graphics settings first; VR uses its own copy of th
 |---|---|
 | VR menu | hold both thumbsticks down for half a second, or F8 |
 | Recenter | hold the headset's menu / Meta button, or F12 |
-| First-person view on / off | click both thumbsticks twice quickly |
 | Save a picture of both eyes | F2 |
 
 ## If something is wrong

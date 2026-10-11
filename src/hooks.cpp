@@ -2086,8 +2086,10 @@ namespace
         {   // FIRSTPERSON 2026-10-11 (JJ: "like Arkham City and put it at the top of the overlay"): Batman City's panel rows
             static bool s_fpDirty = false;
             bool fp = akvr_fp();
-            if (ImGui::Checkbox("FIRST PERSON  (or click both sticks twice quickly)", &fp)) { akvr_fp_set(fp); settings_save(); }
-            if (fp)
+            // PANELTIDY4 2026-10-11 (JJ: "first person is not working in Arkham Knight ... it just does nothing"): test options
+            // only until it works; the double click of both sticks still toggles the setting
+            if (g_showAdvanced && ImGui::Checkbox("FIRST PERSON  (or click both sticks twice quickly)", &fp)) { akvr_fp_set(fp); settings_save(); }
+            if (fp && g_showAdvanced)
             {
                 float f = akvr_fp_fwd(), u = akvr_fp_up();
                 if (SliderStep("   camera in front of his face (cm)", &f, -20.0f, 80.0f, "%.0f")) { akvr_fp_fwd_set(f); s_fpDirty = true; }
