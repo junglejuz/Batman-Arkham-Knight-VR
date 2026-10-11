@@ -28,7 +28,7 @@ behind when the camera swings.
   target's depth, and turn only with the game camera.
 - **Menus, the map and loading screens** on a large screen in the room; the main menu in live 3D.
 - **An in-headset VR menu**: hold both thumbsticks down (or press F8). World scale, DLSS, HUD size and distance, render
-  size, picture look (grading and glow), comfort options, and more. Settings are saved.
+  size, comfort options, and more. Settings are saved.
 
 ## What you need
 

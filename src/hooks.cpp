@@ -80,8 +80,6 @@ void        akvr_xr_lens_mode_set(int v);
 int         akvr_xr_engine_shape();                    // SAMEDIR: the drawn lens's wide:tall x1000, 0 = not known yet
 void        akvr_dlss_mode_set(int m);
 void        akvr_flareoff_set(int v);                  // FLAREOFF3 (hudsplit.cpp)
-// MKREC 2026-10-11 (JJ runs the marker test himself): 20 s of both eye pictures with the HUD drawn in, every 2 s
-ULONGLONG g_mkrecEnd = 0, g_mkrecNext = 0; int g_mkrecShot = 0; std::wstring g_mkrecDir;
 int         g_afwSet = 0, g_afwModeSet = 3;            // AFW (akvr_native/NOTES.md "AFW PLAN"): saved here, AKN reads afw= / afwmode= at start
 int         akvr_engine_shape();                       // wide:tall x1000
 void        akvr_engine_shape_set(int s);
@@ -118,38 +116,6 @@ bool        akvr_cam_swing();                   // camera.cpp: SWINGEASE
 bool        akvr_cam_aim_head();                // camera.cpp: AIMHEAD
 bool        akvr_cam_aim_head_now();            // camera.cpp: AIMTRIGGER2
 long        akvr_cam_aim_head_frames();
-bool        akvr_dof_off();                     // earlyres.cpp: DOFSWITCH
-int         akvr_eyeaa_mode();                  // eyeaa.cpp: EYEAA
-void        akvr_eyeaa_mode_set(int m);
-const char* akvr_eyeaa_diag();
-void        akvr_grade_set(float lift, float gamma, float gain);   // eyeaa.cpp: GRADING
-void        akvr_glow_set(bool on, float intensity, float threshold, float radius);   // eyeaa.cpp: MODGLOW
-void        akvr_glow_get(bool& on, float& intensity, float& threshold, float& radius);
-void        akvr_gamegrade_set(bool on, float amount);   // eyeaa.cpp: GAMEGRADE
-void        akvr_hdr_curve_set(bool on, float stops);   // hudsplit.cpp: HDRCURVE
-void        akvr_hdr_curve_get(bool& on, float& stops);
-long        akvr_hdr_curve_draws();
-int         akvr_dofon_scene_format();   // eyeaa.cpp: SCENEFMT
-bool        akvr_xr_post_ok();   // xr.cpp: POSTOK
-bool        akvr_hide_rain();   // hudsplit.cpp: NORAIN
-void        akvr_hide_rain_set(bool on);
-long        akvr_rain_hidden();
-long        akvr_hdr_glow_runs();   // GLOWFIRST
-int         akvr_hdr_scene_format();
-void        akvr_post_set(bool curveOn, float contrast, float stops, float autoExp, float edge);   // eyeaa.cpp: POSTFX
-void        akvr_post_get(bool& curveOn, float& contrast, float& stops, float& autoExp, float& edge);
-void        akvr_gamegrade_get(bool& on, float& amount);
-const char* akvr_gamegrade_diag();
-static bool  akvr_gamegrade_on_now() { bool on; float a; akvr_gamegrade_get(on, a); return on; }
-static float akvr_gamegrade_amt_now() { bool on; float a; akvr_gamegrade_get(on, a); return a; }
-void        akvr_grade_get(float& lift, float& gamma, float& gain);
-bool        akvr_dof_off_next();                // DOFQUICK
-bool        akvr_xr_dof_play_off();             // xr.cpp: DOFLIVE
-void        akvr_xr_dof_play_off_set(bool on);
-int         akvr_dof_live_state();              // earlyres.cpp: DOFLIVE
-void        akvr_dof_off_next_set(bool on);
-float       akvr_xr_dof_darken();               // xr.cpp: DOFQUICK
-void        akvr_xr_dof_darken_set(float v);
 long        akvr_cam_exact_writes();            // camera.cpp: DIVEFIX
 bool        akvr_cam_exact_on();
 void        akvr_cam_aim_head_set(bool on);
@@ -908,15 +874,7 @@ namespace
         // PANELTIDY: hudlayerspace / hudlayercolour / hudlayereyes / hudlayersquash are fixed now, not saved.
         fprintf(f, "hudattach=%d\n", akvr_xr_hud_space() == 1 ? 1 : 0);   // HUDWORLD: 0 = fixed in the room
         fprintf(f, "hudroomall=%d\n", akvr_hud_room_all() ? 1 : 0);   // ROOMALL
-        fprintf(f, "dofoff=%d\n", akvr_dof_off_next() ? 1 : 0);   // DOFSWITCH / DOFQUICK: the value for the next start
-        fprintf(f, "dofplayoff=%d\n", akvr_xr_dof_play_off() ? 1 : 0);   // DOFLIVE
-        fprintf(f, "dofdarken=%.2f\n", akvr_xr_dof_darken());   // DOFQUICK
-        fprintf(f, "blurkeep=%.2f\n", akvr_blur_keep());   // DOFBLUR (BLUROFF's pass skipping retired: not the blur)
-        fprintf(f, "eyeaa=%d\n", akvr_eyeaa_mode());   // EYEAA
-        fprintf(f, "gameaaoff=%d\n", akvr_game_aa_off() ? 1 : 0);   // GAMEAA
-        { bool on; float gi, gt, gr; akvr_glow_get(on, gi, gt, gr); fprintf(f, "menufit=%d\n", akvr_menu_fit() ? 1 : 0); { bool ho; float hs; akvr_hdr_curve_get(ho, hs); fprintf(f, "hdrcurve=%d\nhdrexp=%.3f\n", ho ? 1 : 0, hs); } { bool co; float cp, cs, ae, ed; akvr_post_get(co, cp, cs, ae, ed); fprintf(f, "dispcurve=%d\ncurvestrength=%.3f\ncurvestops=%.3f\nautoexp=%.3f\nedgedark=%.3f\n", co ? 1 : 0, cp, cs, ae, ed); } fprintf(f, "gamegrade=%d\ngamegradeamt=%.3f\n", akvr_gamegrade_on_now() ? 1 : 0, akvr_gamegrade_amt_now()); fprintf(f, "glowon=%d\nglowint=%.3f\nglowthr=%.3f\nglowrad=%.3f\n", on ? 1 : 0, gi, gt, gr); }   // MODGLOW
-        fprintf(f, "skipsteps=%d\n", akvr_blur_off() & 22);   // SKIPSTEPS (+16 NEARSOFT)
-        { float gl, gg, gn; akvr_grade_get(gl, gg, gn); fprintf(f, "gradelift=%.3f\ngradegamma=%.3f\ngradegain=%.3f\n", gl, gg, gn); }   // GRADING
+        fprintf(f, "menufit=%d\n", akvr_menu_fit() ? 1 : 0);   // MENUFIT
         fprintf(f, "vigstrength=%.2f\n", akvr_xr_vig_strength());   // ZOOMVIG
         fprintf(f, "vigclear=%.0f\n", akvr_xr_vig_clear());
         fprintf(f, "vigbelow=%.0f\n", akvr_xr_vig_below());
@@ -948,14 +906,12 @@ namespace
         fprintf(f, "loadup=%.1f\n", akvr_xr_load_up());   // LOADUP
         fprintf(f, "screendist=%.2f\n", akvr_xr_screen_near());   // SCREENNEAR
         fprintf(f, "pauselook=%d\npausedim=%.2f\n", akvr_xr_pause_look() ? 1 : 0, akvr_xr_pause_dim());   // PAUSELOOK / PAUSEDIM
-        fprintf(f, "nearrain=%d\nnearrainlag=%d\n", akvr_near_rain_mode(), akvr_near_rain_lag());   // NEARRAIN / NEARRAIN2
-        if (akvr_test_tools()) fprintf(f, "testtools=1\n");   // CLEANUP: written only when on
-        fprintf(f, "rainnostretch=%d\n", akvr_rain_no_stretch() ? 1 : 0);   // RAINSTRETCH
+        // PANELTIDY5 2026-10-11: nearrain / nearrainlag / rainnostretch / rainframefix / testtools no longer saved (old keys are ignored)
         fprintf(f, "markerhead=%d\n", akvr_marker_head() ? 1 : 0);   // TARGETMOVE / TARGETSCALE
         fprintf(f, "markerface=%d\n", akvr_marker_face() ? 1 : 0);   // TARGETFACE
         fprintf(f, "markeruplag=%d\n", akvr_marker_up_lag());   // TARGETUP2
         fprintf(f, "markerdist=%d\n", akvr_marker_dist() ? 1 : 0);   // TARGETDIST
-        fprintf(f, "framefix=%d\nframedelay=%d\nrainframefix=%d\n", akvr_frame_fix() ? 1 : 0, akvr_frame_world(), akvr_rain_frame_fix() ? 1 : 0);   // FRAMEPAIR(2) / RAINSPLIT
+        fprintf(f, "framefix=%d\nframedelay=%d\n", akvr_frame_fix() ? 1 : 0, akvr_frame_world());   // FRAMEPAIR(2)
         if (g_menuCapture) fprintf(f, "menucapture=1\n");             // MENUBLACK: written only when on
         fprintf(f, "farrain=%d\n", akvr_far_rain() ? 1 : 0);   // FARRAIN
         fprintf(f, "hudeyefollow=%d\npausenoback=%d\n", akvr_xr_hud_eye_follow() ? 1 : 0, akvr_xr_pause_no_back() ? 1 : 0);   // HUDEYES / PAUSENOBACK
@@ -1062,32 +1018,6 @@ namespace
             if (sscanf(line, "fp_head_smooth=%f", &v) == 1) akvr_fp_smooth_set(v);
             if (sscanf(line, "flareoff=%d", &iv) == 1) akvr_flareoff_set(iv);   // FLAREOFF3
             if (sscanf(line, "tonetest=%d", &iv) == 1) g_toneTest = iv != 0;   // TONETEST
-            { bool ho; float hs; akvr_hdr_curve_get(ho, hs);   // HDRCURVE
-              if (sscanf(line, "hdrcurve=%d", &iv) == 1) akvr_hdr_curve_set(iv != 0, hs);
-              if (sscanf(line, "hdrexp=%f", &v) == 1) akvr_hdr_curve_set(ho, v); }
-            { bool co; float cp, cs, ae, ed; akvr_post_get(co, cp, cs, ae, ed);   // POSTFX
-              if (sscanf(line, "dispcurve=%d", &iv) == 1) akvr_post_set(iv != 0, cp, cs, ae, ed);
-              if (sscanf(line, "curvestrength=%f", &v) == 1) akvr_post_set(co, v, cs, ae, ed);
-              if (sscanf(line, "curvestops=%f", &v) == 1) akvr_post_set(co, cp, v, ae, ed);
-              if (sscanf(line, "autoexp=%f", &v) == 1) akvr_post_set(co, cp, cs, v, ed);
-              if (sscanf(line, "edgedark=%f", &v) == 1) akvr_post_set(co, cp, cs, ae, v); }
-            { bool on; float a; akvr_gamegrade_get(on, a);   // GAMEGRADE
-              if (sscanf(line, "gamegrade=%d", &iv) == 1) akvr_gamegrade_set(iv != 0, a);
-              if (sscanf(line, "gamegradeamt=%f", &v) == 1) akvr_gamegrade_set(on, v); }
-            { bool on; float gi, gt, gr; akvr_glow_get(on, gi, gt, gr);   // MODGLOW
-              if (sscanf(line, "glowon=%d", &iv) == 1) akvr_glow_set(iv != 0, gi, gt, gr);
-              if (sscanf(line, "glowint=%f", &v) == 1) akvr_glow_set(on, v, gt, gr);
-              if (sscanf(line, "glowthr=%f", &v) == 1) akvr_glow_set(on, gi, v, gr);
-              if (sscanf(line, "glowrad=%f", &v) == 1) akvr_glow_set(on, gi, gt, v); }
-            if (sscanf(line, "skipsteps=%d", &iv) == 1) akvr_blur_off_set(iv & 22);   // SKIPSTEPS (bit 8 retired: freezes the glow)
-            if (sscanf(line, "dofplayoff=%d", &iv) == 1) akvr_xr_dof_play_off_set(iv != 0);   // DOFLIVE
-            if (sscanf(line, "blurkeep=%f", &v) == 1) akvr_blur_keep_set(v);   // DOFBLUR
-            if (sscanf(line, "eyeaa=%d", &iv) == 1) akvr_eyeaa_mode_set(iv);   // EYEAA
-            if (sscanf(line, "gameaaoff=%d", &iv) == 1) akvr_game_aa_off_set(iv != 0);   // GAMEAA
-            if (sscanf(line, "gradelift=%f", &v) == 1) { float a, b, c; akvr_grade_get(a, b, c); akvr_grade_set(v, b, c); }   // GRADING
-            if (sscanf(line, "gradegamma=%f", &v) == 1) { float a, b, c; akvr_grade_get(a, b, c); akvr_grade_set(a, v, c); }
-            if (sscanf(line, "gradegain=%f", &v) == 1) { float a, b, c; akvr_grade_get(a, b, c); akvr_grade_set(a, b, v); }
-            if (sscanf(line, "dofdarken=%f", &v) == 1) akvr_xr_dof_darken_set(v);   // DOFQUICK
             // "worldscale" is the current unit; "depth" is the old raw one, still read
             // so an existing settings file keeps working.
             if      (sscanf(line, "worldscale=%f", &v) == 1) akvr_head_stereo_set(v * kStereoAt1);
@@ -1136,9 +1066,6 @@ namespace
             else if (sscanf(line, "screendist=%f", &v) == 1) akvr_xr_screen_near_set(v);   // SCREENNEAR
             else if (sscanf(line, "pauselook=%d", &iv) == 1) akvr_xr_pause_look_set(iv != 0);   // PAUSELOOK
             else if (sscanf(line, "pausedim=%f", &v) == 1) akvr_xr_pause_dim_set(v);   // PAUSEDIM
-            else if (sscanf(line, "nearrain=%d", &iv) == 1) akvr_near_rain_mode_set(iv);   // NEARRAIN
-            else if (sscanf(line, "testtools=%d", &iv) == 1) akvr_test_tools_set(iv != 0);   // CLEANUP
-            else if (sscanf(line, "rainnostretch=%d", &iv) == 1) akvr_rain_no_stretch_set(iv != 0);   // RAINSTRETCH
             else if (sscanf(line, "markerhead=%d", &iv) == 1) akvr_marker_head_set(iv != 0);   // TARGETMOVE
             else if (sscanf(line, "markerface=%d", &iv) == 1) akvr_marker_face_set(iv != 0);   // TARGETFACE
             else if (sscanf(line, "markeruplag=%d", &iv) == 1) akvr_marker_up_lag_set(iv);   // TARGETUP2
@@ -1148,8 +1075,6 @@ namespace
             else if (sscanf(line, "menucapture=%d", &iv) == 1) g_menuCapture = iv != 0;   // MENUBLACK (no panel switch)
             else if (sscanf(line, "framefix=%d", &iv) == 1) akvr_frame_fix_set(iv != 0);   // FRAMEPAIR
             else if (sscanf(line, "framedelay=%d", &iv) == 1) akvr_frame_world_set(iv);
-            else if (sscanf(line, "rainframefix=%d", &iv) == 1) akvr_rain_frame_fix_set(iv != 0);   // RAINSPLIT   // FRAMEPAIR2 (the old frameworld key meant something else: ignored)
-            else if (sscanf(line, "nearrainlag=%d", &iv) == 1) akvr_near_rain_lag_set(iv);   // NEARRAIN2
             else if (sscanf(line, "farrain=%d", &iv) == 1) akvr_far_rain_set(iv != 0);   // FARRAIN
             else if (sscanf(line, "hudeyefollow=%d", &iv) == 1) akvr_xr_hud_eye_follow_set(iv != 0);   // HUDEYES
             else if (sscanf(line, "pausenoback=%d", &iv) == 1) akvr_xr_pause_no_back_set(iv != 0);   // PAUSENOBACK
@@ -1440,127 +1365,16 @@ namespace
         g_vpSceneA = g_vpBigA = 0.0f; g_vpReshaped = g_vpCalls = g_vpMatch = 0; g_vpListN = 0;
     }
 
-    // --- render-target observation: find the display-ready scene buffer (2496x2688) ---
-    // Hook ID3D11DeviceContext::OMSetRenderTargets (vtable slot 33) to see which textures
-    // the game draws INTO, their sizes and formats. The scene buffer is the big one; its
-    // format tells HDR (float, mid-pipeline) from LDR (8-bit, display-ready = what we tap).
+    // --- render-target binds (real immediate context, slots 33 / 34) ---
+    // Hook ID3D11DeviceContext::OMSetRenderTargets: the binds go to the HUD split (hudsplit.cpp), which records them
+    // only while the HUD draw runs, and install_rt_hook also installs the HUD split itself.
     using OMSetRTFn = void(__stdcall*)(ID3D11DeviceContext*, UINT, ID3D11RenderTargetView* const*, ID3D11DepthStencilView*);
     OMSetRTFn oOMSetRT = nullptr;
     bool g_rtHooked = false;
 
-    struct RtInfo { int w, h, fmt, count; };
-    RtInfo g_rtCur[16]; int g_rtCurN = 0;
-    RtInfo g_rtRep[16]; int g_rtRepN = 0;
-    ID3D11Texture2D* g_sceneTexRaw = nullptr;   // last big 8-bit scene RT bound this frame
-    bool g_tapScene = false;                    // route that buffer to the eyes (checkbox)
-    int  g_sceneSamples = 1, g_sceneMips = 1, g_sceneArr = 1;   // captured buffer props (diag)
-
-    // geo-11 method: the real 3D scene is the pass with the biggest DEPTH buffer. The colour
-    // target bound ALONGSIDE that depth buffer is the true scene colour (not the "biggest
-    // 8-bit RT" guess, which caught a reflection/composite and froze). We track, per frame,
-    // the biggest depth buffer and the colour RT paired with it â€” the true scene render size.
-    long long g_curDepthA = 0;                  // biggest depth area seen this frame
-    int  g_curDepthW = 0, g_curDepthH = 0;
-    // Did the observer actually run? Without this a blank readout is ambiguous between
-    // "hook never fired" and "hook fired but the game binds depth another way".
-    int  g_rtBindsCur = 0, g_rtDepthCur = 0;    // counted this frame
-    int  g_rtBinds    = 0, g_rtDepthBinds = 0;  // published for the panel
-    int  g_depthW = 0, g_depthH = 0;            // reported: biggest depth buffer = scene render size
-    ID3D11Texture2D* g_scenePairedRT = nullptr; // colour RT bound with the biggest depth (the scene colour)
-    int  g_pairW = 0, g_pairH = 0, g_pairFmt = 0, g_pairSamples = 1;
-    bool g_tapPaired = false;                   // TEST: route the depth-paired colour RT to the eyes
-    void rt_note(int w, int h, int fmt)
-    {
-        for (int i = 0; i < g_rtCurN; ++i)
-            if (g_rtCur[i].w == w && g_rtCur[i].h == h && g_rtCur[i].fmt == fmt) { g_rtCur[i].count++; return; }
-        if (g_rtCurN < 16) g_rtCur[g_rtCurN++] = { w, h, fmt, 1 };
-    }
-    const char* fmt_name(int f)
-    {
-        switch (f) {
-            case 28: return "RGBA8";     case 29: return "RGBA8s";   // R8G8B8A8_UNORM / _SRGB
-            case 87: return "BGRA8";     case 91: return "BGRA8s";   // B8G8R8A8_UNORM / _SRGB
-            case 10: return "RGBA16f";                               // HDR
-            case 24: return "RGB10A2";
-            case 2:  return "RGBA32f";
-            default: return "?";
-        }
-    }
-    // Shared observation body â€” both binding paths funnel through here so we catch the
-    // scene however it's bound (plain OMSetRenderTargets OR the UAV variant).
-    void observe_rts(UINT n, ID3D11RenderTargetView* const* rtvs, ID3D11DepthStencilView* dsv)
-    {
-        // CLEANUP 2026-10-01: the scene tap is long dead (no switch left); these texture look-ups ran on every one of
-        // the game's render-target binds. Diagnostics only now, with the test tools.
-        if (!akvr_test_tools()) return;
-        ++g_rtBindsCur;
-        if (dsv) ++g_rtDepthCur;
-        if (rtvs && n >= 1 && rtvs[0])
-        {
-            ID3D11Resource* res = nullptr; rtvs[0]->GetResource(&res);
-            if (res)
-            {
-                ID3D11Texture2D* tex = nullptr;
-                if (SUCCEEDED(res->QueryInterface(__uuidof(ID3D11Texture2D), (void**)&tex)) && tex)
-                {
-                    D3D11_TEXTURE2D_DESC d{}; tex->GetDesc(&d);
-                    rt_note((int)d.Width, (int)d.Height, (int)d.Format);
-                    // Capture the display-ready scene buffer: big + 8-bit BGRA/RGBA (not HDR
-                    // float, not depth). Last one bound this frame = the finished image.
-                    bool ldr8 = (d.Format == 87 || d.Format == 91 ||   // BGRA8 / BGRA8_SRGB
-                                 d.Format == 28 || d.Format == 29);    // RGBA8 / RGBA8_SRGB
-                    if (d.Width >= 2000 && d.Height >= 2000 && ldr8)
-                    {
-                        g_sceneTexRaw = tex;   // raw ptr; game keeps it alive across the frame
-                        g_sceneSamples = (int)d.SampleDesc.Count;
-                        g_sceneMips = (int)d.MipLevels; g_sceneArr = (int)d.ArraySize;
-                    }
-                    tex->Release();
-                }
-                res->Release();
-            }
-        }
-        // geo-11 method: track the biggest DEPTH buffer (the real 3D scene pass) and the
-        // colour RT bound with it. That colour target is the true scene colour.
-        if (dsv)
-        {
-            ID3D11Resource* dres = nullptr; dsv->GetResource(&dres);
-            if (dres)
-            {
-                ID3D11Texture2D* dt = nullptr;
-                if (SUCCEEDED(dres->QueryInterface(__uuidof(ID3D11Texture2D), (void**)&dt)) && dt)
-                {
-                    D3D11_TEXTURE2D_DESC dd{}; dt->GetDesc(&dd);
-                    long long a = (long long)dd.Width * dd.Height;
-                    if (a > g_curDepthA)
-                    {
-                        g_curDepthA = a; g_curDepthW = (int)dd.Width; g_curDepthH = (int)dd.Height;
-                        if (rtvs && n >= 1 && rtvs[0])
-                        {
-                            ID3D11Resource* cres = nullptr; rtvs[0]->GetResource(&cres);
-                            if (cres)
-                            {
-                                ID3D11Texture2D* ct = nullptr;
-                                if (SUCCEEDED(cres->QueryInterface(__uuidof(ID3D11Texture2D), (void**)&ct)) && ct)
-                                {
-                                    D3D11_TEXTURE2D_DESC cd{}; ct->GetDesc(&cd);
-                                    g_scenePairedRT = ct; g_pairW = (int)cd.Width; g_pairH = (int)cd.Height;
-                                    g_pairFmt = (int)cd.Format; g_pairSamples = (int)cd.SampleDesc.Count;
-                                    ct->Release();
-                                }
-                                cres->Release();
-                            }
-                        }
-                    }
-                    dt->Release();
-                }
-                dres->Release();
-            }
-        }
-    }
+    // PANELTIDY5 2026-10-11: the scene-buffer / depth observer (test tools only) and the scene TAP it fed removed.
     void __stdcall hkOMSetRT(ID3D11DeviceContext* ctx, UINT n, ID3D11RenderTargetView* const* rtvs, ID3D11DepthStencilView* dsv)
     {
-        observe_rts(n, rtvs, dsv);
         akvr_hudsplit_note_bind(ctx, rtvs, n);   // HUDSPLIT: only records while the HUD draw runs
         oOMSetRT(ctx, n, rtvs, dsv);
     }
@@ -1572,7 +1386,6 @@ namespace
     void __stdcall hkOMSetRTUAV(ID3D11DeviceContext* ctx, UINT n, ID3D11RenderTargetView* const* rtvs, ID3D11DepthStencilView* dsv,
                                 UINT uavStart, UINT numUAV, ID3D11UnorderedAccessView* const* uavs, const UINT* counts)
     {
-        observe_rts(n, rtvs, dsv);
         akvr_hudsplit_note_bind(ctx, rtvs, n);   // HUDSPLIT
         oOMSetRTUAV(ctx, n, rtvs, dsv, uavStart, numUAV, uavs, counts);
     }
@@ -1591,16 +1404,6 @@ namespace
         // AKN M5: in engine stereo the HUD is redirected by AKN itself; the geo-11 HUD capture stays out
         if (!akvr_engine_stereo()) akvr_hudsplit_install(g_context);   // HUDSPLIT: HUD draw + draw counters
     }
-    void rt_frame_tick()
-    {
-        for (int i = 0; i < g_rtCurN; ++i) g_rtRep[i] = g_rtCur[i];
-        g_rtRepN = g_rtCurN; g_rtCurN = 0;
-        g_depthW = g_curDepthW; g_depthH = g_curDepthH;   // publish this frame's scene depth size
-        g_curDepthA = 0;                                  // reset for next frame's biggest-depth search
-        g_rtBinds = g_rtBindsCur; g_rtDepthBinds = g_rtDepthCur;
-        g_rtBindsCur = 0; g_rtDepthCur = 0;
-    }
-
     bool init_imgui(IDXGISwapChain* swapChain)
     {
         if (FAILED(swapChain->GetDevice(__uuidof(ID3D11Device), (void**)&g_device)) || !g_device)
@@ -1709,38 +1512,14 @@ namespace
         akvr_hudprobe_dump((capture + L"hudprobe.csv").c_str());
         akvr_hudsplit_dump((capture + L"hudsplit.csv").c_str());   // HUDSPLIT
         akvr_hudsplit_layer_shot((capture + L"hudlayer.bmp").c_str());   // LAYERSHOT
-        akvr_hudsplit_census_start((capture + L"shaders.csv").c_str());   // SHCENSUS
         akvr_hudsplit_marks_dump((capture + L"hudmarks.csv").c_str());   // MARKREC
-        if (akvr_test_tools()) akvr_hudsplit_targets_dump((capture + L"targets.csv").c_str());   // TARGETTRACE
         akvr_hud_layers_dump((capture + L"hudlayers.txt").c_str());   // HUDLAYERS phase 1
         CopyFileW((root + L"akvr_camera_trace.csv").c_str(), (capture + L"camera.csv").c_str(), TRUE);
         CopyFileW((root + L"akvr_mode_trace.csv").c_str(), (capture + L"mode.csv").c_str(), TRUE);
         CopyFileW((base + L"akvr_startup_log.txt").c_str(), (capture + L"status.txt").c_str(), TRUE);
     }
 
-    // SHADERFINDER 2026-10-01: panel buttons press geo-11's hunting keys (numpad 0-3, Scroll Lock) through
-    // SendInput; geo-11 polls the key state each frame, so each press is held 120 ms, then released here.
-    WORD      g_fkVk = 0;
-    ULONGLONG g_fkUpAt = 0;
-    long      g_fkPresses = 0;
-    void finder_send(WORD vk, bool down)
-    {
-        INPUT in{};
-        in.type = INPUT_KEYBOARD;
-        in.ki.wVk = vk;
-        in.ki.dwFlags = down ? 0 : KEYEVENTF_KEYUP;
-        SendInput(1, &in, sizeof(in));
-    }
-    void finder_press(WORD vk)
-    {
-        if (g_fkVk) finder_send(g_fkVk, false);
-        finder_send(vk, true);
-        g_fkVk = vk; g_fkUpAt = GetTickCount64() + 120; ++g_fkPresses;
-    }
-    void finder_tick()
-    {
-        if (g_fkVk && GetTickCount64() >= g_fkUpAt) { finder_send(g_fkVk, false); g_fkVk = 0; }
-    }
+    // PANELTIDY5 2026-10-11: SHADERFINDER (panel buttons pressing geo-11's hunting keys) removed.
 
     void process_hotkeys()
     {
@@ -2083,29 +1862,6 @@ namespace
         ImGui::TextDisabled("   version 0.3.0  (" __DATE__ ")");   // PANELTIDY4: the release number
 
         ImGui::Separator();
-        {   // FIRSTPERSON 2026-10-11 (JJ: "like Arkham City and put it at the top of the overlay"): Batman City's panel rows
-            static bool s_fpDirty = false;
-            bool fp = akvr_fp();
-            // PANELTIDY4 2026-10-11 (JJ: "first person is not working in Arkham Knight ... it just does nothing"): test options
-            // only until it works; the double click of both sticks still toggles the setting
-            if (g_showAdvanced && ImGui::Checkbox("FIRST PERSON  (or click both sticks twice quickly)", &fp)) { akvr_fp_set(fp); settings_save(); }
-            if (fp && g_showAdvanced)
-            {
-                float f = akvr_fp_fwd(), u = akvr_fp_up();
-                if (SliderStep("   camera in front of his face (cm)", &f, -20.0f, 80.0f, "%.0f")) { akvr_fp_fwd_set(f); s_fpDirty = true; }
-                if (SliderStep("   camera up / down (cm)", &u, -40.0f, 40.0f, "%.0f")) { akvr_fp_up_set(u); s_fpDirty = true; }
-                bool hf = akvr_fp_head();
-                if (ImGui::Checkbox("   camera follows his head (gliding, animations)", &hf)) { akvr_fp_head_set(hf); settings_save(); }
-                if (hf)
-                {
-                    float sm = akvr_fp_smooth();
-                    if (SliderStep("   head smoothing (s) - higher = steadier, lags more", &sm, 0.0f, 0.5f, "%.2f")) { akvr_fp_smooth_set(sm); s_fpDirty = true; }
-                }
-                ImGui::TextDisabled("   %s", akvr_fp_status());
-            }
-            if (s_fpDirty && !ImGui::IsAnyItemActive()) { settings_save(); s_fpDirty = false; }
-        }
-
         // ---- one status line ----------------------------------------------------
         // TIDY4 2026-09-27 (JJ: "cleaned up and reformatted to be a bit more consistent with the
         // Sekiro overlay. Simplify it and remove values that we don't need to adjust anymore"):
@@ -2134,61 +1890,9 @@ namespace
         // HTBUTTON 2026-10-02 â€” JJ: "Is there an overlay button for switching head tracking off? I'm not in front of the
         // keyboard." (for the Batmobile enter/exit A/B)
         if (ImGui::Button(akvr_head_state().on ? "Head tracking: ON  (F11)" : "Head tracking: OFF  (F11)")) akvr_head_toggle();
-        // PANELTIDY3 2026-10-09 (JJ: remove finished tests and options): the blur / softness searches, the distance-blur
-        // comparison and the DoF cost measurement are done (SWEEP, SOFTSWEEP, BLURAB, COSTSWEEP in akvr/CLAUDE_HANDOFF.md).
-        {   // DOFLIVE 2026-10-06 - JJ: "dropping the depth of field without killing the map". Live: off during play (sharper,
-            // faster, flatter colours), back on for the map / pause / menus (the map is drawn through it). The old
-            // "off from the start" choice (it lost the map) and the distance-blur slider (no visible effect: the game
-            // hardly blurs the distance in play - BLURAB 17:57) are gone from the panel.
-            if (akvr_dof_off_next()) { akvr_dof_off_next_set(false); settings_save(); }   // the game always starts with it on now
-            const bool offNow = akvr_dof_off();
-            int dm = akvr_xr_dof_play_off() ? 1 : 0;
-            ImGui::TextUnformatted("DEPTH OF FIELD");
-            bool dch = ImGui::RadioButton("on  - the game's look##dof", &dm, 0);
-            dch |= ImGui::RadioButton("off during play - sharper and faster, flatter colours (on again for the map, pause and menus)##dof", &dm, 1);
-            if (dch) { akvr_xr_dof_play_off_set(dm != 0); settings_save(); }
-            ImGui::Indent();
-            ImGui::BeginDisabled(dm == 0);
-            float dk = akvr_xr_dof_darken();
-            if (SliderStep("darken the world while it is off  (stops: 1 = half as bright)", &dk, 0.0f, 2.0f, "%.2f")) { akvr_xr_dof_darken_set(dk); settings_save(); }
-            ImGui::EndDisabled();
-            ImGui::Unindent();
-            const int live = akvr_dof_live_state();
-            if (offNow) ImGui::TextColored(kAmber, "   depth of field is off from the start this session - restart the game (the map needs it)");
-            else ImGui::TextDisabled("   right now: %s", live < 0 ? "(the setting was not found - this switch does nothing)" : (live ? "on" : "off"));
-            {   // SKIPSTEPS 2026-10-06 - COSTSWEEP: three steps of the DoF block with no visible job in play (~1.1 ms)
-                int bo = akvr_blur_off();
-                ImGui::TextUnformatted("SKIP UNNEEDED STEPS (faster; untick any that changes the look):");
-                // SKIPSTEPS2: JJ - skipping the DoF blur amounts (bd67) "pauses the glows in their current location": the glow is
-                // built from its half-size output. Not offered any more, and cleared if a saved setting had it.
-                if (bo & 8) { akvr_blur_off_set(bo & ~8); bo &= ~8; settings_save(); }
-                bool c2 = (bo & 4) != 0, c3 = (bo & 2) != 0, ch = false;
-                ch |= ImGui::Checkbox("motion-blur groundwork (motion blur is off)  ~0.4 ms##sk1", &c2);
-                ch |= ImGui::Checkbox("depth-of-field mixing step  ~0.4 ms##sk2", &c3);
-                if (ch) { akvr_blur_off_set((bo & 1) | (c2 ? 4 : 0) | (c3 ? 2 : 0) | (bo & 16)); settings_save(); }   // PANELTIDY3: the near-floor test (16) kept as saved, no checkbox
-                static long s_b0 = 0, s_bRate = 0; static ULONGLONG s_bt = 0;
-                const ULONGLONG btn = GetTickCount64();
-                if (btn - s_bt >= 1000) { const long k = akvr_blur_dropped(); s_bRate = k - s_b0; s_b0 = k; s_bt = btn; }
-                if (akvr_blur_off()) ImGui::TextDisabled("   %s", s_bRate > 0 ? "skipping" : "nothing to skip right now (depth of field off, or not running)");
-            }
-            {   // GAMEAA 2026-10-06 - the game's SMAA on/off, live, depth of field untouched
-                bool gaa = !akvr_game_aa_off();
-                if (ImGui::Checkbox("the game's own anti-aliasing (SMAA)##gameaa", &gaa)) { akvr_game_aa_off_set(!gaa); settings_save(); }
-                static long s_sk = 0, s_rate = 0; static ULONGLONG s_t = 0;
-                const ULONGLONG tn = GetTickCount64();
-                if (tn - s_t >= 1000) { const long k = akvr_game_aa_skips(); s_rate = k - s_sk; s_sk = k; s_t = tn; }
-                ImGui::SameLine();
-                ImGui::TextDisabled(gaa ? "on (the game's setting)" : (s_rate > 0 ? "off - removed by the mod" : "off (nothing to remove: it is not running)"));
-            }
-            // EYEAA 2026-10-06 - JJ: keep anti-aliasing with depth of field off (the game drops its SMAA then)
-            int aa = akvr_eyeaa_mode();
-            ImGui::TextUnformatted("EDGE SMOOTHING added by the mod:"); ImGui::SameLine();
-            bool ach = ImGui::RadioButton("off##eyeaa", &aa, 0); ImGui::SameLine();
-            ach |= ImGui::RadioButton("soft##eyeaa", &aa, 1); ImGui::SameLine();
-            ach |= ImGui::RadioButton("SMAA##eyeaa", &aa, 2);
-            if (ach) { akvr_eyeaa_mode_set(aa); settings_save(); }
-            if (g_showAdvanced) ImGui::TextDisabled("   %s", akvr_eyeaa_diag());   // PANELTIDY4: numbers for tests only
-        }
+        // PANELTIDY5 2026-10-11 (JJ: "remove the depth of field on off options and the skip unneeded steps and the game's own
+        // anti-aliasing ... remove the mod having any option to add extra anti-aliasing SMAA or soft - not required now we have
+        // DLSS"): gone with their code; depth of field stays on, the game's own look.
         if (g_traceRows || g_modeRows)
         { ImGui::SameLine(); ImGui::TextColored(kGreen, "saved"); }
         if (akvr_gamepad_menu())
@@ -2286,6 +1990,28 @@ namespace
         }
         ImGui::SetNextItemOpen(false, ImGuiCond_Once); if (ImGui::CollapsingHeader("VIEW"))
         {
+            {   // FIRSTPERSON 2026-10-11, in the VIEW drawer since PANELTIDY5 (JJ): Batman City's panel rows
+                static bool s_fpDirty = false;
+                bool fp = akvr_fp();
+                // FPFIX 2026-10-11 (JJ: fix first person before the release): back on the panel while it is being fixed
+                if (ImGui::Checkbox("FIRST PERSON  (or click both sticks twice quickly)", &fp)) { akvr_fp_set(fp); settings_save(); }
+                if (fp)
+                {
+                    float f = akvr_fp_fwd(), u = akvr_fp_up();
+                    if (SliderStep("   camera in front of his face (cm)", &f, -20.0f, 80.0f, "%.0f")) { akvr_fp_fwd_set(f); s_fpDirty = true; }
+                    if (SliderStep("   camera up / down (cm)", &u, -40.0f, 40.0f, "%.0f")) { akvr_fp_up_set(u); s_fpDirty = true; }
+                    bool hf = akvr_fp_head();
+                    if (ImGui::Checkbox("   camera follows his head (gliding, animations)", &hf)) { akvr_fp_head_set(hf); settings_save(); }
+                    if (hf)
+                    {
+                        float sm = akvr_fp_smooth();
+                        if (SliderStep("   head smoothing (s) - higher = steadier, lags more", &sm, 0.0f, 0.5f, "%.2f")) { akvr_fp_smooth_set(sm); s_fpDirty = true; }
+                    }
+                    ImGui::TextDisabled("   %s", akvr_fp_status());
+                }
+                if (s_fpDirty && !ImGui::IsAnyItemActive()) { settings_save(); s_fpDirty = false; }
+            }
+
             if (akvr_engine_stereo())
             {   // PANELTIDY4 2026-10-11: native stereo's world scale = game units per metre (the eye distance sent to AKN and
                 // the head lean both use it; xr.cpp akn_send_eyes); the geo-11 slider below did nothing here
@@ -2595,49 +2321,7 @@ namespace
         // ---- ZOOM VIGNETTE (ZOOMVIG 2026-09-29, JJ) --------------------------------------
         // The right-stick-click zoom: our lock keeps the view 1:1, so only the game's 2D overlay was left.
         // Our own dark edge instead, while the game's own view is narrower than the threshold.
-        // GRADING 2026-10-06 - JJ: "a new drawer for grading ... three sliders: one for gain, one for gamma, and one for
-        // lift, similar to a traditional editing suite". The world picture on its way to the headset (eyeaa.cpp); HUD untouched.
-        // MODGLOW 2026-10-06 - JJ: a glow of the mod's own while depth of field is off (the game's glow goes with it)
-        // POSTFX 2026-10-06 - JJ: "add all the colour grading stuff and glows to a post effects drawer ... rename grading to
-        // post effects ... to keep it tidy", plus the auto exposure, edge darkening and contrast curve.
-        ImGui::SetNextItemOpen(false, ImGuiCond_Once); if (ImGui::CollapsingHeader("POST EFFECTS"))
-        {
-            ImGui::TextDisabled("While depth of field is off, in play (the game does these itself when it is on):");
-            bool pch = false;
-            // GAMELOOK 2026-10-07 - JJ: six sliders over three options matched the look but "clip the hell out of it".
-            // One option now: the game's own look, done where the game does it (full-range picture, before 8-bit).
-            { bool hOn; float hs; akvr_hdr_curve_get(hOn, hs);
-              bool gOn; float ga; akvr_gamegrade_get(gOn, ga);
-              bool co; float cp, cs, ae, ed; akvr_post_get(co, cp, cs, ae, ed);
-              bool hc = ImGui::Checkbox("the game's look  (film curve, colour grade, edge darkening)##gamelook", &hOn);
-              hc |= SliderStep("exposure  (stops)##gamelook", &hs, -3.0f, 3.0f, "%.2f");
-              bool gc = SliderStep("colour grade (the game's colour table) strength##gamelook", &ga, 0.0f, 2.0f, "%.2f");
-              bool ec = SliderStep("edge darkening  (0.30 = the game's)##gamelook", &ed, 0.0f, 1.0f, "%.2f");
-              if (ImGui::Button("reset to the game's look##gamelook")) { hOn = true; hs = 0.0f; ga = 1.0f; ed = 0.3f; hc = gc = ec = true; }
-              if (hc) akvr_hdr_curve_set(hOn, hs);
-              if (gc) akvr_gamegrade_set(ga > 0.001f, ga);
-              if (ec) akvr_post_set(false, cp, cs, 0.0f, ed);
-              if (hc || gc || ec) pch = true;
-              if (g_showAdvanced) ImGui::TextDisabled("   %ld passes, %ld glows drawn | picture in: format %d | %s", akvr_hdr_curve_draws(), akvr_hdr_glow_runs(), akvr_hdr_scene_format(), akvr_gamegrade_diag()); }
-            // MODGLOW: the mod's own glow
-            { bool on; float gi, gt, gr; akvr_glow_get(on, gi, gt, gr);
-              bool ch = ImGui::Checkbox("glow##modglow", &on);
-              ch |= SliderStep("glow intensity##modglow", &gi, 0.0f, 3.0f, "%.2f");
-              ch |= SliderStep("glow threshold  (how bright before it glows)##modglow", &gt, 0.3f, 1.0f, "%.2f");
-              ch |= SliderStep("glow radius  (tight halo -> wide haze)##modglow", &gr, 0.0f, 3.0f, "%.2f");
-              if (ch) { akvr_glow_set(on, gi, gt, gr); pch = true; } }
-            ImGui::Separator();
-            // GRADING: JJ's lift / gamma / gain, after everything above; GRADEDOF: only while depth of field is off
-            ImGui::TextDisabled("Grading (while depth of field is off, in play):");
-            { float gl, gg, gn; akvr_grade_get(gl, gg, gn);
-              bool gch = SliderStep("lift  (blacks; 0 = as the game)", &gl, -0.3f, 0.3f, "%.3f");
-              gch |= SliderStep("gamma  (mid-tones; 1 = as the game)", &gg, 0.5f, 2.0f, "%.2f");
-              gch |= SliderStep("gain  (whites; 1 = as the game)", &gn, 0.5f, 2.0f, "%.2f");
-              if (ImGui::Button("reset grading")) { gl = 0.0f; gg = 1.0f; gn = 1.0f; gch = true; }
-              if (gch) { akvr_grade_set(gl, gg, gn); pch = true; } }
-            if (pch) settings_save();
-            if (g_showAdvanced) ImGui::TextDisabled("   %s", akvr_eyeaa_diag());
-        }
+        // PANELTIDY5: the POST EFFECTS drawer (the game's look, glow, grading) is gone - it only acted with depth of field off.
         ImGui::SetNextItemOpen(false, ImGuiCond_Once); if (ImGui::CollapsingHeader("ZOOM VIGNETTE"))
         {
             static bool s_vigDirty = false;
@@ -2886,16 +2570,6 @@ namespace
                         g_rList[i].w, g_rList[i].h, g_rList[i].count,
                         ((UINT)g_rList[i].w == g_bbW && (UINT)g_rList[i].h == g_bbH)
                             ? "  <- already the frame" : "");
-                if (g_depthW && g_depthH)
-                    ImGui::TextDisabled("scene depth buffer: %d x %d", g_depthW, g_depthH);
-                else
-                {
-                    ImGui::TextDisabled("scene depth: UNKNOWN - rt hook %s, %d binds/frame, %d with depth",
-                        g_rtHooked ? "installed" : "FAILED", g_rtBinds, g_rtDepthBinds);
-                    for (int i = 0; i < g_rtRepN && i < 4; ++i)
-                        ImGui::TextDisabled("   pass %d: %d x %d %s (x%d)", i,
-                            g_rtRep[i].w, g_rtRep[i].h, fmt_name(g_rtRep[i].fmt), g_rtRep[i].count);
-                }
                 if (akvr_projvr_ok())
                 {
                     float ratio = 0.0f, origFov = 0.0f; int hits = 0;
@@ -3086,17 +2760,9 @@ namespace
                 akvr_early_dxgi11() ? (akvr_early_dxgi11_mode() == 2 ? "on, every call" : (akvr_early_dxgi11_auto() ? "on (auto: SteamVR), game calls only" : "on, game calls only")) : (akvr_early_dxgi11_auto() ? "off (auto: not SteamVR)" : "off (dxgi11=0)"), g_dxgi11Calls);
         fprintf(f, "   callers: %s\n", g_dxgi11Who[0] ? g_dxgi11Who : "none");
         fprintf(f, "SteamVR share probe: %s\n", akvr_xr_share_probe());   // SHAREPROBE
-        { bool ho; float hs; akvr_hdr_curve_get(ho, hs);   // HDRCURVE
-          fprintf(f, "film curve on the full-range picture: %s, exposure %+.2f stops, %ld passes drawn\n", ho ? "on" : "off", hs, akvr_hdr_curve_draws());
-          fprintf(f, "   scene picture format: DoF-off final step %d, DoF-on final step %d  (10/2 = full range float, 26 = full range packed, 28/24 = capped at white)\n", akvr_hdr_scene_format(), akvr_dofon_scene_format()); }   // SCENEFMT
         fprintf(f, "\nviewports set last frame (%d calls):\n", g_rCalls);
         for (int i = 0; i < g_rListN; ++i)
             fprintf(f, "   %d x %d  (x%d)\n", g_rList[i].w, g_rList[i].h, g_rList[i].count);
-        fprintf(f, "\nrender targets last frame (%d binds, %d with depth):\n",
-                g_rtBinds, g_rtDepthBinds);
-        for (int i = 0; i < g_rtRepN; ++i)
-            fprintf(f, "   %d x %d  fmt %d  (x%d)\n",
-                    g_rtRep[i].w, g_rtRep[i].h, g_rtRep[i].fmt, g_rtRep[i].count);
         // Patch status. vpsquare + projVR are AOB scans that fail SILENTLY (they just
         // return false), so a wanted-but-missing patch used to be indistinguishable from
         // a patch that ran and did nothing. Report both, in the file, every launch.
@@ -3115,28 +2781,8 @@ namespace
                     akvr_cam_aim_head_frames(), akvr_gamepad_trigger_diag());   // AIMTRIGGER2
             fprintf(f, "   head on the shown camera (dive fix): %s, %ld camera frames so far\n", akvr_cam_exact_on() ? "on" : "off",
                     akvr_cam_exact_writes());   // DIVEFIX
-            fprintf(f, "   rain probe: %s | every draw off %d, all compute off %d, see-through off %d, world rain streak cut %d\n",
-                    akvr_probe_diag(), akvr_probe_every_draw() ? 1 : 0, akvr_probe_all_cs() ? 1 : 0, akvr_probe_all_but_rain() ? 1 : 0,
-                    akvr_probe_rain_parts());   // DRAWPROBE, RAINPARTS
-            fprintf(f, "   %s\n", akvr_near_rain_diag());   // NEARRAIN
             fprintf(f, "   %s\n", akvr_far_rain_diag());    // FARRAIN
-            akvr_rainwriter_dump(f);   // RAINWRITER
-            for (int i = 0; i < akvr_probe_cs_count(); ++i)   // DRAWPROBE4
-            {
-                unsigned long long h = 0; long pf = 0; bool seen = false, hide = false;
-                if (akvr_probe_cs(i, h, pf, seen, hide))
-                    fprintf(f, "      CS %2d: %016llx, %ld a frame, %s%s\n", i + 1, h, pf, seen ? "running" : "not running", hide ? ", HIDDEN" : "");
-            }
-            for (int i = 0; i < akvr_probe_kind_count(); ++i)
-            {
-                unsigned long long ps = 0, vs = 0; int tags = 0; long draws = 0; unsigned cnt = 0, inst = 0;
-                bool seen = false, hide = false;
-                if (akvr_probe_kind(i, ps, vs, tags, draws, cnt, inst, seen, hide))
-                    fprintf(f, "      %2d: PS %016llx VS %016llx tags %s%s%s%s%s%s, %ld draws/frame, %u points x %u, %s%s\n",
-                            i + 1, ps, vs, (tags & 1) ? "R" : "", (tags & 2) ? "T" : "", (tags & 4) ? "B" : "", (tags & 8) ? "A" : "", (tags & 16) ? "S" : "",
-                            (tags & 64) ? "I" : "",
-                            draws, cnt, inst, seen ? "seen now" : "not seen now", hide ? ", HIDDEN" : "");
-            }
+            // PANELTIDY5 2026-10-11: the rain probe, near rain, rain writer and draw-kind lines removed.
             fprintf(f, "   native capture timing: %s Present (comparison test)\n", g_nativeAfterPresent ? "AFTER" : "BEFORE");
             {
                 int div = 1; double hz = 0.0; long late = 0, frames = 0;
@@ -3402,89 +3048,7 @@ namespace
                  ow, oh, W, H, (int)d.Format);
     }
 
-    // RADARREC 2026-09-26 â€” JJ: the radar blink is too fast to catch with F2. A flight
-    // recorder: the last kRecN frames of a square around the radar, both eyes, kept on
-    // the GPU (two small copies per frame); F2 writes them out oldest first as
-    // akvr_radar_NN\f000.bmp... Crop centre = where the radar sat in katanga_02..04
-    // (fraction of one eye); the crop is clamped inside the eye.
-    // RADARWIDE 2026-09-26: one eye, 1024 px square, centred lower right so the shrunk
-    // AND the full-size radar positions are both inside (the flip went off the 512 crop).
-    // 90 frames (~2 s at 45 fps), ~380 MB of GPU memory. Each slot has a QPC timestamp
-    // (same clock as the viewport log) written to times.txt on dump.
-    constexpr int   kRecN = 90, kRecS = 1024;
-    constexpr float kRecCX = 0.80f, kRecCY = 0.62f;
-    ID3D11Texture2D* g_rec[kRecN] = {};
-    double g_recT[kRecN] = {};
-    int  g_recHead = 0, g_recCount = 0;
-    bool g_recFailed = false;
-
-    void radar_rec_tick()
-    {
-        // CLEANUP 2026-10-01: the radar blink is fixed; the recorder (a 1024 px copy every frame, ~380 MB of video
-        // memory) runs only with the test tools, and gives its memory back when they are switched off.
-        if (!akvr_test_tools())
-        {
-            if (g_recCount || g_rec[0])
-            {
-                for (auto& t : g_rec) if (t) { t->Release(); t = nullptr; }
-                g_recCount = 0; g_recHead = 0;
-            }
-            return;
-        }
-        ID3D11Texture2D* kt = akvr_xr_katanga_texture();
-        if (!kt || !g_device || !g_context || g_recFailed) return;
-        D3D11_TEXTURE2D_DESC d{}; kt->GetDesc(&d);
-        if (d.SampleDesc.Count != 1) return;
-        const int eyeW = (int)d.Width / 2, H = (int)d.Height;
-        if (eyeW < kRecS || H < kRecS) return;
-        ID3D11Texture2D*& t = g_rec[g_recHead];
-        if (t)
-        {
-            D3D11_TEXTURE2D_DESC td{}; t->GetDesc(&td);
-            if (td.Format != d.Format) { t->Release(); t = nullptr; }
-        }
-        if (!t)
-        {
-            D3D11_TEXTURE2D_DESC rd{};
-            rd.Width = kRecS; rd.Height = kRecS; rd.MipLevels = 1; rd.ArraySize = 1;
-            rd.Format = d.Format; rd.SampleDesc.Count = 1; rd.Usage = D3D11_USAGE_DEFAULT;
-            if (FAILED(g_device->CreateTexture2D(&rd, nullptr, &t)) || !t)
-            { t = nullptr; g_recFailed = true; return; }
-        }
-        int x0 = (int)(kRecCX * eyeW) - kRecS / 2, y0 = (int)(kRecCY * H) - kRecS / 2;
-        x0 = x0 < 0 ? 0 : (x0 > eyeW - kRecS ? eyeW - kRecS : x0);
-        y0 = y0 < 0 ? 0 : (y0 > H - kRecS ? H - kRecS : y0);
-        {
-            D3D11_BOX b{ (UINT)x0, (UINT)y0, 0, (UINT)(x0 + kRecS), (UINT)(y0 + kRecS), 1 };
-            g_context->CopySubresourceRegion(t, 0, 0, 0, 0, kt, 0, &b);
-        }
-        {
-            LARGE_INTEGER q, f; QueryPerformanceCounter(&q); QueryPerformanceFrequency(&f);
-            g_recT[g_recHead] = 1000.0 * (double)q.QuadPart / (double)f.QuadPart;
-        }
-        g_recHead = (g_recHead + 1) % kRecN;
-        if (g_recCount < kRecN) ++g_recCount;
-    }
-
-    void radar_rec_dump(int shot)
-    {
-        if (!g_recCount) return;
-        std::wstring base = settings_path();
-        size_t s = base.find_last_of(L"\\/");
-        if (s == std::wstring::npos) return;
-        (void)shot;
-        const std::wstring dir = g_capDir + L"radar";   // CAPTUREDIR: inside this F2's folder
-        CreateDirectoryW((base.substr(0, s + 1) + dir).c_str(), nullptr);
-        FILE* tf = _wfopen((base.substr(0, s + 1) + dir + L"\\times.txt").c_str(), L"w");
-        for (int i = 0; i < g_recCount; ++i)
-        {
-            const int slot = (g_recHead - g_recCount + i + kRecN) % kRecN;
-            wchar_t name[160]; swprintf_s(name, L"%s\\f%03d.bmp", dir.c_str(), i);
-            grab_texture(g_rec[slot], name, 16384);
-            if (tf) fprintf(tf, "%d %.3f\n", i, g_recT[slot]);
-        }
-        if (tf) fclose(tf);
-    }
+    // PANELTIDY5 2026-10-11: RADARREC (test tools: the radar flight recorder saved on F2) removed.
 
     void grab_backbuffer(IDXGISwapChain* sc, const wchar_t* name)
     {
@@ -3630,7 +3194,6 @@ namespace
             }
         }
 
-        radar_rec_tick();        // RADARREC: last ~2 s of the radar area, for F2
         akvr_menu_res_tick();   // MENURES
         if (akvr_xr_native())
         {
@@ -3660,17 +3223,7 @@ namespace
                 if (!p.empty()) CreateDirectoryW((p.substr(0, p.find_last_of(L"\\/") + 1) + L"akvr_captures").c_str(), nullptr);
                 grab_backbuffer(swapChain, L"akvr_captures\\frame_early.bmp");
             }
-            if (g_mkrecEnd)
-            {   // MKREC: both eyes (pair + HUD + marker layers) at 2048 px, every 2 s
-                ID3D11Texture2D* g_aknSbs = akvr_xr_akn_sbs();
-                if (gnow >= g_mkrecNext && g_aknSbs)
-                {
-                    wchar_t nm[200]; swprintf_s(nm, L"%seyes_%02d.bmp", g_mkrecDir.c_str(), ++g_mkrecShot);
-                    grab_texture(g_aknSbs, nm, 2048);
-                    g_mkrecNext = gnow + 2000;
-                }
-                if (gnow >= g_mkrecEnd) g_mkrecEnd = 0;
-            }
+            // PANELTIDY5 2026-10-11: MKREC (20 s of eye pictures for the marker test) removed.
             if (g_grabWanted)
             {
                 // NUMBERED, not overwritten. Comparing two head positions needs two
@@ -3678,8 +3231,6 @@ namespace
                 // between every press. Press F2 as many times as you like; they queue up
                 // as akvr_frame_01.bmp, _02, ...
                 g_grabWanted = false;
-                static int shot = 0;
-                ++shot;
                 wchar_t name[160];
                 swprintf_s(name, L"%sframe.bmp", g_capDir.c_str());   // CAPTUREDIR: inside this F2's folder
                 grab_backbuffer(swapChain, name);
@@ -3703,7 +3254,6 @@ namespace
                     // The full-resolution copy (~45 MB, added 2026-09-26 for the edge blur) is
                     // gone: JJ 2026-09-28, "that capture takes a long time".
                 }
-                radar_rec_dump(shot);
             }
             // CLEANTESTS 2026-10-09: the SWEEP / SOFTSWEEP / BLURAB / COSTSWEEP test runners are gone (answers in
             // akvr/CLAUDE_HANDOFF.md; the overlay buttons went in PANELTIDY3).
@@ -3756,33 +3306,9 @@ namespace
         // later and changed the pause menu's layout mid-fade-in)
         akvr_hud_gameplay(g_lastGameplay && !akvr_xr_pause_live());   // don't shrink a screen that IS the UI
         akvr_hud_anamorphic(g_lastAnamorphic);
-        {   // AIMSHOT 2026-10-03 - JJ can't press F2 while aiming (opening the panel with both sticks takes the pad from
-            // the game, so the trigger reads as released). The first 3 aims of a session save a full capture by
-            // themselves: 1 s into holding the left trigger, then 1.5 s after letting go (to find the gun reticle part).
-            static int s_shots = 0; static ULONGLONG s_aimSince = 0, s_relSince = 0; static bool s_aimDone = false;
-            const ULONGLONG t = GetTickCount64();
-            if (s_shots < 6 && akvr_test_tools())   // CLEANUP2: a test tool now (the reticle part is found)
-            {
-                if (akvr_cam_aim_head_now())
-                {
-                    s_relSince = 0;
-                    if (!s_aimSince) s_aimSince = t;
-                    if (!s_aimDone && !(s_shots & 1) && t - s_aimSince >= 1000) { capture_all(); ++s_shots; s_aimDone = true; }
-                }
-                else
-                {
-                    s_aimSince = 0;
-                    if (s_aimDone)
-                    {
-                        if (!s_relSince) s_relSince = t;
-                        if (t - s_relSince >= 1500) { capture_all(); ++s_shots; s_aimDone = false; s_relSince = 0; }
-                    }
-                }
-            }
-        }
+        // PANELTIDY5 2026-10-11: AIMSHOT (test tools: automatic captures while aiming) removed.
         akvr_hud_tick();         // hold the Scaleform reference resolution at our HUD size
         viewport_frame_tick();   // snapshot the largest scene viewport this frame
-        rt_frame_tick();         // snapshot this frame's render-target list
 
         // Load saved settings once, the first frame after ImGui is up. Also write our
         // square target into the game's resolution .ini so the NEXT launch starts
@@ -3847,7 +3373,6 @@ namespace
         // }
 
         process_hotkeys();   // F-keys work every frame, even while the panel is hidden
-        finder_tick();       // SHADERFINDER: release a key a panel button pressed for geo-11
 
         // --- one OpenXR frame per Present (M4b) ---
         // begin: sample the single predicted head pose; then the camera injection
@@ -4046,11 +3571,7 @@ namespace
             mode_record((uint32_t)(nowMs - lastFinMs), (uint32_t)(nowMs - lastMoveMs),
                         raw, verdict, cam, projHits);
 
-            // Scene TAP: feed xr the game's near-square scene buffer instead of the 16:9
-            // backbuffer when the toggle is on and we actually captured one this frame.
-            akvr_xr_set_scene_source(
-                (g_tapPaired && g_scenePairedRT) ? g_scenePairedRT :
-                (g_tapScene   && g_sceneTexRaw)   ? g_sceneTexRaw   : nullptr);
+            // PANELTIDY5 2026-10-11: the scene TAP (fed only by the test-tools render-target observer) removed.
             submitGameplay = gameplay;
             submitFov = cam.valid ? cam.fov : 0.0f;
             deferNativeSubmit = g_nativeAfterPresent && akvr_xr_native()
@@ -4150,8 +3671,7 @@ namespace
         // be reset from the in-game menu, this cannot.
         // Test whether downstream Present produces the Katanga pair that should
         // be submitted now. Sparse before/after samples record the actual boundary.
-        // CLEANUP 2026-10-01: the every-30-frames pixel read-back only with the test tools (the timing ring stays).
-        ID3D11Texture2D* probeSource = akvr_test_tools() ? akvr_xr_katanga_texture() : nullptr;
+        ID3D11Texture2D* probeSource = nullptr;   // PANELTIDY5 2026-10-11: the test-tools pixel read-back removed (the timing ring stays)
         akvr_present_probe_before(g_device, g_context, probeSource,
             akvr_camera_finalize_count(), submitGameplay, deferNativeSubmit, xrBeginMs, akvr_xr_wait_ms(),
             akvr_xr_pose_delay_used());

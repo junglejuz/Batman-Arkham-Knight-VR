@@ -31,7 +31,6 @@
 #include "camera.h"   // NEARRAIN: akvr_camera_base_axes
 #include "vslayout.h"   // MKBATCH: batched HUD vertex shader layouts
 struct ID3D11DeviceContext;
-void akvr_gamegrade_grab(ID3D11DeviceContext *c);   // eyeaa.cpp: GAMEGRADE
 bool akvr_hud_room_all();   // earlyres.cpp: ROOMALL (whole HUD in the room) - BANDOFF
 int  akvr_hud_target_points(float* xy, int max, int rtW, int rtH, float* off, float* xf);   // earlyres.cpp: TARGETDEPTH / TARGETSTOCK / TARGETSCALE; off = view depth per point (TARGETDIST)
 const char* akvr_marker_dist_diag();   // earlyres.cpp: TARGETDIST
@@ -47,18 +46,8 @@ bool akvr_hud_marks_ready();                                                    
 #include <string>
 #include <unordered_map>
 #include <vector>
-#include "shaders/tonefix_ps.h"   // HDRCURVE (after windows.h: BYTE)
 #include "../../akvr_native/src/flare_shaders.h"   // FLAREOFF3: Luma's two AK lens flare shaders (generated, credit inside)
 #include <d3dcompiler.h>
-#include "shaders/toneglow_vs.h"   // GLOWFIRST
-#include "shaders/toneglow_pre.h"
-#include "shaders/toneglow_down.h"
-#include "shaders/toneglow_up.h"
-void akvr_glow_get(bool& on, float& intensity, float& threshold, float& radius);   // eyeaa.cpp: MODGLOW settings
-bool akvr_xr_post_ok();   // xr.cpp: POSTOK
-float akvr_gamegrade_weight();   // eyeaa.cpp: GRADEFIT
-bool akvr_gamegrade_snapshot(std::vector<float>& out, UINT& n, long& ver);   // eyeaa.cpp: GAMELOOK
-void akvr_post_get(bool& curveOn, float& contrast, float& stops, float& autoExp, float& edge);   // eyeaa.cpp
 
 namespace {
     constexpr uintptr_t kRenderUI = 0x1405de350;
@@ -75,12 +64,11 @@ namespace {
     int  g_gameState = 0;          // game side: 0 waiting for geo-11, 1 hooked, 2 same as real, <0 failed
     int  g_gameHooked = 0;
     char g_gameModule[64] = "";
-    bool g_hide = false;
     ID3D11DeviceContext* g_ctx = nullptr;       // real immediate context (below geo-11)
     ID3D11DeviceContext* g_gameCtx = nullptr;   // game-facing immediate context (geo-11 wrapper)
     volatile DWORD g_scopeTid = 0; // non-zero while RenderUI runs
     DWORD g_presentTid = 0;
-    volatile LONG g_calls = 0, g_hidden = 0;
+    volatile LONG g_calls = 0;
     // Whole-frame census per layer.
     volatile LONG g_cDraw[3] = {}, g_cBind[3] = {}, g_cFinish[3] = {}, g_cExec[3] = {};
     LONG g_rDraw[3] = {}, g_rBind[3] = {}, g_rFinish[3] = {}, g_rExec[3] = {};
@@ -171,30 +159,7 @@ namespace {
     int   g_markerLag = -1;                 // the drawn camera: k Presents back; -1 = the pose delay in use - 1
     int   g_markerHudLag = 1;                // TARGETMOVE2: the markers' camera is this many Presents older (0 = off)
     float g_tgtOff[4] = {};
-    // TARGETTRACE 2026-10-02 — JJ after TARGETDEPTH: the distance widget is "still moving around with the head". Does
-    // the game place it from the camera WITHOUT the head turn, or a frame late? One row per HUD frame (test tools
-    // only): the on-target points, the camera with the head (yaw/pitch) and the game's own yaw, the finalize count.
-    struct TgtRow { double t; uint64_t fin; int n; float xy[4]; float yaw, pitch, baseYaw, fwd[3], pos[3], off[4], fshift[2]; };
-    extern float g_framePx, g_framePy;   // FRAMEPAIR2, below
-    extern float g_tgtOff[4];   // TARGETMOVE, below
-    constexpr int kTgtRing = 4096;
-    TgtRow g_tgtRing[kTgtRing]; int g_tgtHead = 0, g_tgtCount = 0;
-    void tgt_record(int n, const float* xy)
-    {
-        TgtRow& r = g_tgtRing[g_tgtHead];
-        LARGE_INTEGER q, f; QueryPerformanceCounter(&q); QueryPerformanceFrequency(&f);
-        r.t = 1000.0 * (double)q.QuadPart / (double)f.QuadPart;
-        r.fin = akvr_camera_finalize_count(); r.n = n;
-        for (int k = 0; k < 4; ++k) r.xy[k] = xy[k];
-        const CameraView cv = akvr_camera_read();
-        r.yaw = cv.valid ? (float)cv.yaw * (360.0f / 65536.0f) : 0.0f; r.pitch = cv.valid ? (float)cv.pitch * (360.0f / 65536.0f) : 0.0f;
-        r.pos[0] = cv.x; r.pos[1] = cv.y; r.pos[2] = cv.z;
-        for (int k = 0; k < 4; ++k) r.off[k] = g_tgtOff[k];
-        r.fshift[0] = g_framePx; r.fshift[1] = g_framePy;
-        r.baseYaw = 0.0f; akvr_camera_base_yaw_deg(r.baseYaw);
-        float rr[3], uu[3]; r.fwd[0] = r.fwd[1] = r.fwd[2] = 0.0f; akvr_camera_base_axes(r.fwd, rr, uu);
-        g_tgtHead = (g_tgtHead + 1) % kTgtRing; if (g_tgtCount < kTgtRing) ++g_tgtCount;
-    }
+    // PANELTIDY5 2026-10-11: the TARGETTRACE recorder (test tools, F2 targets.csv) removed.
     long g_layerFrames = 0, g_subsRep = 0, g_restores = 0;
     // HUD-004 proof: alpha census of H, read back every ~2 s.
     ID3D11Texture2D* g_stage = nullptr;
@@ -247,7 +212,7 @@ namespace {
     Scope g_rep[4]; int g_repN = 0;
     unsigned g_frame = 0;
 
-    struct Row { unsigned frame; int idx; int hide; LONG draw[3], bind[3], fin[3], exe[3]; Scope s; };
+    struct Row { unsigned frame; int idx; LONG draw[3], bind[3], fin[3], exe[3]; Scope s; };
     constexpr int kRing = 256;
     Row  g_ring[kRing];
     int  g_ringHead = 0, g_ringCount = 0;
@@ -490,17 +455,9 @@ namespace {
         return hr;
     }
 
-    // ---- DRAWPROBE 2026-10-01 — JJ: stepping geo-11's shader finder to the rain "took a lot of button presses".
-    // The rain pixel shader 5d787946eda54077 (JJ's mark) draws BOTH the world rain and a layer stuck to the head.
-    // Every VS/PS the game creates is named here (FNV-1 64, the ShaderFixesDM names); every game-side draw that
-    // uses the probed pixel shader is sorted into a "kind" (its vertex shader + the textures in PS slots 0 and 1),
-    // counted per frame, and a kind can be hidden (the draw is dropped) from the panel. Session only: once JJ finds
-    // the stuck layer's kind, it becomes a fixed rule.
-    // CLEANUP 2026-10-01 — JJ: "check that there's no other processes running during the gameplay ... old redundant
-    // stuff from earlier tests. Even captures running in the background." The rain hunt (DRAWPROBE, RAINWRITER, the
-    // shader dumps), the HUD mark recorder (MARKREC) and the 90-frame HUD coverage read-back only run with
-    // testtools=1 in the settings file. The live fixes (FARRAIN, NEARRAIN when set, PSMARK) do not depend on it.
-    volatile bool g_testTools = false;
+    // Shader names (DRAWPROBE 2026-10-01): every VS/PS/CS the game creates is named here (FNV-1 64, the ShaderFixesDM
+    // names; CRC-32 for Luma's), for FARRAIN and AKN.
+    // PANELTIDY5 2026-10-11: the rain hunt (DRAWPROBE 1-4, RAINPARTS, RAINWRITER, NORAIN) and the test-tools switch removed.
     constexpr int kShMap = 1 << 17;
     struct ShEnt { void* obj; uint64_t h; uint32_t crc; };   // DLSS D0: crc = Luma's shader name (CRC-32 of the bytecode)
     ShEnt   g_shMap[kShMap];
@@ -548,32 +505,7 @@ namespace {
         ReleaseSRWLockShared(&g_shLock);
         return h;
     }
-    // SHADERDUMP 2026-10-01: the game's ORIGINAL bytecode of shaders the fix has no copy of, saved once each as
-    // akvr_shader_<hash>.bin next to the game exe, for cmd_Decompiler -d. JJ's DRAWPROBE2 capture: a second rain
-    // particle system (PS 37313d9770da1c5e / VS 2aafb19df6567d30, 6 x 20480, uses the rain texture, drawn right
-    // after the world rain) that the fix never patched; the world rain VS f50d1365e929b3a0 for comparison.
-    // DOFDUMP 2026-10-06: plus the DoF candidates from SHCENSUS/SWEEP (and the DoF-off final post shaders), saved
-    // once each in EVERY launch (only these hashes), to read with cmd_Decompiler -d.
-    const uint64_t kDumpSh[] = { 0x599bd060016570bbull, 0x54cd897e5ce3b8b3ull, 0x5c9618a3350ea2ddull, 0x94f88871e378a57cull, 0x97657b85916f6399ull, 0xc9b47e60935f3f03ull, 0xfd60f2d764b91756ull, 0x4b432a87d072f988ull, 0x91e2b2225bf3ea04ull, 0x05154232f7872d0dull, 0x9938094af96353c0ull, 0x2aafb19df6567d30ull, 0x37313d9770da1c5eull, 0xf50d1365e929b3a0ull, 0x53fbc09e594d753cull, 0x24b12a6db37cce3eull, 0xcd8954e7b4fa5269ull, 0x3394df335fc5af55ull, 0xaee2a54e2c55f085ull, 0xaaeb97a5fdfc6543ull, 0x3de8ffc9a08651e5ull, 0xc5826416fc90be53ull, 0x7bc164ffe7d8267full, 0xf15c568dbe5fd8d1ull, 0x7fa538b3ba7c1091ull, 0x4637ed07f23a7a08ull, 0x48bdd7f7d90fb074ull, 0x09f65aa84b45bbc5ull, 0x6b057302c3e385ffull, 0x0eff3397efd01197ull, 0x39882999b6182fb9ull, 0xf24e00cf6cc927e7ull, 0xa604aa27d79ebc88ull, 0x930713b7c89e597aull, 0xbaf10e6bd8e27752ull, 0x5c9375e97d0e05efull, 0x4762798063a0763full, 0xcca9fb2e050c4100ull, 0xc91f6f0798a296a9ull, 0x0538920e4247cdf5ull, 0xff444aaf3a323a65ull, 0xbd67c92e94ebccd1ull, 0xed72bff815f35134ull, 0x491bf40c8b149566ull, 0x679d7ed1d48858e9ull, 0x8a2474b5f10caa50ull, 0xf6b60038df3c5f8eull, 0x53d7993337c2ff86ull, 0x92fb168506dc721aull, 0x09a4d19e408bed04ull, 0xb7f14acc058bce77ull, 0x5a4ba544adfd9b77ull, 0x7fa6a54dd602e404ull, 0xf48055cdb6a44445ull, 0x83125122196a72acull, 0x065426089ba1284aull, 0x3df408afbcc9696aull, 0x394272cd5e832650ull, 0x9d2a0f06b5a5315bull, 0xc0af99686f49c503ull, 0xd252a8db4903737full };   // + GAMEGRADE: the two once-a-frame PS only seen with DoF off
-    constexpr int kDumpN = (int)(sizeof(kDumpSh) / sizeof(kDumpSh[0]));
-    volatile LONG g_dumped[kDumpN] = {};
-    void sh_dump(uint64_t h, const void* code, SIZE_T len)
-    {
-        for (int i = 0; i < kDumpN; ++i)
-        {
-            if (h != kDumpSh[i] || InterlockedExchange(&g_dumped[i], 1)) continue;
-            wchar_t path[MAX_PATH];
-            const DWORD n = GetModuleFileNameW(nullptr, path, MAX_PATH);
-            wchar_t* slash = n ? wcsrchr(path, L'\\') : nullptr;
-            if (!slash) return;
-            { wcscpy_s(slash + 1, MAX_PATH - (slash + 1 - path), L"akvr_captures"); CreateDirectoryW(path, nullptr); wcscat_s(path, L"\\shaders"); CreateDirectoryW(path, nullptr); const size_t at = wcslen(path); _snwprintf_s(path + at, MAX_PATH - at, _TRUNCATE, L"\\%016llx.bin", (unsigned long long)h); }   // CAPTUREDIR: into akvr_captures, folder shaders
-            HANDLE f = CreateFileW(path, GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
-            if (f == INVALID_HANDLE_VALUE) return;
-            DWORD w = 0;
-            __try { WriteFile(f, code, (DWORD)len, &w, nullptr); } __except (EXCEPTION_EXECUTE_HANDLER) {}
-            CloseHandle(f);
-        }
-    }
+    // PANELTIDY5 2026-10-11: SHADERDUMP / DOFDUMP (shader files written at every start) removed.
     // SUITGLOSS3 2026-10-09: pixel shaders that read the camera DIRECTION rows of the view buffer (cb1[11..13]) but never
     // its position row (cb1[14]) take gloss / rim from the camera's aim. Every pixel shader is disassembled once on a
     // worker thread and flagged; AKN gives those draws the head-free game camera's rows (akvr_shader_camdir).
@@ -701,7 +633,7 @@ namespace {
         __try { h = fnv64(code, len); } __except (EXCEPTION_EXECUTE_HANDLER) { h = 0; }
         uint32_t crc = 0;
         __try { crc = crc32_buf(code, len); } __except (EXCEPTION_EXECUTE_HANDLER) { crc = 0; }
-        if (h) { sh_put(obj, h, crc); sh_dump(h, code, len); }   // DOFDUMP: every launch (fixed list)
+        if (h) { sh_put(obj, h, crc); }
     }
     typedef HRESULT (__stdcall* CreatePSFn)(ID3D11Device*, const void*, SIZE_T, ID3D11ClassLinkage*, ID3D11PixelShader**);
     CreatePSFn oCreatePS[3] = {};
@@ -763,9 +695,8 @@ namespace {
         if (SUCCEEDED(hr) && out && *out) { sh_note(code, len, *out); mc_queue(code, len, *out); }   // SUITGLOSS
         return hr;
     }
-    // shaders (and PS textures 0-7, blend) bound on each game-side context (immediate + the game's deferred ones)
-    // DRAWPROBE2: plus the last 12 draws' shader pairs and how many draws since the rain, for the neighbour search
-    struct CtxSh { void* ctx; void* vs; void* ps; void* srv[8]; uint64_t ringPs[12], ringVs[12]; int ringAt; int sinceRain; bool blendOn; };
+    // shaders bound on each game-side context (immediate + the game's deferred ones)
+    struct CtxSh { void* ctx; void* vs; void* ps; };
     CtxSh g_ctxSh[32] = {};
     CtxSh* ctx_sh(void* c, bool claim)
     {
@@ -784,802 +715,31 @@ namespace {
     }
     typedef void (__stdcall* PSSetFn)(ID3D11DeviceContext*, ID3D11PixelShader*, ID3D11ClassInstance* const*, UINT);
     PSSetFn oPSSetG = nullptr;
-    extern volatile LONG g_nearMode, g_rainParts;   // NEARRAIN / RAINPARTS, below: they need the bound pixel shader
-    extern volatile LONG g_rainNoStretch;          // RAINSTRETCH, below
-    extern volatile LONG g_rainFrameFix;           // FRAMEPAIR (rain), below
-    // SHCENSUS 2026-10-06 - JJ: the game's depth of field (DepthOfField=True) is slower, blurs the distant city and
-    // keeps the right brightness; off (DOFOFF) the picture is sharp and fast but brighter (part of the colour step
-    // goes with it). The fix's F6 DoF skip changes nothing in gameplay. To find the blur passes: F2 records, for the
-    // next 60 frames, every game-side draw's pixel/vertex shader (and every dispatch's compute shader) with its render
-    // target size into shaders.csv. One capture with DoF on and one with it off, same spot: the difference is DoF.
-    volatile LONG g_censusLeft = 0;
-    wchar_t g_censusPath[MAX_PATH] = L"";
-    struct CenEnt { int kind; uint64_t a, b; int w, h; long n; };
-    CenEnt g_cen[4096]; int g_cenN = 0; long g_cenFrames = 0;
-    SRWLOCK g_cenLock = SRWLOCK_INIT;
-    void census_note(int kind, uint64_t a, uint64_t b, int w, int h)
-    {
-        AcquireSRWLockExclusive(&g_cenLock);
-        int k = 0;
-        for (; k < g_cenN; ++k) { const CenEnt& e = g_cen[k]; if (e.kind == kind && e.a == a && e.b == b && e.w == w && e.h == h) break; }
-        if (k == g_cenN && g_cenN < 4096) g_cen[g_cenN++] = { kind, a, b, w, h, 0 };
-        if (k < 4096) ++g_cen[k].n;
-        ReleaseSRWLockExclusive(&g_cenLock);
-    }
+    // PANELTIDY5 2026-10-11: SHCENSUS (60 frames of shaders.csv on every F2) removed.
     // (The SWEEP test that found these is removed: CLEANTESTS 2026-10-09.)
-    // BLUROFF 2026-10-06 - the SWEEP (sweep_20261006_023525, DoF on): dropping compute shader ff444aaf3a323a65 (full
-    // size, 361x358 groups) made the distance 20% sharper, 491bf40c8b149566 (half size, 181x179) 31%, both with the
-    // brightness unchanged (mean +-0.004; the exposure chain 7fa6a54d/f48055cd/8a2474b5 changed it by +0.07..0.14 and
-    // 679d7ed1 blacked the picture). Live panel choice: 0 the game's blur, 1 no ff444, 2 no 491bf, 3 neither.
-    constexpr uint64_t kDofApplyCs = 0xff444aaf3a323a65ull, kDofBlurCs = 0x491bf40c8b149566ull;
-    volatile LONG g_blurOff = 0, g_blurDropped = 0;
-    // GAMEAA 2026-10-06 - JJ: a switch for the game's anti-aliasing alone (DepthOfField=False also loses the map, the
-    // colours and the exposure). The game's SMAA edge-detection pixel shader cca9fb2e050c4100 (decompiled: DOFDUMP; the
-    // blend-weight pass c91f6f07 searches the edges it writes) is dropped: no edges -> no blending -> the picture as
-    // drawn. SWEEP 02:35 picture 24: dropping it changed nothing else.
-    constexpr uint64_t kSmaaEdgePs = 0xcca9fb2e050c4100ull;
-    volatile bool g_gameAaOff = false;
-    volatile LONG g_gameAaSkips = 0;
-    // NORAIN 2026-10-07 - JJ: "add an option in the overlay in the rain section to turn off the rain. We have an option
-    // to show only the rain, we just need the opposite." Drops the draws of the two rain systems: the world rain (PS
-    // 5d787946eda54077, the one "show only the rain" keeps) and the second rain particle system (PS 37313d9770da1c5e,
-    // DRAWPROBE2). Not saved: a test switch, off at every start.
-    volatile bool g_hideRain = false;
-    volatile LONG g_rainHidden = 0;
-    // HDRCURVE 2026-10-07 (src/shaders/tonefix.hlsl): the depth-of-field-off final pass c0af99686f49c503 clips the HDR
-    // scene at 1; AKVR draws its own copy with the game's film curve in its place. Live: on/off, exposure in stops.
-    constexpr uint64_t kOffTonePs = 0xc0af99686f49c503ull;
-    volatile bool  g_toneOn = true;
-    volatile float g_toneStops = 0.0f;
-    volatile LONG  g_toneDraws = 0;
-    ID3D11PixelShader* g_tonePs = nullptr;
-    ID3D11Buffer*      g_toneCb = nullptr;
-    bool               g_toneFail = false;
-    bool ps_track() { return g_testTools || g_nearMode != 0 || g_rainParts >= 0 || g_rainNoStretch || g_rainFrameFix || g_censusLeft > 0 || g_gameAaOff || g_toneOn || g_hideRain || (g_blurOff & 16); }
+    // PANELTIDY5 2026-10-11: BLUROFF / SKIPSTEPS and GAMEAA (the game's SMAA dropped) are removed.
+    // PANELTIDY5 2026-10-11: NORAIN (the panel's "rain off" test switch) removed.
+    // PANELTIDY5: always on, as it effectively was (the removed HDRCURVE was on by default); the bound pixel shader per context
+    bool ps_track() { return true; }
     void __stdcall hkPSSetG(ID3D11DeviceContext* c, ID3D11PixelShader* ps, ID3D11ClassInstance* const* ci, UINT n)
     {
         if (ps_track()) if (CtxSh* s = ctx_sh(c, true)) s->ps = ps;
         oPSSetG(c, ps, ci, n);
     }
-    typedef void (__stdcall* PSSetSRVFn)(ID3D11DeviceContext*, UINT, UINT, ID3D11ShaderResourceView* const*);
-    PSSetSRVFn oPSSetSRVG = nullptr;
-    void __stdcall hkPSSetSRVG(ID3D11DeviceContext* c, UINT start, UINT num, ID3D11ShaderResourceView* const* v)
-    {
-        if (g_testTools)
-            if (CtxSh* s = ctx_sh(c, true))
-                for (UINT i = 0; i < num && start + i < 8; ++i) s->srv[start + i] = v ? v[i] : nullptr;
-        oPSSetSRVG(c, start, num, v);
-    }
-    // DRAWPROBE3: blend state -> blending on (see-through draws: particles, glass, fog), looked up once per bind
-    struct BlendOn { void* bs; bool on; };
-    BlendOn g_blendOn[512] = {};
-    int     g_blendOnN = 0;
-    SRWLOCK g_blendLock = SRWLOCK_INIT;
-    bool blend_on(ID3D11BlendState* bs)
-    {
-        if (!bs) return false;
-        AcquireSRWLockShared(&g_blendLock);
-        for (int i = 0; i < g_blendOnN; ++i)
-            if (g_blendOn[i].bs == bs) { const bool on = g_blendOn[i].on; ReleaseSRWLockShared(&g_blendLock); return on; }
-        ReleaseSRWLockShared(&g_blendLock);
-        D3D11_BLEND_DESC d{};
-        bs->GetDesc(&d);
-        const bool on = d.RenderTarget[0].BlendEnable != FALSE;
-        AcquireSRWLockExclusive(&g_blendLock);
-        if (g_blendOnN < 512) g_blendOn[g_blendOnN++] = { bs, on };
-        ReleaseSRWLockExclusive(&g_blendLock);
-        return on;
-    }
-    // DRAWPROBE2 2026-10-01 — JJ's panel showed ONE rain draw: pixel shader 5d787946eda54077 with the fix's
-    // f50d1365e929b3a0 VS is the GPU rain particles (instanced from a structured buffer, placed through the view-
-    // projection) = the WORLD rain. The layer stuck to the head is another draw (likely a camera-attached rain
-    // mesh). Candidates: the rain particles (tag 1), draws that bind one of the rain's textures (2), and the 12 draws
-    // before (4) / after (8) the rain particles on the same context, by pixel+vertex shader pair.
-    // DRAWPROBE3 — JJ hid rows 2-14: no change, though hiding the world rain works; the stuck rain has parallax (3D).
-    // SHADERDUMP read: row 11 (VS 2aafb19df6567d30) places its streaks at world positions minus the camera position,
-    // turned by the ordinary view-projection = world-fixed, not the stuck layer. So: every see-through draw of the
-    // frame joins (tag 16), grouped by vertex shader in the panel, with "hide everything but the world rain" and a
-    // hide per group, so the search is a few ticks instead of hundreds of rows.
-    uint64_t g_probePs = 0x5d787946eda54077ull;
-    struct DrawKind { uint64_t ps, vs; int tags; long frame, drawsNow, drawsLast; unsigned count, inst; bool hide; };
-    constexpr int kKinds = 256;
-    DrawKind g_kinds[kKinds] = {};
-    int      g_kindN = 0;
-    SRWLOCK  g_kindLock = SRWLOCK_INIT;
-    volatile LONG g_probeHits = 0, g_probeDropped = 0;
-    void* volatile g_rainTex[2] = {};
-    // hidden pairs (open addressing, rebuilt under g_kindLock on every change; read lock-free by the draw hooks),
-    // hidden vertex-shader groups, and the "everything but the world rain" switch
-    constexpr int kHid = 1024;
-    uint64_t volatile g_hidPs[kHid] = {}, g_hidVs[kHid] = {};
-    uint64_t volatile g_hidGroup[32] = {};
-    volatile LONG g_hidGroupN = 0;
-    volatile bool g_hideAllButRain = false;
-    uint32_t hid_slot(uint64_t ps, uint64_t vs) { return (uint32_t)((ps ^ (vs * 0x9E3779B97F4A7C15ull)) >> 54) & (kHid - 1); }
-    bool hid_pair(uint64_t ps, uint64_t vs)
-    {
-        for (uint32_t i = hid_slot(ps, vs), n = 0; n < 64; ++n, i = (i + 1) & (kHid - 1))
-        {
-            const uint64_t p = g_hidPs[i];
-            if (!p) return false;
-            if (p == ps && g_hidVs[i] == vs) return true;
-        }
-        return false;
-    }
-    void hid_rebuild()   // g_kindLock held
-    {
-        for (int i = 0; i < kHid; ++i) { g_hidPs[i] = 0; g_hidVs[i] = 0; }
-        for (int k = 0; k < g_kindN; ++k)
-        {
-            if (!g_kinds[k].hide || !g_kinds[k].ps) continue;
-            for (uint32_t i = hid_slot(g_kinds[k].ps, g_kinds[k].vs), n = 0; n < 64; ++n, i = (i + 1) & (kHid - 1))
-                if (!g_hidPs[i]) { g_hidVs[i] = g_kinds[k].vs; g_hidPs[i] = g_kinds[k].ps; break; }
-        }
-    }
-    long g_frameNow() { return (long)g_frame; }
-    void kind_note(uint64_t ph, uint64_t vh, int tag, UINT count, UINT inst)
-    {
-        const long f = g_frameNow();
-        AcquireSRWLockExclusive(&g_kindLock);
-        int k = 0;
-        for (; k < g_kindN; ++k) if (g_kinds[k].ps == ph && g_kinds[k].vs == vh) break;
-        if (k == g_kindN && g_kindN < kKinds) g_kinds[g_kindN++] = { ph, vh, 0, f, 0, 0, 0, 0, false };
-        if (k < kKinds)
-        {
-            DrawKind& d = g_kinds[k];
-            d.tags |= tag;
-            if (d.frame != f) { d.drawsLast = d.drawsNow; d.drawsNow = 0; d.frame = f; }
-            if (tag) { ++d.drawsNow; d.count = count; d.inst = inst; }
-        }
-        ReleaseSRWLockExclusive(&g_kindLock);
-    }
-    // HDRCURVE: swap the game's clip pass for AKVR's curve pass for one draw
-    bool tone_now(ID3D11DeviceContext* c)
-    {
-        if (!g_toneOn || g_toneFail || !akvr_xr_post_ok()) return false;   // POSTOK: the game's own pass in menus
-        CtxSh* s = ctx_sh(c, false);
-        return s && s->ps && sh_get(s->ps) == kOffTonePs;
-    }
-    struct TonePrev { ID3D11PixelShader* ps; ID3D11Buffer* cb; ID3D11ShaderResourceView* srv; ID3D11SamplerState* smp; ID3D11ShaderResourceView* srv9; };
-    // GAMELOOK: the game's colour table as a texture on the game-side device, and a linear clamp sampler
-    ID3D11Texture2D* g_toneLut = nullptr; ID3D11ShaderResourceView* g_toneLutSrv = nullptr; ID3D11SamplerState* g_toneSmp = nullptr;
-    UINT g_toneLutN = 0; long g_toneLutVer = -1;
-    // GLOWFIRST: the glow chain on the full-range scene (toneglow.hlsl), drawn on the game-side context just before
-    // the final pass; geo-11 replays these draws per eye like any game draw.
-    ID3D11VertexShader* g_tgVs = nullptr; ID3D11PixelShader* g_tgPre = nullptr; ID3D11PixelShader* g_tgDown = nullptr; ID3D11PixelShader* g_tgUp = nullptr;
-    ID3D11BlendState* g_tgAdd = nullptr; bool g_tgFail = false;
-    constexpr int kTgLv = 8;
-    ID3D11Texture2D* g_tgTex[kTgLv] = {}; ID3D11RenderTargetView* g_tgRtv[kTgLv] = {}; ID3D11ShaderResourceView* g_tgSrv[kTgLv] = {};
-    UINT g_tgW[kTgLv] = {}, g_tgH[kTgLv] = {}, g_tgSrcW = 0, g_tgSrcH = 0;
-    DXGI_FORMAT g_toneSceneFmt = DXGI_FORMAT_UNKNOWN;   // what the game hands the final pass (8-bit = highlights already gone)
-    volatile LONG g_tgRuns = 0;
-    bool tg_ready(ID3D11Device* d, UINT w, UINT h)
-    {
-        if (g_tgFail) return false;
-        if (!g_tgVs)
-        {
-            D3D11_BLEND_DESC bl{}; bl.RenderTarget[0].BlendEnable = TRUE;
-            bl.RenderTarget[0].SrcBlend = bl.RenderTarget[0].DestBlend = D3D11_BLEND_ONE; bl.RenderTarget[0].BlendOp = D3D11_BLEND_OP_ADD;
-            bl.RenderTarget[0].SrcBlendAlpha = bl.RenderTarget[0].DestBlendAlpha = D3D11_BLEND_ONE; bl.RenderTarget[0].BlendOpAlpha = D3D11_BLEND_OP_ADD;
-            bl.RenderTarget[0].RenderTargetWriteMask = D3D11_COLOR_WRITE_ENABLE_ALL;
-            const bool ok = SUCCEEDED(d->CreateVertexShader(g_toneglow_vs, sizeof(g_toneglow_vs), nullptr, &g_tgVs))
-                && SUCCEEDED(d->CreatePixelShader(g_toneglow_pre, sizeof(g_toneglow_pre), nullptr, &g_tgPre))
-                && SUCCEEDED(d->CreatePixelShader(g_toneglow_down, sizeof(g_toneglow_down), nullptr, &g_tgDown))
-                && SUCCEEDED(d->CreatePixelShader(g_toneglow_up, sizeof(g_toneglow_up), nullptr, &g_tgUp))
-                && SUCCEEDED(d->CreateBlendState(&bl, &g_tgAdd));
-            if (!ok) { g_tgFail = true; return false; }
-        }
-        if (w == g_tgSrcW && h == g_tgSrcH && g_tgTex[0]) return true;
-        for (int i = 0; i < kTgLv; ++i)
-        {
-            if (g_tgSrv[i]) { g_tgSrv[i]->Release(); g_tgSrv[i] = nullptr; }
-            if (g_tgRtv[i]) { g_tgRtv[i]->Release(); g_tgRtv[i] = nullptr; }
-            if (g_tgTex[i]) { g_tgTex[i]->Release(); g_tgTex[i] = nullptr; }
-        }
-        UINT lw = w, lh = h;
-        for (int i = 0; i < kTgLv; ++i)
-        {
-            lw = (lw + 1) / 2; lh = (lh + 1) / 2; if (lw < 2) lw = 2; if (lh < 1) lh = 1;
-            if (lw == lh) ++lw;   // never square: geo-11 may draw square targets once for both eyes
-            g_tgW[i] = lw; g_tgH[i] = lh;
-            D3D11_TEXTURE2D_DESC td{}; td.Width = lw; td.Height = lh; td.MipLevels = 1; td.ArraySize = 1; td.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
-            td.SampleDesc.Count = 1; td.Usage = D3D11_USAGE_DEFAULT; td.BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
-            if (FAILED(d->CreateTexture2D(&td, nullptr, &g_tgTex[i])) || FAILED(d->CreateRenderTargetView(g_tgTex[i], nullptr, &g_tgRtv[i]))
-                || FAILED(d->CreateShaderResourceView(g_tgTex[i], nullptr, &g_tgSrv[i]))) { g_tgFail = true; return false; }
-        }
-        g_tgSrcW = w; g_tgSrcH = h;
-        return true;
-    }
-    // Draw the chain; every piece of state touched is put back. Leaves the glow in level 0.
-    bool tg_run(ID3D11DeviceContext* c, float* cb)
-    {
-        bool on; float gi, gt, gr; akvr_glow_get(on, gi, gt, gr);
-        if (!on || gi <= 0.001f) return false;
-        ID3D11ShaderResourceView* scene = nullptr; c->PSGetShaderResources(0, 1, &scene);
-        if (!scene) return false;
-        ID3D11Resource* res = nullptr; scene->GetResource(&res);
-        D3D11_TEXTURE2D_DESC sd{}; ID3D11Texture2D* st = nullptr;
-        if (res) { res->QueryInterface(__uuidof(ID3D11Texture2D), (void**)&st); res->Release(); }
-        if (st) { st->GetDesc(&sd); st->Release(); }
-        scene->Release();
-        ID3D11Device* d = nullptr; c->GetDevice(&d);
-        const bool ready = d && sd.Width >= 64 && tg_ready(d, sd.Width, sd.Height);
-        if (d) d->Release();
-        if (!ready) return false;
-        float sum = 0.0f, wgt = 1.0f;
-        for (int i = 0; i < kTgLv; ++i) { sum += wgt; wgt *= gr; }
-        cb[8] = gi * 3.0f / sum; cb[9] = gt; cb[10] = 0.5f; cb[11] = gr;
-        // save
-        ID3D11RenderTargetView* oRtv[8] = {}; ID3D11DepthStencilView* oDsv = nullptr; c->OMGetRenderTargets(8, oRtv, &oDsv);
-        UINT nvp = D3D11_VIEWPORT_AND_SCISSORRECT_OBJECT_COUNT_PER_PIPELINE; D3D11_VIEWPORT ovp[D3D11_VIEWPORT_AND_SCISSORRECT_OBJECT_COUNT_PER_PIPELINE];
-        c->RSGetViewports(&nvp, ovp);
-        ID3D11VertexShader* oVs = nullptr; c->VSGetShader(&oVs, nullptr, nullptr);
-        ID3D11PixelShader* oPs = nullptr; c->PSGetShader(&oPs, nullptr, nullptr);
-        ID3D11ShaderResourceView* oT1 = nullptr; c->PSGetShaderResources(1, 1, &oT1);
-        ID3D11SamplerState* oS7 = nullptr; c->PSGetSamplers(7, 1, &oS7);
-        ID3D11Buffer* oCb = nullptr; c->PSGetConstantBuffers(13, 1, &oCb);
-        ID3D11BlendState* oBs = nullptr; FLOAT oBf[4]; UINT oBm = 0; c->OMGetBlendState(&oBs, oBf, &oBm);
-        ID3D11InputLayout* oIl = nullptr; c->IAGetInputLayout(&oIl);
-        D3D11_PRIMITIVE_TOPOLOGY oTop; c->IAGetPrimitiveTopology(&oTop);
-        ID3D11DepthStencilState* oDs = nullptr; UINT oRef = 0; c->OMGetDepthStencilState(&oDs, &oRef);
-        ID3D11RasterizerState* oRs = nullptr; c->RSGetState(&oRs);
-        // draw
-        c->IASetInputLayout(nullptr); c->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-        c->OMSetDepthStencilState(nullptr, 0); c->RSSetState(nullptr);
-        c->VSSetShader(g_tgVs, nullptr, 0);
-        c->PSSetSamplers(7, 1, &g_toneSmp);
-        c->PSSetConstantBuffers(13, 1, &g_toneCb);
-        ID3D11ShaderResourceView* none = nullptr;
-        auto pass = [&](int dst, ID3D11PixelShader* ps, UINT srcW, UINT srcH, ID3D11ShaderResourceView* src) {
-            cb[12] = 1.0f / srcW; cb[13] = 1.0f / srcH;
-            c->UpdateSubresource(g_toneCb, 0, nullptr, cb, 0, 0);
-            c->PSSetShaderResources(1, 1, &none);
-            c->OMSetRenderTargets(1, &g_tgRtv[dst], nullptr);
-            D3D11_VIEWPORT v{0, 0, (float)g_tgW[dst], (float)g_tgH[dst], 0, 1}; c->RSSetViewports(1, &v);
-            c->PSSetShader(ps, nullptr, 0);
-            if (src) c->PSSetShaderResources(1, 1, &src);
-            c->Draw(3, 0);
-            c->OMSetRenderTargets(0, nullptr, nullptr);
-        };
-        c->OMSetBlendState(nullptr, nullptr, 0xffffffff);
-        pass(0, g_tgPre, sd.Width, sd.Height, nullptr);   // reads the scene at t0, as the game bound it
-        for (int i = 1; i < kTgLv; ++i) pass(i, g_tgDown, g_tgW[i - 1], g_tgH[i - 1], g_tgSrv[i - 1]);
-        c->OMSetBlendState(g_tgAdd, nullptr, 0xffffffff);
-        for (int i = kTgLv - 2; i >= 0; --i) pass(i, g_tgUp, g_tgW[i + 1], g_tgH[i + 1], g_tgSrv[i + 1]);
-        c->PSSetShaderResources(1, 1, &none);
-        // restore
-        c->OMSetRenderTargets(8, oRtv, oDsv);
-        if (nvp) c->RSSetViewports(nvp, ovp);
-        c->VSSetShader(oVs, nullptr, 0); c->PSSetShader(oPs, nullptr, 0);
-        c->PSSetShaderResources(1, 1, &oT1); c->PSSetSamplers(7, 1, &oS7); c->PSSetConstantBuffers(13, 1, &oCb);
-        c->OMSetBlendState(oBs, oBf, oBm); c->IASetInputLayout(oIl); c->IASetPrimitiveTopology(oTop);
-        c->OMSetDepthStencilState(oDs, oRef); c->RSSetState(oRs);
-        for (auto*& r : oRtv) if (r) r->Release();
-        if (oDsv) oDsv->Release(); if (oVs) oVs->Release(); if (oPs) oPs->Release(); if (oT1) oT1->Release(); if (oS7) oS7->Release();
-        if (oCb) oCb->Release(); if (oBs) oBs->Release(); if (oIl) oIl->Release(); if (oDs) oDs->Release(); if (oRs) oRs->Release();
-        InterlockedIncrement(&g_tgRuns);
-        return true;
-    }
-    // GAMELOOK: the game's colour table as a texture on the game-side device (declared with TonePrev, above)
-    void tone_lut_refresh(ID3D11DeviceContext* c)
-    {
-        std::vector<float> v; UINT n = 0;
-        if (!akvr_gamegrade_snapshot(v, n, g_toneLutVer)) return;
-        ID3D11Device* d = nullptr; c->GetDevice(&d);
-        if (!d) return;
-        if (g_toneLutN != n)
-        {
-            if (g_toneLutSrv) { g_toneLutSrv->Release(); g_toneLutSrv = nullptr; }
-            if (g_toneLut) { g_toneLut->Release(); g_toneLut = nullptr; }
-            g_toneLutN = 0;
-            D3D11_TEXTURE2D_DESC td{}; td.Width = n * n; td.Height = n; td.MipLevels = 1; td.ArraySize = 1;
-            td.Format = DXGI_FORMAT_R32G32B32A32_FLOAT; td.SampleDesc.Count = 1; td.Usage = D3D11_USAGE_DEFAULT; td.BindFlags = D3D11_BIND_SHADER_RESOURCE;
-            if (SUCCEEDED(d->CreateTexture2D(&td, nullptr, &g_toneLut)) && SUCCEEDED(d->CreateShaderResourceView(g_toneLut, nullptr, &g_toneLutSrv))) g_toneLutN = n;
-        }
-        if (g_toneLutN == n) c->UpdateSubresource(g_toneLut, 0, nullptr, v.data(), n * n * 16, 0);
-        if (!g_toneSmp)
-        {
-            D3D11_SAMPLER_DESC sd{}; sd.Filter = D3D11_FILTER_MIN_MAG_MIP_LINEAR;
-            sd.AddressU = sd.AddressV = sd.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP; sd.MaxLOD = D3D11_FLOAT32_MAX;
-            d->CreateSamplerState(&sd, &g_toneSmp);
-        }
-        d->Release();
-    }
-    bool tone_pre(ID3D11DeviceContext* c, TonePrev& p)
-    {
-        if (!g_tonePs)
-        {
-            ID3D11Device* d = nullptr; c->GetDevice(&d);
-            D3D11_BUFFER_DESC bd{}; bd.ByteWidth = 64; bd.Usage = D3D11_USAGE_DEFAULT; bd.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
-            const bool ok = d && SUCCEEDED(d->CreatePixelShader(g_tonefix_ps, sizeof(g_tonefix_ps), nullptr, &g_tonePs))
-                            && SUCCEEDED(d->CreateBuffer(&bd, nullptr, &g_toneCb));
-            if (d) d->Release();
-            if (!ok) { g_toneFail = true; return false; }
-        }
-        auto h = [](float x) { return (x * (0.22f * x + 0.03f) + 0.002f) / (x * (0.22f * x + 0.3f) + 0.06f) - 0.0333333f; };
-        tone_lut_refresh(c);   // GAMELOOK
-        {   // SCENEFMT: the picture this pass gets (view format)
-            ID3D11ShaderResourceView* s0 = nullptr; c->PSGetShaderResources(0, 1, &s0);
-            if (s0) { D3D11_SHADER_RESOURCE_VIEW_DESC vd0{}; s0->GetDesc(&vd0); g_toneSceneFmt = vd0.Format; s0->Release(); }
-        }
-        if (!g_toneSmp)   // GLOWFIRST: the glow needs the sampler even with no colour table yet
-        {
-            ID3D11Device* d = nullptr; c->GetDevice(&d);
-            D3D11_SAMPLER_DESC sd{}; sd.Filter = D3D11_FILTER_MIN_MAG_MIP_LINEAR;
-            sd.AddressU = sd.AddressV = sd.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP; sd.MaxLOD = D3D11_FLOAT32_MAX;
-            if (d) { d->CreateSamplerState(&sd, &g_toneSmp); d->Release(); }
-        }
-        const float tw = (g_toneLutSrv && g_toneSmp) ? akvr_gamegrade_weight() : 0.0f;
-        const float base = 2.51f + (1.87f - 2.51f) * (tw < 1.0f ? tw : 1.0f);   // GRADEFIT: lower when the colour table follows (strength above 1 = more table, same exposure)
-        bool co; float cp, cs, ae, ed; akvr_post_get(co, cp, cs, ae, ed);
-        float cb[16] = { base * exp2f(g_toneStops), 1.0f / h(11.2f), 1.0f, tw, ed, (float)g_toneLutN, 0.0f, 0.0f, 0, 0, 0, 0, 0, 0, 0, 0 };
-        const bool glowed = g_toneSmp && tg_run(c, cb);   // GLOWFIRST (cb[8..11] filled when it runs)
-        if (!glowed) cb[8] = 0.0f;
-        c->UpdateSubresource(g_toneCb, 0, nullptr, cb, 0, 0);
-        p.ps = nullptr; p.cb = nullptr; p.srv = nullptr; p.smp = nullptr; p.srv9 = nullptr;
-        c->PSGetShaderResources(9, 1, &p.srv9);
-        if (glowed) c->PSSetShaderResources(9, 1, &g_tgSrv[0]);
-        c->PSGetShader(&p.ps, nullptr, nullptr);
-        c->PSGetConstantBuffers(13, 1, &p.cb);
-        c->PSGetShaderResources(8, 1, &p.srv);
-        c->PSGetSamplers(7, 1, &p.smp);
-        c->PSSetShader(g_tonePs, nullptr, 0);
-        c->PSSetConstantBuffers(13, 1, &g_toneCb);
-        if (g_toneLutSrv) c->PSSetShaderResources(8, 1, &g_toneLutSrv);
-        if (g_toneSmp) c->PSSetSamplers(7, 1, &g_toneSmp);
-        InterlockedIncrement(&g_toneDraws);
-        return true;
-    }
-    void tone_post(ID3D11DeviceContext* c, TonePrev& p)
-    {
-        c->PSSetShader(p.ps, nullptr, 0);
-        c->PSSetConstantBuffers(13, 1, &p.cb);
-        c->PSSetShaderResources(8, 1, &p.srv);
-        c->PSSetSamplers(7, 1, &p.smp);
-        c->PSSetShaderResources(9, 1, &p.srv9);
-        if (p.srv9) p.srv9->Release();
-        if (p.ps) p.ps->Release();
-        if (p.cb) p.cb->Release();
-        if (p.srv) p.srv->Release();
-        if (p.smp) p.smp->Release();
-    }
-    volatile bool g_hideEveryDraw = false;   // DRAWPROBE4: every game draw except the world rain and the HUD
-    void rw_rain_tick(ID3D11DeviceContext* c);   // RAINWRITER, below
-    bool probe_skip(ID3D11DeviceContext* c, UINT count, UINT inst = 1, int extraTag = 0)
-    {
-        if (g_gameAaOff)   // GAMEAA
-            if (CtxSh* s0 = ctx_sh(c, false))
-                if (s0->ps && sh_get(s0->ps) == kSmaaEdgePs) { InterlockedIncrement(&g_gameAaSkips); return true; }
-        // NEARSOFT 2026-10-07 - SOFTSWEEP soft_023156: dropping PS d252a8db4903737f (half size 1444x1430, 4 draws a frame,
-        // runs with depth of field on AND off) gave the near floor +10% fine detail (contrast matched, noise +-5%), the
-        // middle distance unchanged. Live switch: SKIP UNNEEDED STEPS bit 16.
-        if (g_blurOff & 16)
-            if (CtxSh* s0 = ctx_sh(c, false))
-                if (s0->ps && sh_get(s0->ps) == 0xd252a8db4903737full) { InterlockedIncrement(&g_blurDropped); return true; }
-        if (g_hideRain)   // NORAIN
-            if (CtxSh* s0 = ctx_sh(c, false))
-                if (s0->ps)
-                {
-                    const uint64_t ph = sh_get(s0->ps);
-                    if (ph == 0x5d787946eda54077ull || ph == 0x37313d9770da1c5eull) { InterlockedIncrement(&g_rainHidden); return true; }
-                }
-        if (!g_testTools || !g_probePs) return false;   // CLEANUP: the rain hunt is over
-        CtxSh* s = ctx_sh(c, false);
-        if (g_hideEveryDraw && g_scopeTid != GetCurrentThreadId() && !(s && s->ps && sh_get(s->ps) == g_probePs))
-        { InterlockedIncrement(&g_probeDropped); return true; }
-        if (!s || !s->ps) return false;
-        const uint64_t ph = sh_get(s->ps), vh = sh_get(s->vs);
-        bool hide = hid_pair(ph, vh);
-        for (LONG i = 0; i < g_hidGroupN && !hide; ++i) hide = g_hidGroup[i] == vh;
-        if (ph == g_probePs)
-        {
-            InterlockedIncrement(&g_probeHits);
-            rw_rain_tick(c);   // RAINWRITER
-            g_rainTex[0] = s->srv[0]; g_rainTex[1] = s->srv[1];
-            kind_note(ph, vh, 1, count, inst);                           // the world rain
-            for (int j = 0; j < 12; ++j)                                 // the 12 before it
-                if (s->ringPs[j] && s->ringPs[j] != ph) kind_note(s->ringPs[j], s->ringVs[j], 4, 0, 0);
-            s->sinceRain = 1;                                            // 0 = no rain yet on this context
-        }
-        else
-        {
-            int tag = 0;
-            for (int j = 0; j < 8; ++j)
-                if (s->srv[j] && (s->srv[j] == g_rainTex[0] || s->srv[j] == g_rainTex[1])) tag |= 2;   // rain texture
-            if (s->sinceRain > 0 && s->sinceRain <= 12) { tag |= 8; ++s->sinceRain; }               // after the rain
-            if (s->blendOn) tag |= 16;                                                               // see-through
-            tag |= extraTag;                                                                         // 64: indirect
-            if (tag) { kind_note(ph, vh, tag, count, inst); if (g_hideAllButRain) hide = true; }
-        }
-        s->ringPs[s->ringAt] = ph; s->ringVs[s->ringAt] = vh; s->ringAt = (s->ringAt + 1) % 12;
-        if (hide) InterlockedIncrement(&g_probeDropped);
-        return hide;
-    }
-
-    // RAINPARTS 2026-10-01 — JJ: hiding the world rain draw removes the stuck layer too, and with every OTHER draw
-    // hidden the stuck layer stays: the stuck streaks are INSTANCES of the world rain draw (6 x 20480, VS
-    // f50d1365e929b3a0 reads each streak from a structured buffer by SV_InstanceID). Test: draw only the first
-    // g_rainParts/8 of the instances (SV_InstanceID ignores StartInstanceLocation, so only the tail can be cut).
-    // RAINPARTS2 (JJ: at 1/8 the stuck layer is still there with only a few world drops; gone at 0): the stuck
-    // streaks are at the START of the instance list. The cut is now a streak count (-1 = all) to find where they end.
-    volatile LONG g_rainParts = -1;
-    UINT rain_inst(ID3D11DeviceContext* c, UINT inst)
-    {
-        if (g_rainParts < 0) return inst;
-        CtxSh* s = ctx_sh(c, false);
-        if (!s || !s->ps || sh_get(s->ps) != g_probePs) return inst;
-        return inst < (UINT)g_rainParts ? inst : (UINT)g_rainParts;
-    }
-
-    // NEARRAIN 2026-10-01 — JJ: "Can't we hang them in space like the rest of them?" The fix's rain VS (patch step
-    // 1h) reads cb12 for the first g_nearCount streaks: [0] = the game camera's own forward + mode (w: 0 as the game
-    // draws it, 1 hang in the room, 2 hidden), [1] = its right + the streak count, [2] = its up. Mode 1: each streak
-    // is re-placed from the head-turned camera (the shader reads that from its own view-projection) to the game's
-    // camera, so head turns no longer drag the block. Bound only around the rain draw; unbound cb12 reads 0 = off.
-    ID3D11Buffer* g_rainCb = nullptr;
-    // NEARHIDE 2026-10-01 — JJ on NEARRAIN2 (every "frames back" value): the block still turns "as if there's another
-    // camera orbiting it" - the game does not place it by a plain rotation about the camera, so it cannot simply be
-    // turned back. "Hang in the room" (1) stays as an experiment.
-    // NEARRAIN3 — JJ: originally the block followed the head's POSITION only; mode 1 added rotation. Mode 3 takes the
-    // head's position offset back off (no rotation) and is the default.
-    // FARRAIN 2026-10-01: the real cause is in the rain simulation (step 1i, g_farOn); the draw-side modes are off by default.
-    volatile LONG g_nearMode = 0;
-    volatile LONG g_nearLag = 0;   // NEARRAIN2: Presents back for the camera pair (0 = the draw's own view-projection)
-    volatile LONG g_nearCount = 2048;
-    volatile LONG g_nearBinds = 0, g_nearNoAxes = 0;
-    // RAINSTRETCH 2026-10-02 — JJ: isolated rain in the pause "sort of jitters a bit" when turning the head, "it kind of
-    // follows a little bit". Test switch: drop the per-frame camera term the rain VS adds to each streak (fix step 1l).
-    volatile LONG g_rainNoStretch = 0;
+    // PANELTIDY5 2026-10-11: the HDRCURVE / GAMELOOK / GLOWFIRST pass (the game's look with depth of field off) is removed.
+    // PANELTIDY5 2026-10-11: DRAWPROBE2-4 (draw kinds, see-through groups, hide every draw / everything but the rain,
+    // the compute-shader list), RAINPARTS, NEARRAIN / NEARRAIN2 / NEARRAIN3, RAINSTRETCH, RAINSPLIT and RAINWRITER removed.
     // FRAMEPAIR 2026-10-02 — JJ: "Head pose delay of 2 makes the rain go rock solid ... and it makes the [reticle] and the
-    // distance HUD marker go rock solid. The problem with that is that the world becomes jittery." UE3's one-frame thread
-    // lag (True: 44 -> 84 fps under geo-11, so it stays): the world is drawn with the camera recorded g_frameWorld
-    // Presents back, the rain and the HUD markers with the one a Present newer. Both are redrawn as the world's camera
-    // would see them: the rain per streak end in its shader (fix step 1o), the markers by a screen shift (row 4).
+    // distance HUD marker go rock solid. The problem with that is that the world becomes jittery." Off since THREADSYNC;
+    // the settings framefix / framedelay are still kept and reported.
     volatile LONG g_frameFix = 0;            // FRAMEPAIR for the HUD markers (setting framefix; off since THREADSYNC)
-    // RAINSPLIT 2026-10-02 — JJ: the rain correction "makes it continue to rain when the pause screen is on"; with it off
-    // the rain pauses again; and the option belongs in the rain section. Its own switch (setting rainframefix), and a
-    // readout of what it does each draw (turn, largest move near the camera, paused or not) for F2.
-    volatile LONG g_rainFrameFix = 0;        // off since THREADSYNC (setting rainframefix)
-    float g_rainRotDeg = 0.0f, g_rainMove = 0.0f; volatile LONG g_rainFixDraws = 0, g_rainFixPaused = 0;
     volatile LONG g_frameWorld = 2;          // FRAMEPAIR2: the head pose delay the rain and the markers match (JJ: 2)
-    // FRAMEPAIR2 2026-10-02 — JJ on FRAMEPAIR (the game-camera ring): the markers "still jitter when moving the head".
-    // Reproduce JJ's own test instead: the head pose the headset uses for the picture (the world's delay) vs the one at
-    // the rain's / markers' delay, from the same pose history. Rd (OpenXR view space, x right, y up, -z forward) takes a
-    // direction drawn for the markers' pose to the direction the world's pose shows it at: Rd = R(qWorld)^-1 R(qMarker).
-    bool head_fix_rot(float Rd[9])
-    {
-        const int a = akvr_xr_pose_delay_used(), b = (int)g_frameWorld;
-        if (a == b) return false;
-        float qa[4], qb[4];
-        if (!akvr_xr_pose_pair(a, b, qa, qb)) return false;
-        const float ax = -qa[0], ay = -qa[1], az = -qa[2], aw = qa[3];   // conj(qa)
-        const float bx = qb[0], by = qb[1], bz = qb[2], bw = qb[3];
-        const float w = aw * bw - ax * bx - ay * by - az * bz;
-        const float x = aw * bx + ax * bw + ay * bz - az * by;
-        const float y = aw * by - ax * bz + ay * bw + az * bx;
-        const float z = aw * bz + ax * by - ay * bx + az * bw;
-        Rd[0] = 1 - 2 * (y * y + z * z); Rd[1] = 2 * (x * y - z * w);     Rd[2] = 2 * (x * z + y * w);
-        Rd[3] = 2 * (x * y + z * w);     Rd[4] = 1 - 2 * (x * x + z * z); Rd[5] = 2 * (y * z - x * w);
-        Rd[6] = 2 * (x * z - y * w);     Rd[7] = 2 * (y * z + x * w);     Rd[8] = 1 - 2 * (x * x + y * y);
-        return true;
-    }
-    // The rain: X' = M X + t turns each streak about the drawn camera by Rd (in its UE3 axes: f = -z, r = x, u = y).
-    bool frame_pair(float M[9], float t[3])
-    {
-        float Rd[9], F[3], R[3], U[3], P[3];
-        if (!head_fix_rot(Rd) || !akvr_camera_pose_ago(0, F, R, U, P)) return false;
-        // Q = C^T Rd C with xr = C ue: xr.x = r, xr.y = u, xr.z = -f
-        const float C[9] = { 0, 1, 0,   0, 0, 1,   -1, 0, 0 };
-        float RC[9], Q[9];
-        for (int i = 0; i < 3; ++i) for (int j = 0; j < 3; ++j)
-        { float s = 0; for (int k = 0; k < 3; ++k) s += Rd[i * 3 + k] * C[k * 3 + j]; RC[i * 3 + j] = s; }
-        for (int i = 0; i < 3; ++i) for (int j = 0; j < 3; ++j)
-        { float s = 0; for (int k = 0; k < 3; ++k) s += C[k * 3 + i] * RC[k * 3 + j]; Q[i * 3 + j] = s; }
-        // M = A Q A^T, A = [F R U] as columns (world axes of the drawn camera)
-        const float* A[3] = { F, R, U };
-        for (int i = 0; i < 3; ++i) for (int j = 0; j < 3; ++j)
-        {
-            float s = 0;
-            for (int k = 0; k < 3; ++k) for (int l = 0; l < 3; ++l) s += A[k][i] * Q[k * 3 + l] * A[l][j];
-            M[i * 3 + j] = s;
-        }
-        for (int i = 0; i < 3; ++i) t[i] = P[i] - (M[i * 3] * P[0] + M[i * 3 + 1] * P[1] + M[i * 3 + 2] * P[2]);
-        return true;
-    }
-    bool rain_now(ID3D11DeviceContext* c)
-    {
-        if (!g_nearMode && !g_rainNoStretch && !g_rainFrameFix) return false;   // CLEANUP: mode 0 binds nothing; RAINSTRETCH / FRAMEPAIR need cb12
-        CtxSh* s = ctx_sh(c, false);
-        return s && s->ps && sh_get(s->ps) == g_probePs;
-    }
-    ID3D11Buffer* rain_cb_pre(ID3D11DeviceContext* c)
-    {
-        if (!g_rainCb)
-        {
-            ID3D11Device* dev = nullptr; c->GetDevice(&dev);
-            if (!dev) return nullptr;
-            D3D11_BUFFER_DESC bd{}; bd.ByteWidth = 144; bd.Usage = D3D11_USAGE_DEFAULT; bd.BindFlags = D3D11_BIND_CONSTANT_BUFFER;   // FRAMEPAIR: 9 rows
-            ID3D11Buffer* b = nullptr;
-            if (SUCCEEDED(dev->CreateBuffer(&bd, nullptr, &b)) && b)
-                if (InterlockedCompareExchangePointer((void**)&g_rainCb, b, nullptr) != nullptr) b->Release();
-            dev->Release();
-            if (!g_rainCb) return nullptr;
-        }
-        // NEARRAIN2 — JJ on NEARRAIN: "only for position translation. When rotating your head around, the rain as a
-        // complete block seems to rotate." Likely the game places the block with an OLDER camera than the one this
-        // draw uses. g_nearLag > 0: send the game camera AND the drawn camera from that many Presents ago
-        // (cb12[3..5], flag cb12[3].w = 1) and the shader uses that pair instead of its own view-projection.
-        float d[36] = {};
-        float* fwd = d; float* right = d + 4; float* up = d + 8;
-        bool axes = false;
-        if (g_nearMode == 3)   // NEARRAIN3: cb12[0].xyz = the head's position offset to take back off (mode 3)
-            axes = akvr_camera_pos_delta_ago((int)g_nearLag, d);
-        else if (g_nearLag > 0)
-        {
-            axes = akvr_camera_axes_ago((int)g_nearLag, fwd, right, up, d + 12, d + 16, d + 20);
-            if (axes) d[15] = 1.0f;
-        }
-        else axes = akvr_camera_base_axes(fwd, right, up);
-        if (!axes) InterlockedIncrement(&g_nearNoAxes);
-        d[3] = (float)(axes || g_nearMode == 2 ? g_nearMode : 0);
-        d[7] = (float)g_nearCount;
-        d[11] = g_rainNoStretch ? 1.0f : 0.0f;   // RAINSTRETCH (fix step 1l): cb12[2].w = 1 drops the streak's camera term
-        // FRAMEPAIR (fix step 1o): rows 6-8 = M | t, cb12[4].w = 1 on
-        if (g_rainFrameFix)
-        {
-            float M[9], t[3];
-            if (frame_pair(M, t))
-            {
-                for (int i = 0; i < 3; ++i) { d[24 + i * 4] = M[i * 3]; d[25 + i * 4] = M[i * 3 + 1]; d[26 + i * 4] = M[i * 3 + 2]; d[27 + i * 4] = t[i]; }
-                d[19] = 1.0f;
-                // RAINSPLIT readout: the turn this draw, and how far a streak 3 m (300 units) away moves
-                float c = (M[0] + M[4] + M[8] - 1.0f) * 0.5f; c = c > 1.0f ? 1.0f : (c < -1.0f ? -1.0f : c);
-                g_rainRotDeg = acosf(c) * 57.29578f;
-                g_rainMove = g_rainRotDeg * 0.01745329f * 300.0f;
-                InterlockedIncrement(&g_rainFixDraws);
-                if (akvr_xr_pause_live()) InterlockedIncrement(&g_rainFixPaused);
-            }
-        }
-        c->UpdateSubresource(g_rainCb, 0, nullptr, d, 0, 0);
-        ID3D11Buffer* old = nullptr;
-        c->VSGetConstantBuffers(12, 1, &old);
-        c->VSSetConstantBuffers(12, 1, (ID3D11Buffer* const*)&g_rainCb);
-        InterlockedIncrement(&g_nearBinds);
-        return old;
-    }
-    void rain_cb_post(ID3D11DeviceContext* c, ID3D11Buffer* old)
-    {
-        c->VSSetConstantBuffers(12, 1, &old);
-        if (old) old->Release();
-    }
 
-    // RAINWRITER 2026-10-01 — JJ on NEARHIDE: "I don't want them turned off. I want them fixed so they hang in space."
-    // NEARRAIN2 turned each streak about the camera and JJ saw the block "rotate as if there's another camera orbiting
-    // it": the streaks are already world-placed; what follows the view is the REGION they are kept in (streaks leaving
-    // it are moved to its far side). That happens where the game moves the rain, not in the draw. Find it: the
-    // resource the rain VS reads (t0) is watched, plus anything copied into it; every compute dispatch with a watched
-    // resource bound as a UAV is recorded (shader name, its constant buffers and their last contents), and that
-    // shader's original bytecode is saved as akvr_shader_<hash>.bin for disassembly. CPU writes are counted too.
-    void* volatile g_rwWatch[8] = {};
-    volatile LONG g_rwWatchN = 0, g_rwCpuWrites = 0, g_rwCopies = 0, g_rwRainSeen = 0;
-    bool rw_watched(void* r)
-    {
-        if (!r) return false;
-        for (LONG i = 0; i < g_rwWatchN; ++i) if (g_rwWatch[i] == r) return true;
-        return false;
-    }
-    void rw_watch(void* r)
-    {
-        if (!r || rw_watched(r)) return;
-        const LONG n = g_rwWatchN;
-        if (n < 8) { g_rwWatch[n] = r; InterlockedExchange(&g_rwWatchN, n + 1); }
-    }
-    struct CsCode { uint64_t h; void* p; SIZE_T n; };
-    CsCode  g_csCode[2048] = {};
-    volatile LONG g_csCodeN = 0;
-    SRWLOCK g_csCodeLock = SRWLOCK_INIT;
-    void cs_code_keep(const void* code, SIZE_T len)
-    {
-        if (!code || !len || len > (1u << 20)) return;
-        uint64_t h = 0;
-        __try { h = fnv64(code, len); } __except (EXCEPTION_EXECUTE_HANDLER) { return; }
-        AcquireSRWLockExclusive(&g_csCodeLock);
-        bool have = false;
-        for (LONG i = 0; i < g_csCodeN && !have; ++i) have = g_csCode[i].h == h;
-        if (!have && g_csCodeN < 2048)
-            if (void* p = malloc(len))
-            {
-                bool ok = true;
-                __try { memcpy(p, code, len); } __except (EXCEPTION_EXECUTE_HANDLER) { ok = false; }
-                if (ok) g_csCode[g_csCodeN++] = { h, p, len }; else free(p);
-            }
-        ReleaseSRWLockExclusive(&g_csCodeLock);
-    }
-    void cs_code_save(uint64_t h)
-    {
-        AcquireSRWLockShared(&g_csCodeLock);
-        for (LONG i = 0; i < g_csCodeN; ++i)
-            if (g_csCode[i].h == h)
-            {
-                wchar_t path[MAX_PATH];
-                const DWORD n = GetModuleFileNameW(nullptr, path, MAX_PATH);
-                wchar_t* slash = n ? wcsrchr(path, L'\\') : nullptr;
-                if (slash)
-                {
-                    { wcscpy_s(slash + 1, MAX_PATH - (slash + 1 - path), L"akvr_captures"); CreateDirectoryW(path, nullptr); wcscat_s(path, L"\\shaders"); CreateDirectoryW(path, nullptr); const size_t at = wcslen(path); _snwprintf_s(path + at, MAX_PATH - at, _TRUNCATE, L"\\%016llx.bin", (unsigned long long)h); }   // CAPTUREDIR: into akvr_captures, folder shaders
-                    HANDLE f = CreateFileW(path, GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
-                    if (f != INVALID_HANDLE_VALUE) { DWORD w = 0; WriteFile(f, g_csCode[i].p, (DWORD)g_csCode[i].n, &w, nullptr); CloseHandle(f); }
-                }
-                break;
-            }
-        ReleaseSRWLockShared(&g_csCodeLock);
-    }
-    // per game-side context (same index as g_ctxSh): the CS unordered-access views' resources and constant buffers
-    void* g_ctxUav[32][8] = {};
-    void* g_ctxCsCb[32][4] = {};
-    struct RwWriter { uint64_t h; long dispatches; int watch; void* cb[4]; };
-    RwWriter g_rw[8] = {};
-    int      g_rwN = 0;
-    SRWLOCK  g_rwLock = SRWLOCK_INIT;
-    struct CbSnap { void* cb; UINT size; void* mapped; uint8_t data[1024]; long writes; };
-    CbSnap   g_cbSnap[16] = {};
-    int      g_cbSnapN = 0;
-    typedef void (__stdcall* CSSetUavFn)(ID3D11DeviceContext*, UINT, UINT, ID3D11UnorderedAccessView* const*, const UINT*);
-    CSSetUavFn oCSSetUavG = nullptr;
-    void __stdcall hkCSSetUavG(ID3D11DeviceContext* c, UINT start, UINT num, ID3D11UnorderedAccessView* const* u, const UINT* ic)
-    {
-        if (g_testTools) if (CtxSh* s = ctx_sh(c, true))
-        {
-            const int ci = (int)(s - g_ctxSh);
-            for (UINT i = 0; i < num && start + i < 8; ++i)
-            {
-                void* res = nullptr;
-                if (u && u[i]) { ID3D11Resource* r = nullptr; u[i]->GetResource(&r); res = r; if (r) r->Release(); }
-                g_ctxUav[ci][start + i] = res;
-            }
-        }
-        oCSSetUavG(c, start, num, u, ic);
-    }
-    typedef void (__stdcall* CSSetCBFn)(ID3D11DeviceContext*, UINT, UINT, ID3D11Buffer* const*);
-    CSSetCBFn oCSSetCBG = nullptr;
-    void __stdcall hkCSSetCBG(ID3D11DeviceContext* c, UINT start, UINT num, ID3D11Buffer* const* b)
-    {
-        if (g_testTools) if (CtxSh* s = ctx_sh(c, true))
-        {
-            const int ci = (int)(s - g_ctxSh);
-            for (UINT i = 0; i < num && start + i < 4; ++i) g_ctxCsCb[ci][start + i] = b ? b[i] : nullptr;
-        }
-        oCSSetCBG(c, start, num, b);
-    }
-    typedef void (__stdcall* CopyResFn)(ID3D11DeviceContext*, ID3D11Resource*, ID3D11Resource*);
-    CopyResFn oCopyResG = nullptr;
-    void __stdcall hkCopyResG(ID3D11DeviceContext* c, ID3D11Resource* dst, ID3D11Resource* src)
-    {
-        if (rw_watched(dst)) { InterlockedIncrement(&g_rwCopies); rw_watch(src); }
-        oCopyResG(c, dst, src);
-    }
-    typedef void (__stdcall* CopySubFn)(ID3D11DeviceContext*, ID3D11Resource*, UINT, UINT, UINT, UINT, ID3D11Resource*, UINT, const D3D11_BOX*);
-    CopySubFn oCopySubG = nullptr;
-    void __stdcall hkCopySubG(ID3D11DeviceContext* c, ID3D11Resource* dst, UINT ds, UINT x, UINT y, UINT z, ID3D11Resource* src, UINT ss, const D3D11_BOX* b)
-    {
-        if (rw_watched(dst)) { InterlockedIncrement(&g_rwCopies); rw_watch(src); }
-        oCopySubG(c, dst, ds, x, y, z, src, ss, b);
-    }
-    void rw_on_rain_draw(ID3D11DeviceContext* c)   // the rain particles are being drawn: watch what they read
-    {
-        InterlockedIncrement(&g_rwRainSeen);
-        ID3D11ShaderResourceView* srv = nullptr;
-        c->VSGetShaderResources(0, 1, &srv);
-        if (!srv) return;
-        ID3D11Resource* r = nullptr;
-        srv->GetResource(&r);
-        srv->Release();
-        if (r) { rw_watch(r); r->Release(); }
-    }
-    void rw_rain_tick(ID3D11DeviceContext* c)   // from the rain draw: learn its buffer first, then re-check now and then
-    {
-        if (g_rwWatchN == 0 || (g_probeHits & 255) == 0) rw_on_rain_draw(c);
-    }
-    void rw_on_dispatch(ID3D11DeviceContext* c, uint64_t h)
-    {
-        if (!g_rwWatchN) return;
-        CtxSh* s = ctx_sh(c, false);
-        if (!s) return;
-        const int ci = (int)(s - g_ctxSh);
-        int w = -1;
-        for (int i = 0; i < 8 && w < 0; ++i)
-            for (LONG k = 0; k < g_rwWatchN && w < 0; ++k)
-                if (g_ctxUav[ci][i] && g_ctxUav[ci][i] == g_rwWatch[k]) w = (int)k;
-        if (w < 0) return;
-        bool fresh = false;
-        AcquireSRWLockExclusive(&g_rwLock);
-        int k = 0;
-        for (; k < g_rwN; ++k) if (g_rw[k].h == h) break;
-        if (k == g_rwN && g_rwN < 8) { g_rw[g_rwN++] = { h, 0, w, {} }; fresh = true; }
-        if (k < 8)
-        {
-            ++g_rw[k].dispatches;
-            for (int i = 0; i < 4; ++i)
-            {
-                void* cb = g_ctxCsCb[ci][i];
-                g_rw[k].cb[i] = cb;
-                bool have = false;
-                for (int j = 0; j < g_cbSnapN && !have; ++j) have = g_cbSnap[j].cb == cb;
-                if (cb && !have && g_cbSnapN < 16)
-                {
-                    CbSnap& sn = g_cbSnap[g_cbSnapN++];
-                    sn.cb = cb; sn.mapped = nullptr; sn.writes = 0;
-                    D3D11_BUFFER_DESC d{}; ((ID3D11Buffer*)cb)->GetDesc(&d);
-                    sn.size = d.ByteWidth > 1024 ? 1024 : d.ByteWidth;
-                }
-            }
-        }
-        ReleaseSRWLockExclusive(&g_rwLock);
-        if (fresh) cs_code_save(h);
-    }
-    CbSnap* cb_snap(void* r)
-    {
-        for (int j = 0; j < g_cbSnapN; ++j) if (g_cbSnap[j].cb == r) return &g_cbSnap[j];
-        return nullptr;
-    }
-    void rw_note_cpu_write(void* r) { if (rw_watched(r)) InterlockedIncrement(&g_rwCpuWrites); }
-    void rw_note_cb_data(void* r, const void* data, UINT, bool mapped)
-    {
-        CbSnap* s = cb_snap(r);
-        if (!s || !data) return;
-        if (mapped) { s->mapped = (void*)data; return; }
-        __try { memcpy(s->data, data, s->size); ++s->writes; } __except (EXCEPTION_EXECUTE_HANDLER) {}
-    }
-    void rw_note_unmap(void* r)
-    {
-        CbSnap* s = cb_snap(r);
-        if (!s || !s->mapped) return;
-        __try { memcpy(s->data, s->mapped, s->size); ++s->writes; } __except (EXCEPTION_EXECUTE_HANDLER) {}
-        s->mapped = nullptr;
-    }
-
-    // DRAWPROBE4 2026-10-01 — JJ: with every see-through draw hidden, the stuck rain is STILL there. Two blind spots:
-    // (1) the indirect draws (slots 39/40: the GPU supplies the count - how GPU-simulated effects are usually drawn)
-    // were never hooked; (2) compute shaders (the fix names two rain ones: a96594b16ceb399b "Rain haloing CS",
-    // bc5c6aebf60c9308 "Rain haloing CS 2 (splash)"). Both are listed and can be hidden now.
-    typedef void (__stdcall* DrawIndFn)(ID3D11DeviceContext*, ID3D11Buffer*, UINT);
-    DrawIndFn oDrawIIIG = nullptr, oDrawIIG = nullptr;
-    void __stdcall hkDrawIIIG(ID3D11DeviceContext* c, ID3D11Buffer* b, UINT o) { if (probe_skip(c, 0, 0, 64)) return; oDrawIIIG(c, b, o); }
-    void __stdcall hkDrawIIG(ID3D11DeviceContext* c, ID3D11Buffer* b, UINT o) { if (probe_skip(c, 0, 0, 64)) return; oDrawIIG(c, b, o); }
-    struct CsKind { uint64_t h; long frame, now, last; bool hide; };
-    CsKind  g_csKinds[96] = {};
-    int     g_csN = 0;
-    SRWLOCK g_csLock = SRWLOCK_INIT;
-    volatile bool g_hideAllCs = false;
     void* g_ctxCs[32] = {};   // compute shader bound, by g_ctxSh index
-    bool cs_skip(ID3D11DeviceContext* c, uint64_t* hashOut = nullptr)
+    uint64_t cs_hash(ID3D11DeviceContext* c)   // the bound compute shader's name (FARRAIN)
     {
         CtxSh* s = ctx_sh(c, true);
-        const uint64_t h = s ? sh_get(g_ctxCs[s - g_ctxSh]) : 0;
-        if (hashOut) *hashOut = h;
-        // SKIPSTEPS 2026-10-06 - COSTSWEEP cost_184122 (normal 13.92 ms): dropping ed72bff815f35134 saved 0.42 ms (per-tile
-        // maximum motion = motion-blur groundwork; MotionBlur is off in VR), 491bf40c8b149566 0.37 ms (JJ's "B": no
-        // visible change), bd67c92e94ebccd1 0.33 ms (the DoF blur amounts: no visible effect in play, BLURAB 17:57).
-        // ff444aaf (0.28 ms, changes the glow) and 679d7ed1 (1.07 ms, black picture) stay. Bits 2 / 4 / 8.
-        if (g_blurOff && h && ((g_blurOff & 1) && h == kDofApplyCs || (g_blurOff & 2) && h == kDofBlurCs ||
-                               (g_blurOff & 4) && h == 0xed72bff815f35134ull || (g_blurOff & 8) && h == 0xbd67c92e94ebccd1ull))   // BLUROFF / SKIPSTEPS (= kDofCocCs, declared below)
-        { InterlockedIncrement(&g_blurDropped); return true; }
-        if (!g_testTools) return false;   // CLEANUP: only the shader name (FARRAIN) outside the rain hunt
-        rw_on_dispatch(c, h);   // RAINWRITER
-        const long f = g_frameNow();
-        bool hide = false;
-        AcquireSRWLockExclusive(&g_csLock);
-        int k = 0;
-        for (; k < g_csN; ++k) if (g_csKinds[k].h == h) break;
-        if (k == g_csN && g_csN < 96) g_csKinds[g_csN++] = { h, f, 0, 0, false };
-        if (k < 96)
-        {
-            CsKind& d = g_csKinds[k];
-            if (d.frame != f) { d.last = d.now; d.now = 0; d.frame = f; }
-            ++d.now; hide = d.hide;
-        }
-        ReleaseSRWLockExclusive(&g_csLock);
-        return hide || g_hideAllCs;
+        return s ? sh_get(g_ctxCs[s - g_ctxSh]) : 0;
     }
     typedef void (__stdcall* CSSetFn)(ID3D11DeviceContext*, ID3D11ComputeShader*, ID3D11ClassInstance* const*, UINT);
     CSSetFn oCSSetG = nullptr;
@@ -1609,9 +769,7 @@ namespace {
         }
         float d[12] = {};
         float* fwd = d; float* right = d + 4; float* up = d + 8;
-        bool ok = false;
-        if (g_nearLag > 0) { float ff[3], fr[3], fu[3]; ok = akvr_camera_axes_ago((int)g_nearLag, fwd, right, up, ff, fr, fu); }
-        else ok = akvr_camera_base_axes(fwd, right, up);
+        const bool ok = akvr_camera_base_axes(fwd, right, up);
         if (!ok) InterlockedIncrement(&g_farNoAxes);
         float row[4] = { fwd[0], fwd[1], fwd[2], ok ? 1.0f : 0.0f };
         c->UpdateSubresource(g_farCb, 0, nullptr, row, 0, 0);
@@ -1626,59 +784,20 @@ namespace {
         c->CSSetConstantBuffers(13, 1, &old);
         if (old) old->Release();
     }
-    // DOFBLUR 2026-10-06 - the game's depth-of-field setup CS bd67c92e94ebccd1 (decompiled from DOFDUMP: per pixel,
-    // linear depth -> distance -> blur amount = cb0[6].y * (1 - cb0[6].x / distance), packed with a half-size copy of
-    // the picture for the blur passes). Fix step 1t adds an assembly copy that multiplies that amount by
-    // (1 - cb13[0].x). Around its dispatch cb13.x = 1 - g_blurKeep; nothing bound = the game's blur.
-    constexpr uint64_t kDofCocCs = 0xbd67c92e94ebccd1ull;
-    volatile float g_blurKeep = 1.0f;
-    volatile LONG g_blurBinds = 0;
-    volatile LONG g_dofSeen = 0;   // DOFPANEL: dispatches of the DoF setup shader seen (bound or not)
-    ID3D11Buffer* g_dofCb = nullptr;
-    ID3D11Buffer* dof_cb_pre(ID3D11DeviceContext* c)
-    {
-        if (!g_dofCb)
-        {
-            ID3D11Device* dev = nullptr; c->GetDevice(&dev);
-            if (!dev) return nullptr;
-            D3D11_BUFFER_DESC bd{}; bd.ByteWidth = 16; bd.Usage = D3D11_USAGE_DEFAULT; bd.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
-            ID3D11Buffer* b = nullptr;
-            if (SUCCEEDED(dev->CreateBuffer(&bd, nullptr, &b)) && b)
-                if (InterlockedCompareExchangePointer((void**)&g_dofCb, b, nullptr) != nullptr) b->Release();
-            dev->Release();
-            if (!g_dofCb) return nullptr;
-        }
-        const float row[4] = { 1.0f - g_blurKeep, 0.0f, 0.0f, 0.0f };
-        c->UpdateSubresource(g_dofCb, 0, nullptr, row, 0, 0);
-        ID3D11Buffer* old = nullptr;
-        c->CSGetConstantBuffers(13, 1, &old);
-        c->CSSetConstantBuffers(13, 1, (ID3D11Buffer* const*)&g_dofCb);
-        InterlockedIncrement(&g_blurBinds);
-        return old;
-    }
     typedef void (__stdcall* DispatchFn)(ID3D11DeviceContext*, UINT, UINT, UINT);
+    typedef void (__stdcall* DrawIndFn)(ID3D11DeviceContext*, ID3D11Buffer*, UINT);
     DispatchFn oDispatchG = nullptr;
     void __stdcall hkDispatchG(ID3D11DeviceContext* c, UINT x, UINT y, UINT z)
     {
-        uint64_t h = 0;
-        if (cs_skip(c, &h)) return;
-        if (g_censusLeft > 0 && g_censusLeft <= 60) census_note(2, h, 0, (int)x, (int)y);   // SHCENSUS
+        const uint64_t h = cs_hash(c);
         if (h == kRainCs && g_farOn) { ID3D11Buffer* ob = far_cb_pre(c); oDispatchG(c, x, y, z); far_cb_post(c, ob); return; }   // FARRAIN
-        if (h == kDofCocCs) InterlockedIncrement(&g_dofSeen);   // DOFPANEL
-        if (h == 0x679d7ed1d48858e9ull) akvr_gamegrade_grab(c);   // GAMEGRADE: the game's colour table (t1)
-        if (h == kDofCocCs && g_blurKeep < 0.999f) { ID3D11Buffer* ob = dof_cb_pre(c); oDispatchG(c, x, y, z); far_cb_post(c, ob); return; }   // DOFBLUR
         oDispatchG(c, x, y, z);
     }
     DrawIndFn oDispatchIndG = nullptr;
     void __stdcall hkDispatchIndG(ID3D11DeviceContext* c, ID3D11Buffer* b, UINT o)
     {
-        uint64_t h = 0;
-        if (cs_skip(c, &h)) return;
-        if (g_censusLeft > 0 && g_censusLeft <= 60) census_note(2, h, 0, -1, -1);   // SHCENSUS
+        const uint64_t h = cs_hash(c);
         if (h == kRainCs && g_farOn) { ID3D11Buffer* ob = far_cb_pre(c); oDispatchIndG(c, b, o); far_cb_post(c, ob); return; }   // FARRAIN
-        if (h == kDofCocCs) InterlockedIncrement(&g_dofSeen);   // DOFPANEL
-        if (h == 0x679d7ed1d48858e9ull) akvr_gamegrade_grab(c);   // GAMEGRADE
-        if (h == kDofCocCs && g_blurKeep < 0.999f) { ID3D11Buffer* ob = dof_cb_pre(c); oDispatchIndG(c, b, o); far_cb_post(c, ob); return; }   // DOFBLUR
         oDispatchIndG(c, b, o);
     }
     typedef HRESULT (__stdcall* CreateCSFn)(ID3D11Device*, const void*, SIZE_T, ID3D11ClassLinkage*, ID3D11ComputeShader**);
@@ -1699,7 +818,7 @@ namespace {
             else flare_note(1, false);
         }
         HRESULT hr = oCreateCS[K](d, code, len, cl, out);
-        if (SUCCEEDED(hr) && out && *out) { sh_note(code, len, *out); if (g_testTools) cs_code_keep(code, len); }   // RAINWRITER: keep the code
+        if (SUCCEEDED(hr) && out && *out) sh_note(code, len, *out);
         return hr;
     }
 
@@ -1768,22 +887,6 @@ namespace {
     void note_draw(ID3D11DeviceContext* c, int layer)
     {
         InterlockedIncrement(&g_cDraw[layer]);
-        if (layer == 0 && g_censusLeft > 0 && g_censusLeft <= 60)   // SHCENSUS (the first frames only fill the bindings)
-        {
-            CtxSh* sh = ctx_sh(c, false);
-            int w = 0, h = 0;
-            ID3D11RenderTargetView* rtv = nullptr;
-            c->OMGetRenderTargets(1, &rtv, nullptr);
-            if (rtv)
-            {
-                ID3D11Resource* r = nullptr; rtv->GetResource(&r);
-                ID3D11Texture2D* t = nullptr;
-                if (r && SUCCEEDED(r->QueryInterface(__uuidof(ID3D11Texture2D), (void**)&t)) && t) { D3D11_TEXTURE2D_DESC d{}; t->GetDesc(&d); w = (int)d.Width; h = (int)d.Height; t->Release(); }
-                if (r) r->Release();
-                rtv->Release();
-            }
-            census_note(1, sh ? sh_get(sh->ps) : 0, sh ? sh_get(sh->vs) : 0, w, h);
-        }
         if (!scope_on()) return;
         AcquireSRWLockExclusive(&g_lock);
         if (Scope* s = cur_scope())
@@ -1895,19 +998,14 @@ namespace {
         for (int i = 0; i < 8; ++i) if (f[i] < -0.0002f && f[i] > -0.02f) return true;   // PARTTAG5: stacked marks too
         return false;
     }
-    void rw_note_cpu_write(void* r);                       // RAINWRITER, below
-    void rw_note_cb_data(void* r, const void* data, UINT size, bool mapped);
     HRESULT __stdcall hkMapG(ID3D11DeviceContext* c, ID3D11Resource* r, UINT sub, D3D11_MAP t, UINT f, D3D11_MAPPED_SUBRESOURCE* m)
     {
         const HRESULT hr = oMapG(c, r, sub, t, f, m);
-        if (SUCCEEDED(hr) && m) { rw_note_cpu_write(r); rw_note_cb_data(r, m->pData, 0, true); }   // RAINWRITER
         if (SUCCEEDED(hr) && m && snoop_ctx(c)) if (Shadow* s = sh_find(r, false)) s->mapped = m->pData;
         return hr;
     }
-    void rw_note_unmap(void* r);                          // RAINWRITER, below
     void __stdcall hkUnmapG(ID3D11DeviceContext* c, ID3D11Resource* r, UINT sub)
     {
-        rw_note_unmap(r);   // RAINWRITER
         if (snoop_ctx(c))
             if (Shadow* s = sh_find(r, false))
                 if (s->mapped && s->size) { __try { memcpy(s->data, s->mapped, s->size); } __except (EXCEPTION_EXECUTE_HANDLER) {} s->mapped = nullptr; }
@@ -1915,7 +1013,6 @@ namespace {
     }
     void __stdcall hkUpdSubG(ID3D11DeviceContext* c, ID3D11Resource* r, UINT sub, const D3D11_BOX* box, const void* src, UINT rp, UINT dp)
     {
-        if (src) { rw_note_cpu_write(r); if (!box) rw_note_cb_data(r, src, 0, false); }   // RAINWRITER
         if (snoop_ctx(c) && !box && src)
             if (Shadow* s = sh_find(r, false))
                 if (s->size) { __try { memcpy(s->data, src, s->size); } __except (EXCEPTION_EXECUTE_HANDLER) {} }
@@ -1924,7 +1021,7 @@ namespace {
     int vs_hud_index(void* vs);
     void mark_record(ID3D11DeviceContext* c, bool split, UINT cnt, UINT inst)
     {
-        if ((!g_testTools && g_mrRecLeft <= 0) || g_mrCurN >= 96) return;   // CLEANUP: test tools, or 2 frames after an F2 (WORLDCARD)
+        if (g_mrRecLeft <= 0 || g_mrCurN >= 96) return;   // WORLDCARD: only the 2 HUD frames after an F2
         MarkRow& m = g_mrCur[g_mrCurN++];
         m.vs = vs_hud_index(g_curVs); m.split = split ? 1 : 0; m.nHits = 0; m.cbSize = 0;
         m.toH = g_hBound ? 1 : 0; m.cnt = cnt; m.inst = inst;   // CBDUMP
@@ -1974,8 +1071,6 @@ namespace {
         static void __stdcall DrawIndexed(ID3D11DeviceContext* c, UINT n, UINT s, INT b)
         {
             note_draw(c, L);
-            if (L == 0 && probe_skip(c, n)) return;   // DRAWPROBE
-            if (L == 0 && tone_now(c)) { TonePrev tp; if (tone_pre(c, tp)) { oDrawIndexed(c, n, s, b); tone_post(c, tp); return; } }   // HDRCURVE
             if (L == 0 && snoop_ctx(c)) mark_record(c, split_now(c), n, 1);   // MARKREC
             if (L == 0 && split_now(c) && hud_wait_skip()) return;   // HUDWAIT: no HUD until its parts are known
             if (L == 0 && split_now(c) && layer_only_now()) { layer_only_pre(c); oDrawIndexed(c, n, s, b); layer_only_post(c); return; }   // PSMARK
@@ -1992,8 +1087,6 @@ namespace {
         static void __stdcall Draw(ID3D11DeviceContext* c, UINT n, UINT s)
         {
             note_draw(c, L);
-            if (L == 0 && probe_skip(c, n)) return;   // DRAWPROBE
-            if (L == 0 && tone_now(c)) { TonePrev tp; if (tone_pre(c, tp)) { oDraw(c, n, s); tone_post(c, tp); return; } }   // HDRCURVE
             if (L == 0 && snoop_ctx(c)) mark_record(c, split_now(c), n, 1);   // MARKREC
             if (L == 0 && split_now(c) && hud_wait_skip()) return;   // HUDWAIT: no HUD until its parts are known
             if (L == 0 && split_now(c) && layer_only_now()) { layer_only_pre(c); oDraw(c, n, s); layer_only_post(c); return; }   // PSMARK
@@ -2010,9 +1103,6 @@ namespace {
         static void __stdcall DrawIdxInst(ID3D11DeviceContext* c, UINT a, UINT i, UINT s, INT b, UINT si)
         {
             note_draw(c, L);
-            if (L == 0 && probe_skip(c, a, i)) return;   // DRAWPROBE
-            if (L == 0) i = rain_inst(c, i);   // RAINPARTS
-            if (L == 0 && rain_now(c)) { ID3D11Buffer* ob = rain_cb_pre(c); oDrawIdxInst(c, a, i, s, b, si); rain_cb_post(c, ob); return; }   // NEARRAIN
             if (L == 0 && snoop_ctx(c)) mark_record(c, split_now(c), a, i);   // MARKREC
             if (L == 0 && split_now(c) && hud_wait_skip()) return;   // HUDWAIT: no HUD until its parts are known
             if (L == 0 && split_now(c) && layer_only_now()) { layer_only_pre(c); oDrawIdxInst(c, a, i, s, b, si); layer_only_post(c); return; }   // PSMARK
@@ -2029,9 +1119,6 @@ namespace {
         static void __stdcall DrawInst(ID3D11DeviceContext* c, UINT a, UINT i, UINT s, UINT si)
         {
             note_draw(c, L);
-            if (L == 0 && probe_skip(c, a, i)) return;   // DRAWPROBE
-            if (L == 0) i = rain_inst(c, i);   // RAINPARTS
-            if (L == 0 && rain_now(c)) { ID3D11Buffer* ob = rain_cb_pre(c); oDrawInst(c, a, i, s, si); rain_cb_post(c, ob); return; }   // NEARRAIN
             if (L == 0 && snoop_ctx(c)) mark_record(c, split_now(c), a, i);   // MARKREC
             if (L == 0 && split_now(c) && hud_wait_skip()) return;   // HUDWAIT: no HUD until its parts are known
             if (L == 0 && split_now(c) && layer_only_now()) { layer_only_pre(c); oDrawInst(c, a, i, s, si); layer_only_post(c); return; }   // PSMARK
@@ -2065,7 +1152,6 @@ namespace {
         }
         static void __stdcall Blend(ID3D11DeviceContext* c, ID3D11BlendState* bs, const FLOAT f[4], UINT m)
         {
-            if (L == 0 && g_testTools) if (CtxSh* sh = ctx_sh(c, true)) sh->blendOn = blend_on(bs);   // DRAWPROBE3 (CLEANUP: test tools only)
             if (L == 0 && layer_blend(c, bs, f, m)) return;
             oBlend(c, bs, f, m);
         }
@@ -2489,7 +1575,6 @@ namespace {
                 if (upOk) { rows[40] = cr[2]; rows[41] = cu[2]; rows[42] = cf[2]; }
                 else rows[41] = 1.0f;
             }
-            if (g_testTools) tgt_record(nTp, tp);   // TARGETTRACE
             if (g_cbFlat && g_cbDepth && (g_bandSent != band || memcmp(rows, g_tgtSent, sizeof(rows)) != 0 ||
                                           fabsf(th - g_tanSent[0]) > 1e-4f || fabsf(tv - g_tanSent[1]) > 1e-4f))
             {   // .y = the band line in clip y (0 = no band); .zw = tan half-angles (0 = no squash fix)
@@ -2541,7 +1626,7 @@ namespace {
         __try { scene = *(int*)((char*)params + 0x10); movies = *(int*)((char*)params + 0x8); }
         __except (EXCEPTION_EXECUTE_HANDLER) {}
         InterlockedIncrement(&g_calls);
-        if (g_hide && scene == 0) { InterlockedIncrement(&g_hidden); return; }   // TEST only
+        // PANELTIDY5 2026-10-11: the hide-the-HUD test (akvr_hudsplit_hide_set, no caller) removed.
         AcquireSRWLockExclusive(&g_lock);
         if (g_curN < 4)
         {
@@ -2638,16 +1723,10 @@ namespace {
         hook_slot(gvt, nullptr, 7, (void*)&hkVSSetCB, (void**)&oVSSetCB);
         hook_slot(gvt, nullptr, 16, (void*)&hkPSSetCB, (void**)&oPSSetCB);   // PSMARK
         hook_slot(gvt, nullptr, 9, (void*)&hkPSSetG, (void**)&oPSSetG);      // DRAWPROBE: PSSetShader
-        hook_slot(gvt, nullptr, 8, (void*)&hkPSSetSRVG, (void**)&oPSSetSRVG);   // DRAWPROBE2: PSSetShaderResources
-        hook_slot(gvt, nullptr, 39, (void*)&hkDrawIIIG, (void**)&oDrawIIIG);    // DRAWPROBE4: DrawIndexedInstancedIndirect
-        hook_slot(gvt, nullptr, 40, (void*)&hkDrawIIG, (void**)&oDrawIIG);      // DRAWPROBE4: DrawInstancedIndirect
-        hook_slot(gvt, nullptr, 41, (void*)&hkDispatchG, (void**)&oDispatchG);  // DRAWPROBE4: Dispatch
-        hook_slot(gvt, nullptr, 42, (void*)&hkDispatchIndG, (void**)&oDispatchIndG);   // DRAWPROBE4: DispatchIndirect
-        hook_slot(gvt, nullptr, 69, (void*)&hkCSSetG, (void**)&oCSSetG);        // DRAWPROBE4: CSSetShader
-        hook_slot(gvt, nullptr, 68, (void*)&hkCSSetUavG, (void**)&oCSSetUavG);  // RAINWRITER: CSSetUnorderedAccessViews
-        hook_slot(gvt, nullptr, 71, (void*)&hkCSSetCBG, (void**)&oCSSetCBG);    // RAINWRITER: CSSetConstantBuffers
-        hook_slot(gvt, nullptr, 47, (void*)&hkCopyResG, (void**)&oCopyResG);    // RAINWRITER: CopyResource
-        hook_slot(gvt, nullptr, 46, (void*)&hkCopySubG, (void**)&oCopySubG);    // RAINWRITER: CopySubresourceRegion
+        // PANELTIDY5 2026-10-11: the probe-only hooks (PS textures, indirect draws, RAINWRITER's CS views / copies) removed.
+        hook_slot(gvt, nullptr, 41, (void*)&hkDispatchG, (void**)&oDispatchG);  // FARRAIN: Dispatch
+        hook_slot(gvt, nullptr, 42, (void*)&hkDispatchIndG, (void**)&oDispatchIndG);   // FARRAIN: DispatchIndirect
+        hook_slot(gvt, nullptr, 69, (void*)&hkCSSetG, (void**)&oCSSetG);        // FARRAIN: CSSetShader
         hook_slot(gvt, nullptr, 14, (void*)&hkMapG, (void**)&oMapG);
         hook_slot(gvt, nullptr, 15, (void*)&hkUnmapG, (void**)&oUnmapG);
         hook_slot(gvt, nullptr, 48, (void*)&hkUpdSubG, (void**)&oUpdSubG);
@@ -2686,8 +1765,8 @@ namespace {
             if (tot) { g_covAny = 100.0f * any / tot; g_covSolid = 100.0f * solid / tot; g_covPart = 100.0f * part / tot; }
             return;
         }
-        const bool shot = g_shotWant == 1;   // LAYERSHOT: copy now rather than on the 90-frame beat
-        if (g_stageState == 0 && (shot || (g_testTools && (g_frame % 90) == 0)) && g_frame - g_lastSubFrame <= 1)   // CLEANUP
+        const bool shot = g_shotWant == 1;   // LAYERSHOT: F2 asked for the layer image
+        if (g_stageState == 0 && shot && g_frame - g_lastSubFrame <= 1)   // PANELTIDY5 2026-10-11: F2 only (the 90-frame test read-back removed)
         {
             const int bpp = (g_Hfmt >= 27 && g_Hfmt <= 32) || (g_Hfmt >= 87 && g_Hfmt <= 93) ? 4 : 0;
             if (!bpp) return;                              // only 8-bit RGBA / BGRA are counted
@@ -2764,27 +1843,6 @@ void akvr_hudsplit_tick()
     g_presentTid = GetCurrentThreadId();
     ++g_frame;
     if (g_mrRecLeft > 0 && InterlockedDecrement(&g_mrRecLeft) == 0 && g_mrPath[0]) { marks_write(g_mrPath); g_mrPath[0] = 0; }   // WORLDCARD
-    if (g_censusLeft > 0)   // SHCENSUS
-    {
-        if (g_censusLeft <= 60) ++g_cenFrames;
-        if (InterlockedDecrement(&g_censusLeft) == 0)
-        {
-            FILE* f = nullptr;
-            if (_wfopen_s(&f, g_censusPath, L"w") == 0 && f)
-            {
-                AcquireSRWLockShared(&g_cenLock);
-                fprintf(f, "# SHCENSUS: %ld frames; kind 1 = draw (a = pixel shader, b = vertex shader, w x h = render target 0), 2 = dispatch (a = compute shader, w x h = groups x/y)\n", g_cenFrames);
-                fprintf(f, "kind,a,b,w,h,count,per_frame\n");
-                for (int i = 0; i < g_cenN; ++i)
-                {
-                    const CenEnt& e = g_cen[i];
-                    fprintf(f, "%d,%016llx,%016llx,%d,%d,%ld,%.2f\n", e.kind, (unsigned long long)e.a, (unsigned long long)e.b, e.w, e.h, e.n, g_cenFrames ? (double)e.n / g_cenFrames : 0.0);
-                }
-                ReleaseSRWLockShared(&g_cenLock);
-                fclose(f);
-            }
-        }
-    }
     try_game_side();
     coverage_tick();
     for (int l = 0; l < 3; ++l)
@@ -2801,7 +1859,7 @@ void akvr_hudsplit_tick()
     {
         Row& r = g_ring[g_ringHead];
         memset(&r, 0, sizeof(r));
-        r.frame = g_frame; r.idx = i < g_curN ? i : -1; r.hide = g_hide ? 1 : 0;
+        r.frame = g_frame; r.idx = i < g_curN ? i : -1;
         for (int l = 0; l < 3; ++l)
         { r.draw[l] = g_rDraw[l]; r.bind[l] = g_rBind[l]; r.fin[l] = g_rFinish[l]; r.exe[l] = g_rExec[l]; }
         if (i < g_curN) { r.s = g_cur[i]; g_rep[i] = g_cur[i]; }
@@ -2812,34 +1870,10 @@ void akvr_hudsplit_tick()
     ReleaseSRWLockExclusive(&g_lock);
 }
 
-void akvr_hudsplit_hide_set(bool on) { g_hide = on; }
-bool akvr_hudsplit_hide() { return g_hide; }
-
 void akvr_hudsplit_layer_set(bool on) { g_layerWant = on; }
 bool akvr_hudsplit_layer() { return g_layerWant; }
 void akvr_hudsplit_layer_gate(bool gameplay, bool menu) { g_layerGate = gameplay || menu; g_layerMenu = menu && !gameplay; }
-void akvr_hudsplit_census_start(const wchar_t* path)   // SHCENSUS: 2 frames to fill the bindings, then 60 recorded
-{
-    if (!path || g_censusLeft > 0) return;
-    AcquireSRWLockExclusive(&g_cenLock); g_cenN = 0; g_cenFrames = 0; ReleaseSRWLockExclusive(&g_cenLock);
-    wcsncpy_s(g_censusPath, path, _TRUNCATE);
-    InterlockedExchange(&g_censusLeft, 62);
-}
-void akvr_blur_keep_set(float k) { g_blurKeep = k < 0.0f ? 0.0f : (k > 1.0f ? 1.0f : k); }   // DOFBLUR
-float akvr_blur_keep() { return g_blurKeep; }
-long akvr_blur_binds() { return g_blurBinds; }
-long akvr_blur_seen() { return g_dofSeen; }   // DOFPANEL
-void akvr_blur_off_set(int m) { InterlockedExchange(&g_blurOff, m < 0 ? 0 : (m > 15 ? 15 : m)); }   // BLUROFF / SKIPSTEPS (bit 1 not offered: glow)
-int  akvr_blur_off() { return (int)g_blurOff; }
-long akvr_blur_dropped() { return g_blurDropped; }
-void akvr_game_aa_off_set(bool on) { g_gameAaOff = on; }   // GAMEAA
-bool akvr_game_aa_off() { return g_gameAaOff; }
-long akvr_game_aa_skips() { return g_gameAaSkips; }
-void akvr_hdr_curve_set(bool on, float stops) { g_toneOn = on; g_toneStops = stops < -3.0f ? -3.0f : (stops > 3.0f ? 3.0f : stops); }   // HDRCURVE
-void akvr_hdr_curve_get(bool& on, float& stops) { on = g_toneOn; stops = g_toneStops; }
-long akvr_hdr_curve_draws() { return g_toneDraws; }
-long akvr_hdr_glow_runs() { return g_tgRuns; }   // GLOWFIRST
-int  akvr_hdr_scene_format() { return (int)g_toneSceneFmt; }
+
 void akvr_hudsplit_source_lost() { g_Hsrc = nullptr; g_Hreal = 0; ++g_HsrcLost; }   // MENUCRASH: xr.cpp caught a fault on it
 // AKN M5: engine stereo - the HUD picture comes from AKN (its HUD pass redirected into its own texture)
 bool akvr_xr_akn_fresh();   // xr.cpp: this Present carries a fresh 3D pair
@@ -2902,8 +1936,6 @@ const char* akvr_hudsplit_layer_diag()
             const size_t l = strlen(d);
             _snprintf_s(d + l, sizeof(d) - l, _TRUNCATE, "%s(%.3f, %.3f)", i ? " " : " | all points: ", g_tgtXY[i * 2], g_tgtXY[i * 2 + 1]);
         }
-        const size_t len2 = strlen(d);
-        _snprintf_s(d + len2, sizeof(d) - len2, _TRUNCATE, " | %s", akvr_rain_frame_diag());   // RAINSPLIT
         const size_t len3 = strlen(d);
         _snprintf_s(d + len3, sizeof(d) - len3, _TRUNCATE, " | %s", akvr_marker_dist_diag());   // TARGETDIST
     }
@@ -2921,8 +1953,8 @@ const char* akvr_hudsplit_diag()
     const char* gs = g_gameState == 1 ? "hooked" : (g_gameState == 2 ? "geo-11 returned the REAL context"
                      : (g_gameState == 0 ? "waiting for geo-11" : (g_gameState == -1 ? "no device from wrapper" : "hook FAILED")));
     k += _snprintf_s(d + k, sizeof(d) - k, _TRUNCATE,
-                     "HUD split probe: %s; game side %s (%s, %d fns); real deferred %s; HUD calls last frame %d, total %ld%s",
-                     st, gs, g_gameModule, g_gameHooked, ds, g_repN, g_calls, g_hide ? " - HIDE TEST ON" : "");
+                     "HUD split probe: %s; game side %s (%s, %d fns); real deferred %s; HUD calls last frame %d, total %ld",
+                     st, gs, g_gameModule, g_gameHooked, ds, g_repN, g_calls);
     k += _snprintf_s(d + k, sizeof(d) - k, _TRUNCATE,
                      "\n      per frame  draws game %ld / real-imm %ld / real-def %ld;  binds %ld / %ld / %ld;"
                      "  lists recorded %ld / %ld / %ld, played %ld / %ld / %ld",
@@ -2948,27 +1980,10 @@ const char* akvr_hudsplit_diag()
     return d;
 }
 
-// TARGETTRACE: the on-target points per HUD frame (test tools only), for F2
-void akvr_hudsplit_targets_dump(const wchar_t* path)
-{
-    FILE* f = nullptr;
-    if (!path || _wfopen_s(&f, path, L"w") != 0 || !f) return;
-    fprintf(f, "t_ms,finalize,n,x0,y0,x1,y1,cam_yaw_deg,cam_pitch_deg,base_yaw_deg,base_fwd_x,base_fwd_y,base_fwd_z,cam_x,cam_y,cam_z,off0x,off0y,off1x,off1y,frame_shift_x,frame_shift_y\n");
-    for (int i = 0; i < g_tgtCount; ++i)
-    {
-        const TgtRow& r = g_tgtRing[(g_tgtHead - g_tgtCount + i + kTgtRing) % kTgtRing];
-        fprintf(f, "%.3f,%llu,%d,%.5f,%.5f,%.5f,%.5f,%.4f,%.4f,%.4f,%.5f,%.5f,%.5f,%.2f,%.2f,%.2f,%.5f,%.5f,%.5f,%.5f,%.5f,%.5f\n", r.t, (unsigned long long)r.fin, r.n,
-                r.xy[0], r.xy[1], r.xy[2], r.xy[3], r.yaw, r.pitch, r.baseYaw, r.fwd[0], r.fwd[1], r.fwd[2], r.pos[0], r.pos[1], r.pos[2],
-                r.off[0], r.off[1], r.off[2], r.off[3], r.fshift[0], r.fshift[1]);
-    }
-    fclose(f);
-}
-
 static void marks_write(const wchar_t* path);
 void akvr_hudsplit_marks_dump(const wchar_t* path)
 {
     if (!path) return;
-    if (g_testTools) { marks_write(path); return; }
     wcsncpy_s(g_mrPath, path, _TRUNCATE);   // WORLDCARD: record 2 HUD frames first, write in akvr_hudsplit_tick
     InterlockedExchange(&g_mrRecLeft, 3);
 }
@@ -3032,7 +2047,7 @@ void akvr_hudsplit_dump(const wchar_t* path)
     FILE* f = nullptr;
     if (_wfopen_s(&f, path, L"w") != 0 || !f) return;
     fprintf(f, "# %s\n# %s\n", akvr_hudsplit_diag(), akvr_hudsplit_layer_diag());
-    fprintf(f, "frame,call,hide_test,draws_game,draws_real_imm,draws_real_def,binds_game,binds_real_imm,binds_real_def,"
+    fprintf(f, "frame,call,draws_game,draws_real_imm,draws_real_def,binds_game,binds_real_imm,binds_real_def,"
                "lists_rec_game,lists_rec_imm,lists_rec_def,lists_play_game,lists_play_imm,lists_play_def,"
                "scene_colour,movies,on_present_thread,other_thread_draws,swaps,"
                "kind,layer,ctx,ctx_type,same_thread,binds,draws,draws_no_target,tex,w,h,fmt,array,bind_flags,misc_flags\n");
@@ -3043,8 +2058,8 @@ void akvr_hudsplit_dump(const wchar_t* path)
         const Row& r = g_ring[(start + n) % kRing];
         const Scope& s = r.s;
         char pre[256];
-        _snprintf_s(pre, sizeof(pre), _TRUNCATE, "%u,%d,%d,%ld,%ld,%ld,%ld,%ld,%ld,%ld,%ld,%ld,%ld,%ld,%ld,%d,%d,%d,%d,%d",
-                    r.frame, r.idx, r.hide, r.draw[0], r.draw[1], r.draw[2], r.bind[0], r.bind[1], r.bind[2],
+        _snprintf_s(pre, sizeof(pre), _TRUNCATE, "%u,%d,%ld,%ld,%ld,%ld,%ld,%ld,%ld,%ld,%ld,%ld,%ld,%ld,%d,%d,%d,%d,%d",
+                    r.frame, r.idx, r.draw[0], r.draw[1], r.draw[2], r.bind[0], r.bind[1], r.bind[2],
                     r.fin[0], r.fin[1], r.fin[2], r.exe[0], r.exe[1], r.exe[2],
                     r.idx >= 0 ? s.scene : -1, r.idx >= 0 ? s.movies : -1,
                     r.idx >= 0 ? (s.tid == g_presentTid ? 1 : 0) : -1, s.otherDraws, s.subs);
@@ -3079,72 +2094,8 @@ float akvr_hudsplit_band() { return g_bandPct; }
 void  akvr_hudsplit_bottom_set(float pct) { g_bottomPct = pct < 0.0f ? 0.0f : (pct > 45.0f ? 45.0f : pct); }
 float akvr_hudsplit_bottom() { return g_bottomPct; }
 
-// DRAWPROBE: the kinds of draw that use the probed pixel shader, for the panel.
-int akvr_probe_kind_count() { return g_kindN; }
-bool akvr_probe_kind(int i, unsigned long long& ps, unsigned long long& vs, int& tags, long& draws, unsigned& count,
-                     unsigned& inst, bool& seenNow, bool& hide)
-{
-    if (i < 0 || i >= g_kindN) return false;
-    AcquireSRWLockShared(&g_kindLock);
-    const DrawKind d = g_kinds[i];
-    ReleaseSRWLockShared(&g_kindLock);
-    ps = d.ps; vs = d.vs; tags = d.tags; count = d.count; inst = d.inst; hide = d.hide;
-    seenNow = (long)g_frame - d.frame < 90;
-    draws = d.frame == (long)g_frame ? d.drawsNow : d.drawsLast;
-    return true;
-}
-void akvr_probe_kind_hide(int i, bool on)
-{
-    AcquireSRWLockExclusive(&g_kindLock);
-    if (i >= 0 && i < g_kindN) g_kinds[i].hide = on;
-    hid_rebuild();
-    ReleaseSRWLockExclusive(&g_kindLock);
-}
-bool akvr_probe_group_hidden(unsigned long long vs)
-{
-    for (LONG i = 0; i < g_hidGroupN; ++i) if (g_hidGroup[i] == vs) return true;
-    return false;
-}
-void akvr_probe_group_hide(unsigned long long vs, bool on)
-{
-    AcquireSRWLockExclusive(&g_kindLock);
-    LONG n = g_hidGroupN, at = -1;
-    for (LONG i = 0; i < n; ++i) if (g_hidGroup[i] == vs) at = i;
-    if (on && at < 0 && n < 32) { g_hidGroup[n] = vs; InterlockedExchange(&g_hidGroupN, n + 1); }
-    if (!on && at >= 0) { g_hidGroup[at] = g_hidGroup[n - 1]; InterlockedExchange(&g_hidGroupN, n - 1); }
-    ReleaseSRWLockExclusive(&g_kindLock);
-}
-bool akvr_probe_all_but_rain() { return g_hideAllButRain; }
-void akvr_probe_all_but_rain_set(bool on) { g_hideAllButRain = on; }
-// RAINWRITER: who writes the rain's streak buffer, and with which constants (F2 status)
-void akvr_rainwriter_dump(FILE* f)
-{
-    fprintf(f, "   rain writer: watching %ld resource(s) (rain draws seen %ld), CPU writes %ld, copies into them %ld, %d writer shader(s)\n",
-            (long)g_rwWatchN, (long)g_rwRainSeen, (long)g_rwCpuWrites, (long)g_rwCopies, g_rwN);
-    const CameraView cv = akvr_camera_read();
-    float bf[3] = {}, br[3] = {}, bu[3] = {};
-    const bool ax = akvr_camera_base_axes(bf, br, bu);
-    fprintf(f, "      camera: pos %.2f %.2f %.2f, rotator p/y/r %d %d %d, fov %.2f; game camera fwd %.4f %.4f %.4f (%s)\n",
-            cv.x, cv.y, cv.z, cv.pitch, cv.yaw, cv.roll, cv.fov, bf[0], bf[1], bf[2], ax ? "ok" : "none");
-    AcquireSRWLockShared(&g_rwLock);
-    for (int k = 0; k < g_rwN; ++k)
-    {
-        const RwWriter& w = g_rw[k];
-        fprintf(f, "      writer CS %016llx: %ld dispatches, writes watched resource %d, saved as akvr_shader_%016llx.bin\n",
-                (unsigned long long)w.h, w.dispatches, w.watch, (unsigned long long)w.h);
-        for (int i = 0; i < 4; ++i)
-        {
-            if (!w.cb[i]) continue;
-            CbSnap* s = cb_snap(w.cb[i]);
-            if (!s) continue;
-            fprintf(f, "         cb%d (%u bytes, %ld writes seen):\n", i, s->size, s->writes);
-            const float* v = (const float*)s->data;
-            for (UINT r = 0; r * 16 < s->size && r < 64; ++r)
-                fprintf(f, "            [%2u] %14.5f %14.5f %14.5f %14.5f\n", r, v[r * 4], v[r * 4 + 1], v[r * 4 + 2], v[r * 4 + 3]);
-        }
-    }
-    ReleaseSRWLockShared(&g_rwLock);
-}
+// PANELTIDY5 2026-10-11: the rain-hunt exports (DRAWPROBE, RAINWRITER, NEARRAIN, RAINSTRETCH, RAINSPLIT, RAINPARTS,
+// NORAIN) and the test-tools switch removed.
 bool akvr_far_rain() { return g_farOn != 0; }                            // FARRAIN
 void akvr_far_rain_set(bool on) { InterlockedExchange(&g_farOn, on ? 1 : 0); }
 const char* akvr_far_rain_diag()
@@ -3153,20 +2104,6 @@ const char* akvr_far_rain_diag()
     _snprintf_s(d, sizeof(d), _TRUNCATE, "rain follows the game camera: %s, bound to %ld rain simulation runs (%ld without camera axes)",
                 g_farOn ? "ON" : "off", (long)g_farBinds, (long)g_farNoAxes);
     return d;
-}
-int  akvr_near_rain_lag() { return (int)g_nearLag; }                    // NEARRAIN2
-void akvr_near_rain_lag_set(int k) { InterlockedExchange(&g_nearLag, k < 0 ? 0 : (k > 12 ? 12 : k)); }
-bool akvr_rain_no_stretch() { return g_rainNoStretch != 0; }            // RAINSTRETCH
-void akvr_rain_no_stretch_set(bool on) { InterlockedExchange(&g_rainNoStretch, on ? 1 : 0); }
-bool akvr_test_tools() { return g_testTools; }                          // CLEANUP
-bool akvr_rain_frame_fix() { return g_rainFrameFix != 0; }              // RAINSPLIT
-void akvr_rain_frame_fix_set(bool on) { InterlockedExchange(&g_rainFrameFix, on ? 1 : 0); }
-const char* akvr_rain_frame_diag()
-{
-    static char s[200];
-    _snprintf_s(s, sizeof(s), _TRUNCATE, "rain frame fix %s: last turn %.3f deg (a streak 3 m away moves %.2f units), %ld draws, %ld while paused",
-                g_rainFrameFix ? "ON" : "off", g_rainRotDeg, g_rainMove, (long)g_rainFixDraws, (long)g_rainFixPaused);
-    return s;
 }
 bool akvr_frame_fix() { return g_frameFix != 0; }                       // FRAMEPAIR
 void akvr_frame_fix_set(bool on) { InterlockedExchange(&g_frameFix, on ? 1 : 0); }
@@ -3182,50 +2119,6 @@ int  akvr_marker_lag() { return g_markerLag; }
 void akvr_marker_lag_set(int k) { g_markerLag = k < -1 ? -1 : (k > 8 ? 8 : k); }
 int  akvr_marker_hud_lag() { return g_markerHudLag; }                   // TARGETMOVE2
 void akvr_marker_hud_lag_set(int n) { g_markerHudLag = n < 0 ? 0 : (n > 4 ? 4 : n); }
-void akvr_test_tools_set(bool on) { g_testTools = on; }
-int  akvr_near_rain_mode() { return (int)g_nearMode; }                  // NEARRAIN
-void akvr_near_rain_mode_set(int m) { InterlockedExchange(&g_nearMode, m < 0 ? 0 : (m > 3 ? 3 : m)); }
-const char* akvr_near_rain_diag()
-{
-    static char d[160];
-    _snprintf_s(d, sizeof(d), _TRUNCATE, "near rain: mode %ld, camera %ld frames back, first %ld streaks, bound to %ld rain draws (%ld without camera axes)",
-                (long)g_nearMode, (long)g_nearLag, (long)g_nearCount, (long)g_nearBinds, (long)g_nearNoAxes);
-    return d;
-}
-int  akvr_probe_rain_parts() { return (int)g_rainParts; }               // RAINPARTS
-void akvr_probe_rain_parts_set(int v) { InterlockedExchange(&g_rainParts, v < 0 ? -1 : (v > 20480 ? 20480 : v)); }
-bool akvr_probe_every_draw() { return g_hideEveryDraw; }                 // DRAWPROBE4
-void akvr_probe_every_draw_set(bool on) { g_hideEveryDraw = on; }
-bool akvr_hide_rain() { return g_hideRain; }   // NORAIN
-void akvr_hide_rain_set(bool on) { g_hideRain = on; }
-long akvr_rain_hidden() { return g_rainHidden; }
-bool akvr_probe_all_cs() { return g_hideAllCs; }
-void akvr_probe_all_cs_set(bool on) { g_hideAllCs = on; }
-int  akvr_probe_cs_count() { return g_csN; }
-bool akvr_probe_cs(int i, unsigned long long& h, long& perFrame, bool& seenNow, bool& hide)
-{
-    if (i < 0 || i >= g_csN) return false;
-    AcquireSRWLockShared(&g_csLock);
-    const CsKind d = g_csKinds[i];
-    ReleaseSRWLockShared(&g_csLock);
-    h = d.h; hide = d.hide;
-    seenNow = (long)g_frame - d.frame < 90;
-    perFrame = d.frame == (long)g_frame ? d.now : d.last;
-    return true;
-}
-void akvr_probe_cs_hide(int i, bool on)
-{
-    AcquireSRWLockExclusive(&g_csLock);
-    if (i >= 0 && i < g_csN) g_csKinds[i].hide = on;
-    ReleaseSRWLockExclusive(&g_csLock);
-}
-const char* akvr_probe_diag()
-{
-    static char d[200];
-    _snprintf_s(d, sizeof(d), _TRUNCATE, "watching pixel shader %016llx: %ld draws seen, %ld hidden; shader creation hooks %d",
-                (unsigned long long)g_probePs, (long)g_probeHits, (long)g_probeDropped, g_psHooks);
-    return d;
-}
 
 // VSID: called from hooks.cpp's device / swapchain creation hooks, as early as possible (AK creates its shaders at
 // load). Hooks CreateVertexShader of each distinct device function table (game-facing wrapper and real device).

@@ -8,27 +8,12 @@ void        akvr_hudsplit_install(ID3D11DeviceContext* ctx);   // once the real 
 void        akvr_hudsplit_tick();                              // every Present (render thread)
 bool        akvr_hudsplit_active();                            // inside the HUD draw, this thread
 void        akvr_hudsplit_note_bind(ID3D11DeviceContext* ctx, ID3D11RenderTargetView* const* rtvs, unsigned n);
-void        akvr_hudsplit_hide_set(bool on);                   // test: skip the HUD draw entirely
-bool        akvr_hudsplit_hide();
 const char* akvr_hudsplit_diag();
 // HUDLAYER 2026-09-28: the HUD drawn into our own image, shown by the headset as a head-locked layer.
 struct ID3D11Texture2D;
 void        akvr_hudsplit_layer_set(bool on);                 // panel / settings "hudlayer"
 bool        akvr_hudsplit_layer();
 void        akvr_hudsplit_layer_gate(bool gameplay, bool menu = false);   // xr.cpp: steady gameplay / live main menu (MENUONE: no split)
-void        akvr_hudsplit_census_start(const wchar_t* path);   // SHCENSUS: shaders.csv after 60 frames
-void        akvr_hudsplit_sweep(bool on, uint64_t hash);       // SWEEP: drop draws/dispatches of one shader
-long        akvr_hudsplit_sweep_dropped();
-void        akvr_blur_keep_set(float keep);                 // DOFBLUR: 1 = the game's distance blur, 0 = none
-float       akvr_blur_keep();
-long        akvr_blur_binds();
-long        akvr_blur_seen();                                // DOFPANEL: DoF setup dispatches seen
-void        akvr_blur_off_set(int mode);                     // BLUROFF: 0 game blur, 1/2/3 passes dropped
-int         akvr_blur_off();
-long        akvr_blur_dropped();
-void        akvr_game_aa_off_set(bool on);                    // GAMEAA: drop the game's SMAA edge pass
-bool        akvr_game_aa_off();
-long        akvr_game_aa_skips();
 void        akvr_hudsplit_source_lost();                     // MENUCRASH: the layer's source faulted, search again
 bool        akvr_hudsplit_layer_live();                       // HUD went to the layer in the last frames
 ID3D11Texture2D* akvr_hudsplit_layer_image(unsigned& w, unsigned& h, int& fmt);   // fresh this Present, or null
@@ -45,31 +30,11 @@ void        akvr_hudsplit_layer_shot(const wchar_t* path);
 void        akvr_hudsplit_marks_dump(const wchar_t* path);    // MARKREC: F2, what the HUD shaders get   // LAYERSHOT: save the HUD layer image (next readback)
 struct IUnknown;
 void        akvr_hudsplit_watch_device(IUnknown* dev);   // VSID: recognise the 13 patched HUD vertex shaders
-// DRAWPROBE2: draw kinds (pixel + vertex shader pair) around the rain particles. tags: 1 the rain particles,
-// 2 uses a rain texture, 4 drawn just before the rain, 8 drawn just after it
-int         akvr_probe_kind_count();
-bool        akvr_probe_kind(int i, unsigned long long& ps, unsigned long long& vs, int& tags, long& draws, unsigned& count,
-                            unsigned& inst, bool& seenNow, bool& hide);
-void        akvr_probe_kind_hide(int i, bool on);
-// DRAWPROBE3: tag 16 = a see-through (blended) draw anywhere in the frame; hides by vertex-shader group, or all
-bool        akvr_probe_group_hidden(unsigned long long vs);
-void        akvr_probe_group_hide(unsigned long long vs, bool on);
-bool        akvr_probe_all_but_rain();
-void        akvr_probe_all_but_rain_set(bool on);
-// DRAWPROBE4: every game draw off except the world rain (and the HUD); compute shaders listed and hideable;
-// tag 64 = an indirect draw (the GPU supplies the count)
-void        akvr_rainwriter_dump(struct _iobuf* f); // RAINWRITER: who writes the rain streak buffer (F2 status)
+// PANELTIDY5 2026-10-11: the rain-hunt probes (DRAWPROBE, RAINWRITER, NEARRAIN, RAINSTRETCH, RAINSPLIT), the HUD hide test,
+// TARGETTRACE and the test-tools switch removed.
 bool        akvr_far_rain();                       // FARRAIN: the rain simulation keeps its regions ahead of the game camera
 void        akvr_far_rain_set(bool on);
 const char* akvr_far_rain_diag();
-int         akvr_near_rain_lag();                  // NEARRAIN2: camera frames back (0 = the draw's own view)
-void        akvr_near_rain_lag_set(int k);
-void        akvr_hudsplit_targets_dump(const wchar_t* path);   // TARGETTRACE: on-target points per HUD frame (test tools)
-bool        akvr_rain_no_stretch();                // RAINSTRETCH (fix step 1l): rain streaks without the camera term
-void        akvr_rain_no_stretch_set(bool on);
-bool        akvr_rain_frame_fix();                 // RAINSPLIT: the rain's own FRAMEPAIR switch
-void        akvr_rain_frame_fix_set(bool on);
-const char* akvr_rain_frame_diag();
 bool        akvr_frame_fix();                      // FRAMEPAIR (fix step 1o): rain + markers drawn for the world's frame
 void        akvr_frame_fix_set(bool on);
 int         akvr_frame_world();                    // the world's camera, Presents back (1..6)
@@ -86,21 +51,6 @@ int         akvr_marker_lag();                     // camera pair k Presents bac
 void        akvr_marker_lag_set(int k);
 int         akvr_marker_hud_lag();                 // TARGETMOVE2: frames the markers trail the drawn camera (0 = off)
 void        akvr_marker_hud_lag_set(int n);
-bool        akvr_test_tools();                     // CLEANUP: testtools=1 runs the old test recorders/probes (off by default)
-void        akvr_test_tools_set(bool on);
-int         akvr_near_rain_mode();                 // NEARRAIN: 0 as the game draws it, 1 hang in the room, 2 hidden
-void        akvr_near_rain_mode_set(int m);
-const char* akvr_near_rain_diag();
-int         akvr_probe_rain_parts();               // RAINPARTS: draw only the first N streaks of the world rain (-1 all)
-void        akvr_probe_rain_parts_set(int v);
-bool        akvr_probe_every_draw();
-void        akvr_probe_every_draw_set(bool on);
-bool        akvr_probe_all_cs();
-void        akvr_probe_all_cs_set(bool on);
-int         akvr_probe_cs_count();
-bool        akvr_probe_cs(int i, unsigned long long& h, long& perFrame, bool& seenNow, bool& hide);
-void        akvr_probe_cs_hide(int i, bool on);
-const char* akvr_probe_diag();
 const char* akvr_hudsplit_vs_diag();
 void        akvr_hudsplit_hook_game_device();   // VSID4: see the game-facing device at D3D11CreateDevice
 void        akvr_hudsplit_squash_set(bool on);   // RETSQUASH: reticle keeps its size near the view edges

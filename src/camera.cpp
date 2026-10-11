@@ -597,6 +597,8 @@ namespace
     FpBoneFn p_fpBone = nullptr; FpLpFn p_fpLp = nullptr;
     uint64_t g_fpHead = 0;
     uintptr_t g_fpTarget = 0, g_fpMesh = 0; int g_fpMeshOff = -1; ULONGLONG g_fpScanAt = 0;
+    uintptr_t g_fpActor = 0;   // FPFIX: the actor holding the skeleton (the view target or the controller's pawn)
+    uintptr_t g_fpMeshVt = 0;  // FPFIX2: the found skeleton's vtable (per-frame check without naming it again)
     float g_fpOff[3] = {}; bool g_fpOffOk = false; LARGE_INTEGER g_fpLast{};
 
     bool fp_rd(uintptr_t a, uintptr_t& v)
@@ -605,18 +607,54 @@ namespace
         __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
     }
     bool fp_in_exe(uintptr_t a) { return a >= g_fpExe && a < g_fpExe + 0x4000000; }
+    // FPFIX2 2026-10-11: the object's own class, from the engine: UObject::GetFullName 0xF3E160 (this, FString* out) -> "Class
+    // Outer.Name" (execPathName 0xF90590 calls it; GetPathName 0xF38C00 takes a StopOuter too). FString = { wchar_t* data,
+    // int num, int max }. The string is left to the game's allocator (a few per search). FPFIX (slot 0 = 0xE2E600) was WRONG:
+    // that is UObject's shared destructor, every object matched (fp_probe.txt 17:11) - removed.
+    struct FpStr { wchar_t* d; int n, m; };
+    using FpFullFn = FpStr* (__fastcall*)(void*, FpStr*);
+    bool fp_fullname(uintptr_t obj, char* out, int cap)
+    {
+        out[0] = 0;
+        uintptr_t vt = 0;
+        if (obj < 0x10000 || obj > 0x7FFFFFFFFFFFULL || (obj & 3) || !fp_rd(obj, vt) || !fp_in_exe(vt)) return false;
+        FpStr s{};
+        __try
+        {
+            FpStr* r = ((FpFullFn)(g_fpExe + 0xF3E160))((void*)obj, &s);
+            if (!r || !r->d || r->n <= 0 || r->n > 4096) return false;
+            int i = 0; for (; i < cap - 1 && i < r->n - 1 && r->d[i]; ++i) out[i] = (char)(r->d[i] < 128 ? r->d[i] : '?');
+            out[i] = 0;
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER) { out[0] = 0; return false; }
+        return out[0] != 0;
+    }
+    bool fp_class_is(const char* full, const char* cls)   // the first word (the class) ends with cls
+    {
+        const char* sp = strchr(full, ' '); const size_t n = sp ? (size_t)(sp - full) : strlen(full), m = strlen(cls);
+        return n >= m && _strnicmp(full + n - m, cls, m) == 0;
+    }
     bool fp_is_skel(uintptr_t q)
     {
         uintptr_t vt = 0;
-        if (q < 0x10000 || q > 0x7FFFFFFFFFFFULL || (q & 7) || !fp_rd(q, vt)) return false;
-        return vt == g_fpExe + 0x1BDCBA0 || vt == g_fpExe + 0x1BDD310;
+        if (q < 0x10000 || q > 0x7FFFFFFFFFFFULL || (q & 3) || !fp_rd(q, vt)) return false;
+        if (vt == g_fpExe + 0x1BDCBA0 || vt == g_fpExe + 0x1BDD310) return true;
+        char nm[160];   // FPFIX2: any class named ...SkeletalMeshComponent (Rocksteady's own native subclasses too)
+        return fp_in_exe(vt) && fp_fullname(q, nm, sizeof(nm)) && fp_class_is(nm, "SkeletalMeshComponent");
     }
-    bool fp_bone(uintptr_t mesh, float out[3])
+    bool fp_bone_named(uintptr_t mesh, uint64_t name, float out[3])
     {
-        __try { out[0] = out[1] = out[2] = 0.0f; p_fpBone((void*)mesh, out, g_fpHead, 0); }
+        __try { out[0] = out[1] = out[2] = 0.0f; p_fpBone((void*)mesh, out, name, 0); }
         __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
         return (out[0] != 0.0f || out[1] != 0.0f || out[2] != 0.0f) && out[0] == out[0] && fabsf(out[0]) < 1e7f && fabsf(out[1]) < 1e7f && fabsf(out[2]) < 1e7f;
     }
+    // FPFIX: head bone candidates (Batman City's skeleton uses Bip01_Head; Arkham Knight's is not confirmed) - the first one
+    // that the found skeleton has becomes g_fpHead
+    const wchar_t* const kFpHeadNames[] = { L"Bip01_Head", L"Bip01-Head", L"Head", L"head", L"b_Head", L"Bip01_Neck", L"Neck" };
+    constexpr int kFpHeadN = (int)(sizeof(kFpHeadNames) / sizeof(kFpHeadNames[0]));
+    uint64_t g_fpHeads[kFpHeadN] = {};
+    int g_fpHeadIdx = 0;
+    bool fp_bone(uintptr_t mesh, float out[3]) { return fp_bone_named(mesh, g_fpHead, out); }
     bool fp_origin(uintptr_t mesh, float o[3])
     {
         __try { const float* m = (const float*)(mesh + 0xE0); o[0] = m[0]; o[1] = m[1]; o[2] = m[2]; }
@@ -630,9 +668,65 @@ namespace
     }
     bool fp_make_name()
     {
-        __try { ((FpNameFn)(g_fpExe + 0xF38AE0))(&g_fpHead, L"Bip01_Head", 0); }
-        __except (EXCEPTION_EXECUTE_HANDLER) { g_fpHead = 0; }
+        for (int i = 0; i < kFpHeadN; ++i)
+        {
+            __try { ((FpNameFn)(g_fpExe + 0xF38AE0))(&g_fpHeads[i], kFpHeadNames[i], 0); }
+            __except (EXCEPTION_EXECUTE_HANDLER) { g_fpHeads[i] = 0; }
+        }
+        g_fpHead = g_fpHeads[0];
         return g_fpHead != 0;
+    }
+    // FPFIX: a skeleton's head under any candidate name; sets g_fpHead / g_fpHeadIdx on a hit
+    bool fp_find_head(uintptr_t mesh, float head[3])
+    {
+        for (int i = 0; i < kFpHeadN; ++i)
+            if (g_fpHeads[i] && fp_bone_named(mesh, g_fpHeads[i], head)) { g_fpHead = g_fpHeads[i]; g_fpHeadIdx = i; return true; }
+        return false;
+    }
+    // FPFIX: the pawn the player controls = the object a PlayerController field points at that points back at the
+    // controller (Pawn.Controller), as Batman City finds it (pawn + 0x1CC == controller there)
+    int g_fpPawnOff = -1;   // FPTRAIN: where in the controller the pawn pointer was found
+    uintptr_t fp_pawn_of(uintptr_t pc)
+    {
+        for (int off = 0x40; off < 0x1000; off += 4)   // FPFIX2: 4-byte steps - objects are packed to 4 bytes (ULocalPlayer +0x5C)
+        {
+            uintptr_t p = 0, vt = 0;
+            if (!fp_rd(pc + off, p) || p < 0x10000 || p > 0x7FFFFFFFFFFFULL || (p & 3) || p == pc) continue;
+            if (!fp_rd(p, vt) || !fp_in_exe(vt)) continue;
+            char nm[160];
+            if (!fp_fullname(p, nm, sizeof(nm)) || !strstr(nm, "Pawn")) continue;   // only pawns (by class name)
+            for (int o2 = 0x40; o2 < 0x1000; o2 += 4) { uintptr_t b = 0; if (fp_rd(p + o2, b) && b == pc) { g_fpPawnOff = off; return p; } }
+        }
+        return 0;
+    }
+    uintptr_t g_fpPc = 0;   // the PlayerController of the last view-target lookup
+    // FPFIX: one report per new actor - what it holds (pointer fields with the game's vtables, skeleton candidates, bones)
+    void fp_report(uintptr_t actor, const char* what)
+    {
+        static uintptr_t s_done[8] = {}; static int s_n = 0;
+        for (int i = 0; i < s_n; ++i) if (s_done[i] == actor) return;
+        if (s_n < 8) s_done[s_n++] = actor; else return;
+        wchar_t p[MAX_PATH]; GetModuleFileNameW(nullptr, p, MAX_PATH);
+        if (wchar_t* sl = wcsrchr(p, L'\\')) { sl[1] = 0; wcscat_s(p, L"akvr_captures\\fp_probe.txt"); } else return;
+        FILE* f = nullptr; _wfopen_s(&f, p, L"a"); if (!f) return;
+        char nm[200]; fp_fullname(actor, nm, sizeof(nm));
+        fprintf(f, "--- %s %llX: %s\n", what, (unsigned long long)actor, nm);
+        int shown = 0;
+        for (int off = 0x40; off < 0x2000 && shown < 120; off += 4)
+        {
+            uintptr_t q = 0, qv = 0;
+            if (!fp_rd(actor + off, q) || q < 0x10000 || q > 0x7FFFFFFFFFFFULL || (q & 3) || !fp_rd(q, qv) || !fp_in_exe(qv)) continue;
+            if (!fp_fullname(q, nm, sizeof(nm))) continue;
+            fprintf(f, "  +0x%X %llX %s", off, (unsigned long long)q, nm);
+            if (fp_class_is(nm, "SkeletalMeshComponent"))
+            {
+                float o[3] = {}; fp_origin(q, o);
+                fprintf(f, " | origin %.0f %.0f %.0f |", o[0], o[1], o[2]);
+                for (int i = 0; i < kFpHeadN; ++i) { float h[3]; const bool ok = g_fpHeads[i] && fp_bone_named(q, g_fpHeads[i], h); fprintf(f, " %ls %s", kFpHeadNames[i], ok ? "FOUND" : "-"); }
+            }
+            fprintf(f, "\n"); ++shown;
+        }
+        fclose(f);
     }
     bool fp_init()
     {
@@ -656,10 +750,11 @@ namespace
         if (!p_fpLp) { strcpy_s(g_fpWhy, "needs the engine-stereo part of the mod (XINPUT9_1_0.dll)"); return 0; }
         uintptr_t lp = (uintptr_t)p_fpLp(), pc = 0, vt = 0;
         if (!lp || !fp_rd(lp + 0x5C, pc) || !pc || !fp_rd(pc, vt) || !fp_in_exe(vt)) { strcpy_s(g_fpWhy, "waiting for the player"); return 0; }
+        g_fpPc = pc;
         return (uintptr_t)fp_call_vt(pc, vt);
     }
     // the eye point for this camera update (world), false = stay third person this frame
-    bool fp_eye(float eye[3])
+    bool fp_eye(float eye[3], const float cam[3])
     {
         if (!fp_init()) return false;
         if (akvr_xr_menu_scene() || akvr_xr_main_menu_detected() || akvr_xr_screen_frozen())
@@ -669,24 +764,43 @@ namespace
         const ULONGLONG now = GetTickCount64();
         float head[3] = {}, org[3] = {};
         bool have = false;
-        if (t == g_fpTarget && g_fpMeshOff >= 0)
+        if (t == g_fpTarget && g_fpMeshOff >= 0 && g_fpActor)
         {
             uintptr_t q = 0;
-            have = fp_rd(t + g_fpMeshOff, q) && q == g_fpMesh && fp_is_skel(q) && fp_bone(q, head) && fp_origin(q, org);
+            uintptr_t qv = 0;
+            have = fp_rd(g_fpActor + g_fpMeshOff, q) && q == g_fpMesh && fp_rd(q, qv) && qv == g_fpMeshVt && fp_bone(q, head) && fp_origin(q, org);
+            // FPTRAIN 2026-10-11 (JJ: "as soon as I went into a training module, Batman just left the camera behind"; akn_log
+            // 17:20: active the whole time on BatEntry.RPawnPlayerBm_0, no new search - the view target is the controller
+            // itself, unchanged): the controller must still drive the skeleton's pawn
+            if (have && g_fpActor != t && g_fpPawnOff >= 0) { uintptr_t cur = 0; if (!fp_rd(g_fpPc + g_fpPawnOff, cur) || cur != g_fpActor) { have = false; g_fpScanAt = 0; } }
         }
-        if (!have && (t != g_fpTarget || now - g_fpScanAt > 500))
+        // FPTRAIN: and the head must be near the game's own camera (Batman City's FPGATE: 12 m) - a parked body is not followed
+        const float kFar = 1500.0f * g_posScale / 100.0f;   // 15 m in world units
+        auto nearCam = [&](const float h[3]) { const float dx = h[0] - cam[0], dy = h[1] - cam[1], dz = h[2] - cam[2]; return dx * dx + dy * dy + dz * dz < kFar * kFar; };
+        if (have && !nearCam(head)) { have = false; g_fpMeshOff = -1; if (now - g_fpScanAt > 1500) g_fpScanAt = now - 1500; }
+        if (!have && (t != g_fpTarget || now - g_fpScanAt > 2000))   // FPFIX2: naming objects costs a little: every 2 s while missing
         {   // which of the followed actor's skeletons has Batman's head (the Batmobile, cutscene cameras: none)
-            g_fpTarget = t; g_fpScanAt = now; g_fpMeshOff = -1; g_fpMesh = 0; g_fpOffOk = false; ++g_fpScans;
-            for (int off = 0x40; off < 0x2000 && !have; off += 4)
+            g_fpTarget = t; g_fpScanAt = now; g_fpMeshOff = -1; g_fpMesh = 0; g_fpActor = 0; g_fpOffOk = false; ++g_fpScans;
+            // FPFIX: the followed actor first, then the pawn the controller drives (the view target can be a camera actor)
+            const uintptr_t pawn = g_fpPc ? fp_pawn_of(g_fpPc) : 0;
+            if (pawn) fp_report(pawn, "controller's pawn");
+            const uintptr_t cands[2] = { t, pawn != t ? pawn : 0 };
+            for (int c = 0; c < 2 && !have; ++c)
             {
-                uintptr_t q = 0;
-                if (!fp_rd(t + off, q) || !fp_is_skel(q)) continue;
-                if (!fp_bone(q, head) || !fp_origin(q, org)) continue;
-                const float dx = head[0] - org[0], dy = head[1] - org[1], dz = head[2] - org[2];
-                if (dx * dx + dy * dy + dz * dz < 400.0f * 400.0f) { have = true; g_fpMesh = q; g_fpMeshOff = off; }
+                const uintptr_t a = cands[c];
+                if (!a) continue;
+                fp_report(a, c == 0 ? "view target" : "controller's pawn");
+                for (int off = 0x40; off < 0x2000 && !have; off += 4)
+                {
+                    uintptr_t q = 0, qv = 0;
+                    if (!fp_rd(a + off, q) || !fp_is_skel(q) || !fp_rd(q, qv)) continue;
+                    if (!fp_find_head(q, head) || !fp_origin(q, org)) continue;
+                    const float dx = head[0] - org[0], dy = head[1] - org[1], dz = head[2] - org[2];
+                    if (dx * dx + dy * dy + dz * dz < 400.0f * 400.0f && nearCam(head)) { have = true; g_fpMesh = q; g_fpMeshOff = off; g_fpActor = a; g_fpMeshVt = qv; }
+                }
             }
-            if (have) snprintf(g_fpWhy, sizeof(g_fpWhy), "on: camera at Batman's head (followed actor %llX, skeleton at +0x%X)", (unsigned long long)t, g_fpMeshOff);
-            else snprintf(g_fpWhy, sizeof(g_fpWhy), "third person for now: the game camera is not following Batman on foot (Batmobile, cutscene, gadget) - actor %llX", (unsigned long long)t);
+            if (have) snprintf(g_fpWhy, sizeof(g_fpWhy), "on: camera at Batman's head (%ls, actor %llX, skeleton at +0x%X)", kFpHeadNames[g_fpHeadIdx], (unsigned long long)g_fpActor, g_fpMeshOff);
+            else snprintf(g_fpWhy, sizeof(g_fpWhy), "third person for now: no head found (Batmobile, cutscene, gadget?) - view target %llX, pawn %llX (akvr_captures\\fp_probe.txt)", (unsigned long long)t, (unsigned long long)pawn);
         }
         if (!have) { ++g_fpMisses; g_fpOffOk = false; return false; }
         LARGE_INTEGER qn, qf; QueryPerformanceCounter(&qn); QueryPerformanceFrequency(&qf);
@@ -728,7 +842,7 @@ namespace
             g_smoothApplied[0] = g_smoothApplied[1] = g_smoothApplied[2] = 0.0f;
             {   // FIRSTPERSON: the camera at Batman's head (CAMRESTORE takes it off again for the game, like CAMSMOOTH's part)
                 float e[3];
-                const bool fp = g_fpOn && fp_eye(e);
+                const bool fp = g_fpOn && fp_eye(e, p);
                 g_fpActive = fp;
                 if (fp)
                 {

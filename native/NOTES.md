@@ -1859,3 +1859,56 @@ Decision: start-up / loading screens stay FAR (screendist 0 = default, smooth: r
 infinity). The near-screen code (SCREENQUAD2 headset panel, one quad, image created at start) stays behind the panel slider
 for anyone who accepts the 30 fps step. Lesson (VR_ESSENTIALS 6): a screen nearer than infinity needs the game to present
 at the headset rate; 30 fps movies must stay at infinity.
+
+## TEST PLAN FPFIX 2026-10-11 ~17:10 (JJ: "first person is not working in Arkham Knight ... it just does nothing"; "I want the
+## first person function to be fixed first" - before the 0.3.0 release)
+Looked up: memory ak-first-person / batman-city-first-person (City: pawn = controller + 0x1B0 found by back-pointer, head bone
+Bip01_Head via GetBoneLocation), NOTES FIRSTPERSON (AK RE), VR_ESSENTIALS (nothing specific).
+LIVE (akn_log 14:42, JJ toggled it on): "first person on, active 0 | third person for now ... actor F83CAC20 | head frames 0,
+not on foot 1128, skeleton searches 33" = the view target was found but no skeleton with the head in it, so FP never applied.
+STATIC: execGetViewTarget 0xB41EA0 really calls vtable +0xA58 (slot right). Causes, ranked: (1) the view target is not
+Batman's pawn (a camera actor) or his mesh is not a direct field; (2) Batman's mesh is a native subclass with its own vtable
+(the test only took two exact vtables); (3) the head bone is not named Bip01_Head in AK.
+FPFIX build (AKVR 17:07, installed): searches the view target AND the controller's pawn (back-pointer, City's method); the
+skeleton test also takes any vtable whose slot 0 = the family destructor 0xE2E600; head names Bip01_Head, Bip01-Head, Head,
+head, b_Head, Bip01_Neck, Neck (first hit wins, shown in the status); one report per new actor in
+akvr_captures\fp_probe.txt (pointer fields with vtable RVAs, skeleton candidates, origin, which names were FOUND).
+FP back on the panel (top). JJ: on foot in the city, tick FIRST PERSON (or double-click both sticks), walk, Batmobile in/out,
+quit. Judge: status "on: camera at Batman's head (<name>, ...)" + fp_probe.txt; if still none, the probe names the fields.
+### FPFIX RESULT 17:11 (JJ: "Nothing is changing when you tick the first person checkbox") -> FPFIX2
+LIVE fp_probe.txt: view target FDB99B40 (vtable 1CB5560) and the controller's "pawn" FDB70D60 (vtable 1BFF2C0) point at each
+other (+0x478 / +0x5B0); no field held a skeleton of the two known vtables; every head name failed. FPFIX's "slot 0 =
+0xE2E600" test was WRONG (UObject's shared destructor: every object matched, GetBoneLocation was called on random objects -
+no crash, removed). STATIC: APawn::GetPawnViewLocation slot +0xA60 on vtable 1CB5560 = "ret" stub -> the view target is not a
+pawn; 1BFF2C0 has no slot there. Objects are packed to 4 bytes (ULocalPlayer +0x5C) - the 8-byte steps missed fields.
+Natives by joined name ("ClassexecName"): UObjectexecPathName 0xF90590 -> GetFullName 0xF3E160 (this, FString* out; returns
+out; FString {wchar_t*, num, max}) and GetPathName 0xF38C00 (this, out, StopOuter).
+FPFIX2 (AKVR 17:15, installed): objects named by the engine (GetFullName); a skeleton = class name ending in
+"SkeletalMeshComponent" (or the two known vtables); per-frame check by the cached vtable; pawn search by class name containing
+"Pawn" with a back-pointer to the controller, 4-byte steps; search every 2 s while missing; fp_probe.txt lists every object
+field of the view target and the pawn with its full name, and every head-name result on each skeleton.
+### FPFIX2 RESULT 17:20 (JJ: "it seemed to work while in normal gameplay, but as soon as I went into a training module, Batman
+### just left the camera behind") -> FPTRAIN
+LIVE: works in play - head Bip01_Head on BatEntry.RPawnPlayerBm_0 (found as the controller's pawn), skeleton at +0x38C; the
+view target is the controller itself (BatEntry.RPlayerControllerCombat_1); main menu: frontend.RPawn_0 /
+RCinematicCameraActor (menus stay third person). In training: still "active 1" on the same pawn, no new search (the view
+target never changed) = the camera stayed with the parked body.
+FPTRAIN (AKVR 17:24, installed): per frame, the controller's pawn pointer (offset remembered) must still be the skeleton's
+pawn, else search again at once; the head must be within 15 m of the game's own camera (City's FPGATE), else third person
+this frame and a new search (at most every 0.5 s); the search only accepts heads near the game camera.
+
+## PANELTIDY5 2026-10-11 ~17:5x (JJ: "Put the first person option within the view drawer and remove the depth of field on off
+## options and the skip unneeded steps and the game's own anti-aliasing ... Remove all the code that it uses as well and any
+## leftover probes or tests ... remove ... any option to add extra anti-aliasing SMAA or soft - not required now we have DLSS")
+JJ also chose to remove POST EFFECTS (the game's look / glow / grading only acted with depth of field off).
+Removed (AKVR, builds clean, ~1,850 lines + files): panel rows; eyeaa.cpp (the mod's SMAA / soft pass + grading), src/shaders
+(eyeaa*, tonefix*, toneglow*), vendor/smaa, tools/build_eyeaa_shaders.bat; hudsplit HDRCURVE / GAMELOOK / GLOWFIRST pass,
+GAMEGRADE grab, GAMEAA (game SMAA skip), BLUROFF / SKIPSTEPS, DOFBLUR (a geo-11 fix shader); earlyres DOFSWITCH / DOFQUICK /
+DOFLIVE (config forcing simplified: DepthOfField=True written in [SystemSettings] + buckets 2-5, so older installs' False is
+undone); xr dim-layer DoF darkening, POSTOK; settings keys. ps_track() stays always on (as it effectively was).
+Probes/tests (helper agent, then SHADERDUMP / SHCENSUS): test-tools switch and everything behind it, DRAWPROBE 1-4, RAINPARTS,
+NORAIN, NEARRAIN modes, RAINSTRETCH / RAINSPLIT, RAINWRITER, TARGETTRACE, HUD hide test, HUD coverage read-back, MKREC,
+SHADERFINDER, RADARREC, AIMSHOT, the render-target observer + scene TAP feed, shader dump at every start, F2 shader census.
+Kept: FARRAIN (camera input = head-free game camera, as nearrainlag=0 gave), FLAREOFF, SUITGLOSS, MKGS, MKSINGLE/MKBATCH, HUD
+split / layers / markers, F2 capture core, start-up / mode logs, AKN-command test switches (MARKSHEET, MARKERCUT, MAPFLAT ...),
+first person (fp_report probe file kept until JJ confirms the training fix). Shipped settings file: 27 dead keys removed.

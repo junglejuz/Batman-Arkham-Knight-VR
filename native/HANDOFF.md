@@ -134,3 +134,9 @@ NOTES.md "RETHINK MARKERS 2", "MKEYE BUILD", "FIRSTPERSON".
 ## 2026-10-11 13:36 MKGS2
 MKGS (per-vertex 3D marker placement by a generated geometry shader) never ran in JJ's 13:3x session (built 0, all draws on the
 affine fallback): AKVR's 2048-slot shader table was full. Now an unbounded map + diagnostics (NOTES "MKGS RESULT + MKGS2").
+
+## 2026-10-11 ~14:55 PACKAGE 0.3.0 (native stereo only) - installed on JJ's game, waiting for his check before GitHub
+Folder moved: akvr_native -> akvr/native (junction at the old path). Commits 83c5e46, 7b8fe6b, 4894080 (local, not pushed).
+Panel tidy (PANELTIDY4), installer/uninstaller rewritten (no geo-11), README in the Batman City layout, practice tests 35/35
+(scratchpad Test-AKPackage.ps1). JJ's geo-11 / fix files kept in E:\...\Batman Arkham Knight\vrmod_geo11_backup_2026-10-11.
+Open: first person does nothing in AK (JJ) - hidden from the panel; after JJ's check: push, release v0.3.0 (AKVR-ArkhamKnight.zip).

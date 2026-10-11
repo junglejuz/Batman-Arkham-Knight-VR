@@ -50,12 +50,6 @@ float akvr_head_pos_scale();   // camera.cpp: game units per metre (world scale)
 #include <vector>
 #include <windows.h>
 
-bool akvr_dof_off();   // earlyres.cpp: DOFSWITCH (as applied at this start)
-void akvr_dof_live_apply(bool on);   // earlyres.cpp: DOFLIVE
-int  akvr_dof_live_state();
-bool akvr_eyeaa_apply(ID3D11Device *d, ID3D11DeviceContext *c, ID3D11Texture2D *src, const D3D11_BOX &box, ID3D11Texture2D *dst);   // eyeaa.cpp: EYEAA
-void akvr_eyeaa_eye(int e);   // eyeaa.cpp: POSTFX (auto exposure measured on eye 0 only)
-void akvr_eyeaa_forget_images();
 int akvr_hud_target_points(float* xy, int max, int rtW, int rtH, float* off, float* xf);   // earlyres.cpp: TARGETANCHOR (MARKERCUT)
 namespace {
 XrInstance g_inst = XR_NULL_HANDLE;
@@ -843,7 +837,7 @@ bool create_swapchain(uint32_t w, uint32_t h, DXGI_FORMAT bbFormat) {
 void destroy_swapchains() {
   for (int e = 0; e < 2; ++e) {
     if (g_swap[e] != XR_NULL_HANDLE) {
-      akvr_eyeaa_forget_images(); xrDestroySwapchain(g_swap[e]);
+      xrDestroySwapchain(g_swap[e]);
       g_swap[e] = XR_NULL_HANDLE;
     }
     g_swapImages[e].clear();
@@ -3235,22 +3229,12 @@ bool dim_fill(float a) {
   g_dimDrawn = a;
   return true;
 }
-// DOFQUICK 2026-10-06 - JJ: a quick option that "just turns off the depth of field ... sharp and faster, but also
-// brighter, so ... automatically darken the image a bit". With DepthOfField=False the game also drops its exposure
-// adaptation and colour grading (SHCENSUS); the same see-through black layer as the pause darkens the world (under
-// the HUD) by g_dofDarken while depth of field is off this start. The pause darkening multiplies on top.
-bool g_dofPlayOff = false, g_dofPlayWas = false;   // DOFLIVE: the panel's "off during play"
-// POSTOK 2026-10-07 - JJ: "Make sure all these post effects are disabled during menu screens and title screens".
-// True only in real play: not the start-up / title screens or the main menu (until it has been left, and again after
-// "MAIN MENU again"), not the pause look, not the map or any floating screen. eyeaa.cpp and HDRCURVE read it.
-volatile bool g_postOk = false;
-float g_dofDarken = 0.25f;   // DOFSTOPS 2026-10-06 (JJ: "should really go up to 2"): exposure stops, 1 = half as bright
 bool dim_layer(XrCompositionLayerQuad &q) {
   const float step = 1.0f / 12.0f;
   const bool want = g_pauseLive && g_pauseDim > 0.0f;
   g_pauseDimAmt = want ? (g_pauseDimAmt + step > 1.0f ? 1.0f : g_pauseDimAmt + step)
                        : (g_pauseDimAmt - step < 0.0f ? 0.0f : g_pauseDimAmt - step);
-  const float base = (akvr_dof_off() || akvr_dof_live_state() == 0) ? 1.0f - powf(2.0f, -g_dofDarken) : 0.0f;   // DOFQUICK / DOFSTOPS / DOFLIVE
+  const float base = 0.0f;   // PANELTIDY5: the depth-of-field-off darkening is gone (depth of field stays on)
   if (g_hieDimDone) { g_hieDimDone = false; return false; }   // WHEELEYE: already in the eye pictures, under the HUD
   // FULLCUT2 2026-10-10: full-screen cuts are drawn into the eye pictures only (hud_in_eyes), never by this layer - the
   // first FULLCUT build made this layer create its swapchain at the main menu's black start screen and Virtual Desktop
@@ -3274,7 +3258,7 @@ bool dim_layer(XrCompositionLayerQuad &q) {
 }
 // WHEELEYE: the dim layer's current darkness (same sum, without stepping the fade)
 float hie_dim_alpha() {
-  const float base = (akvr_dof_off() || akvr_dof_live_state() == 0) ? 1.0f - powf(2.0f, -g_dofDarken) : 0.0f;
+  const float base = 0.0f;   // PANELTIDY5
   if (g_pauseDimAmt <= 0.0f && base <= 0.0f) return 0.0f;
   return floorf((1.0f - (1.0f - base) * (1.0f - g_pauseDim * g_pauseDimAmt)) * 64.0f + 0.5f) / 64.0f;   // (FULLCUT5: the cut is added on the graphics card)
 }
@@ -4171,12 +4155,6 @@ void akvr_xr_frame_submit(IDXGISwapChain *swapChain, float gameFovDeg,
   // MAPFLAT: a floating screen over a 3D picture (map, plain pause) - AKN draws its next frames the flat game's way
   g_aknFlatScreen = akvr_engine_stereo() && !effGameplay && !g_pauseWaiting && !akvr_xr_main_menu_detected() && !g_forceScreen;
   g_hudOnScreen = g_mapFlat && akvr_engine_stereo() && !effGameplay;
-  g_postOk = (gameplay || camRun3D) && !g_pauseLive && !g_pauseWaiting && !akvr_xr_screen_mode() && !(g_autoMainMenu && g_menuPhase < 2);   // POSTOK
-  // DOFLIVE 2026-10-06: depth of field off during play (sharper, faster), on for the map / pause / menus (the map is
-  // drawn through it). The game starts with it on (dofoff=0).
-  if (g_dofPlayOff) akvr_dof_live_apply(!(effGameplay && !g_pauseLive));
-  else if (g_dofPlayWas) akvr_dof_live_apply(true);
-  g_dofPlayWas = g_dofPlayOff;
   {   // MENUSTART: when the 3D main menu first comes up, AKVR captures it (hooks.cpp) - JJ still sees "the view of
       // Batman from the top at the bottom of the screen" there, too briefly for F2.
     static bool s_msDone = false;
@@ -4368,10 +4346,7 @@ void akvr_xr_frame_submit(IDXGISwapChain *swapChain, float gameFovDeg,
                 box.bottom = g_swH;
                 box.front = 0;
                 box.back = 1;
-                // EYEAA: the mod's own edge smoothing on the way to the headset (off = the plain copy)
-                akvr_eyeaa_eye(e);
-                if (!akvr_eyeaa_apply(g_device, g_ctx, backBuffer, box, g_swapImages[e][idx]))
-                  g_ctx->CopySubresourceRegion(g_swapImages[e][idx], 0, 0, 0, 0,
+                g_ctx->CopySubresourceRegion(g_swapImages[e][idx], 0, 0, 0, 0,
                                                backBuffer, 0,
                                                &box); // this eye's half
               } else if (bd.SampleDesc.Count > 1) {
@@ -4953,10 +4928,6 @@ bool akvr_xr_pause_live() { return g_pauseLive; }
 bool akvr_xr_pause_candidate() { return g_pauseCand; }   // PAUSEEDGE
 bool akvr_xr_pause_look() { return g_pauseLook; }
 void akvr_xr_pause_look_set(bool on) { g_pauseLook = on; }
-bool  akvr_xr_dof_play_off() { return g_dofPlayOff; }   // DOFLIVE
-void  akvr_xr_dof_play_off_set(bool on) { g_dofPlayOff = on; }
-float akvr_xr_dof_darken() { return g_dofDarken; }   // DOFQUICK
-void  akvr_xr_dof_darken_set(float v) { g_dofDarken = v < 0.0f ? 0.0f : (v > 2.0f ? 2.0f : v); }   // DOFSTOPS: 0..2 stops
 float akvr_xr_pause_dim() { return g_pauseDim; }
 void akvr_xr_pause_dim_set(float v) { g_pauseDim = v < 0.0f ? 0.0f : (v > 0.9f ? 0.9f : v); }
 bool akvr_xr_screen_frozen() {
@@ -5092,20 +5063,7 @@ bool  akvr_xr_eye_tangents(float& o, float& i, float& u, float& d) {
 void akvr_xr_native_swap_eyes_set(bool on) { g_nativeSwapEyes = on; }
 int akvr_xr_pose_delay() { return g_poseDelay; }
 int akvr_xr_pose_delay_used() { return g_usedDelay; }
-// FRAMEPAIR2 2026-10-02 — JJ: "Head pose delay of 2 makes the rain go rock solid ... and the [reticle] and the distance
-// HUD marker ... the world becomes jittery" (world steady at 3). The head poses the NEXT submit would pick at delay a
-// (the world's) and at delay b (the rain's and markers'), from the same history the delay setting reads. Call on the
-// Present thread before this Present's frame begin (the HUD draw): the next begin adds one pose first.
-bool akvr_xr_pose_pair(int a, int b, float qa[4], float qb[4]) {
-  if (a < 1 || b < 1 || a > 30 || b > 30) return false;
-  const XrPosef pa = g_poseHist[(g_poseHead + 1 - (uint32_t)a) & 63u];
-  const XrPosef pb = g_poseHist[(g_poseHead + 1 - (uint32_t)b) & 63u];
-  if (pa.orientation.w == 0.0f && pa.orientation.x == 0.0f && pa.orientation.y == 0.0f && pa.orientation.z == 0.0f) return false;
-  if (pb.orientation.w == 0.0f && pb.orientation.x == 0.0f && pb.orientation.y == 0.0f && pb.orientation.z == 0.0f) return false;
-  qa[0] = pa.orientation.x; qa[1] = pa.orientation.y; qa[2] = pa.orientation.z; qa[3] = pa.orientation.w;
-  qb[0] = pb.orientation.x; qb[1] = pb.orientation.y; qb[2] = pb.orientation.z; qb[3] = pb.orientation.w;
-  return true;
-}
+// PANELTIDY5 2026-10-11: akvr_xr_pose_pair (FRAMEPAIR2, only the removed RAINSPLIT rain test read it) and the MKREC eye-pair getter removed.
 bool akvr_xr_pose_auto() { return g_poseAuto; }
 void akvr_xr_pose_auto_set(bool on) { g_poseAuto = on; }
 bool akvr_xr_pose_matched() { return g_poseMatched; }
@@ -5141,7 +5099,6 @@ void akvr_xr_backbuffer_size(uint32_t &w, uint32_t &h) {
 // shape of what was rendered.
 ID3D11Texture2D *akvr_xr_katanga_texture() { return g_katTex; }
 ID3D11Texture2D *akvr_xr_eyes_texture() { return g_hieDst; }   // EYESHOT
-ID3D11Texture2D *akvr_xr_akn_sbs() { return g_aknSbs; }   // MKREC: the eye pair with the HUD drawn in
 const char *akvr_xr_card_diag() { return g_mkCardDiag; }
 void akvr_xr_submitted_fov_deg(float &h, float &v) {
   h = g_subHalfH * 2.0f * 57.29578f;
@@ -5392,4 +5349,3 @@ const char *akvr_xr_vig_diag() {
 float akvr_xr_startup_bright() { return startup_bright_impl(); }   // STARTBRIGHT
 
 const char *akvr_xr_share_probe() { return g_shareProbe; }   // SHAREPROBE
-bool akvr_xr_post_ok() { return g_postOk; }   // POSTOK

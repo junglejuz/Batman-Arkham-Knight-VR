@@ -230,7 +230,6 @@ float       akvr_xr_hud_half_ipd();
 void        akvr_xr_eye_image_size(uint32_t& w, uint32_t& h);   // ONE eye's image (half the width in geo-11 SBS)
 void        akvr_xr_submitted_fov_deg(float& h, float& v);      // FULL angles we actually submitted last frame
 ID3D11Texture2D* akvr_xr_eyes_texture();
-ID3D11Texture2D* akvr_xr_akn_sbs();   // MKREC
 const char*      akvr_xr_card_diag();                           // EYESHOT: the first marker card's numbers                        // EYESHOT: both eyes as sent to the headset, HUD drawn in (engine stereo)
 ID3D11Texture2D* akvr_xr_katanga_texture();                     // geo-11's shared surface (F2 grab), may be null
 // What the OpenXR runtime asks for per eye, and its hard ceiling. The recommended
@@ -270,7 +269,6 @@ void        akvr_xr_native_swap_eyes_set(bool on);
 int         akvr_xr_pose_delay();              // Presents between pose publish and its image (0-3)
 void        akvr_xr_pose_delay_set(int frames);
 int         akvr_xr_pose_delay_used();         // the delay actually applied this Present
-bool        akvr_xr_pose_pair(int a, int b, float qa[4], float qb[4]);   // FRAMEPAIR2: head quats the next submit picks at delays a / b
 bool        akvr_xr_pose_auto();               // FRAMEID: pair poses exactly when possible
 void        akvr_xr_pose_auto_set(bool on);
 bool        akvr_xr_pose_matched();            // this Present used the exact match

@@ -678,8 +678,9 @@ namespace {
         // you back out to the main menu, there's a split second where everything looks crystal clear". The game's
         // depth of field was still on (DepthOfField=True in buckets 2-5 and the top block); the 3D fix's F6 only skips
         // a menu blur shader. A distance blur does not sharpen with resolution. VR_ESSENTIALS 7: force it off.
-        { "DepthOfField=",             "False" , false },
-        { "DefaultDepthOfField=",      "False" , false },
+        // PANELTIDY5 2026-10-11 (JJ: depth of field stays on - DLSS replaced the reasons to turn it off): the game's own
+        // value True is written back where an earlier version wrote False (DOFON's sections only, below).
+        { "DepthOfField=",             "True"  , false },
         { "UseVsync=",                 "False" , false },
         { "DefaultUseVsync=",          "False" , false },
         { "UseAdaptiveVsync=",         "False" , false },
@@ -702,9 +703,6 @@ namespace {
         { "DefaultMaxFPS=",            "120"   , true },
     };
 
-    // DOFSWITCH 2026-10-06 - JJ after DOFOFF: "the game is brighter all of a sudden ... especially in the menus".
-    // BATMAN_CITY_PLAN 2.3: in Mass Effect, DepthOfField off also killed tonemapping. dofoff=0 stops forcing it.
-    bool g_dofOff = true;
     int  g_dxgi11 = -1;     // DXGI11: 0 off, 1 game calls only, 2 every call: see hooks.cpp install_creation_hooks. -1 (default) = SVRAUTO
     int g_comfortChanged = -1;      // -1 = not attempted, else lines flipped
 
@@ -813,13 +811,10 @@ namespace {
             // kept the False an earlier start had written (his "on" comparison runs were really off). On = the game's own
             // values back: True in [SystemSettings] and the quality buckets 2-5 (stock; bucket 1, Mobile and Flash are
             // False / FALSE and are left alone).
-            static const ConfigForce kDofOn = { "DepthOfField=", "True", false };
-            if (force && !g_dofOff && strcmp(force->key, "DefaultDepthOfField=") == 0)
-                force = nullptr;   // DOFSWITCH
-            if (force && !g_dofOff && strcmp(force->key, "DepthOfField=") == 0)
+            if (force && strcmp(force->key, "DepthOfField=") == 0)
                 force = (strcmp(section, "[SystemSettings]") == 0 || strcmp(section, "[SystemSettingsBucket2]") == 0 ||
                          strcmp(section, "[SystemSettingsBucket3]") == 0 || strcmp(section, "[SystemSettingsBucket4]") == 0 ||
-                         strcmp(section, "[SystemSettingsBucket5]") == 0) ? &kDofOn : nullptr;   // DOFON
+                         strcmp(section, "[SystemSettingsBucket5]") == 0) ? force : nullptr;   // DOFON
 
             // ENGINESIZE 2026-10-08 (AKN DLSS D0): engine stereo forces the eye size, but the game's own saved
             // ResX/ResY were left as an earlier, BIGGER size. Bigger than the screen we claim (sized from the eye),
@@ -2758,7 +2753,7 @@ namespace {
         char buf[4096]; DWORD got = 0;
         {
             static char all[65536]; DWORD n = 0;
-            if (ReadFile(h, all, sizeof(all) - 1, &n, nullptr) && n) { all[n] = 0; g_dofOff = read_int(all, "dofoff", 1) != 0; g_dxgi11 = read_int(all, "dxgi11", -1); g_dlssMode = read_int(all, "dlss", 0); }   // DLSS D1: the whole file (buf below is only 4 KB)
+            if (ReadFile(h, all, sizeof(all) - 1, &n, nullptr) && n) { all[n] = 0; g_dxgi11 = read_int(all, "dxgi11", -1); g_dlssMode = read_int(all, "dlss", 0); }   // DLSS D1: the whole file (buf below is only 4 KB)
             SetFilePointer(h, 0, nullptr, FILE_BEGIN);
         }
         if (ReadFile(h, buf, sizeof(buf) - 1, &got, nullptr) && got)
@@ -4868,43 +4863,5 @@ const char* akvr_engine_res_diag()
     else                 snprintf(s, sizeof(s), "engine render: FORCED %d x %d", g_engW, g_engH);
     return s;
 }
-bool akvr_dof_off() { return g_dofOff; }   // DOFSWITCH: as applied at this start
-// DOFQUICK 2026-10-06: the panel switch changes the NEXT start only (the game reads DepthOfField while starting)
-static int g_dofOffNext = -1;
-bool akvr_dof_off_next() { return g_dofOffNext < 0 ? g_dofOff : g_dofOffNext != 0; }
-void akvr_dof_off_next_set(bool on) { g_dofOffNext = on ? 1 : 0; }
-
-// DOFLIVE 2026-10-06 - JJ: "dropping the depth of field without killing the map". DepthOfField=False at start also
-// loses the map (and the colours / exposure). The game's settings table (STATIC: BatmanAK.exe RVA 0x30AFC3C, entries of
-// name / value pointer / ... / description; "DepthOfField" -> "Whether to allow depth of field") points at the live
-// UBOOL (4 bytes; the neighbours MotionBlur, Bloom ... sit 4 bytes apart). The game starts with it on; xr.cpp turns it
-// off during play and on again for the map, pause and menus. Checked by name at run time, so a game update that moves
-// the table just switches this off.
-static volatile int* g_dofLive = nullptr;
-static int g_dofLiveTried = 0;
-static bool dof_live_find()
-{
-    if (g_dofLive) return true;
-    if (g_dofLiveTried++) return false;
-    const uintptr_t base = (uintptr_t)GetModuleHandleW(nullptr);
-    __try
-    {
-        const wchar_t* name = *(const wchar_t* const*)(base + 0x30AFC3C);
-        volatile int* val = *(volatile int* const*)(base + 0x30AFC44);
-        if (name && val && wcscmp(name, L"DepthOfField") == 0 && (*val == 0 || *val == 1)) g_dofLive = val;
-    }
-    __except (EXCEPTION_EXECUTE_HANDLER) { g_dofLive = nullptr; }
-    return g_dofLive != nullptr;
-}
-void akvr_dof_live_apply(bool on)
-{
-    if (!dof_live_find()) return;
-    __try { const int want = on ? 1 : 0; if (*g_dofLive != want) *g_dofLive = want; }
-    __except (EXCEPTION_EXECUTE_HANDLER) {}
-}
-int akvr_dof_live_state()   // 1 on, 0 off, -1 not found
-{
-    if (!dof_live_find()) return -1;
-    __try { return *g_dofLive ? 1 : 0; } __except (EXCEPTION_EXECUTE_HANDLER) { return -1; }
-}
+// PANELTIDY5 2026-10-11: DOFSWITCH / DOFQUICK / DOFLIVE removed (depth of field stays on, the game's own look).
 
