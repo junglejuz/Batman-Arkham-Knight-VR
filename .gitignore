@@ -27,8 +27,7 @@ diagnostics/**
 # Third-party cheat table (forum attachment)
 *.CT
 
-# Tested geo-11 files the installer copies in
-!install/files/*.dll
+# NVIDIA DLSS (install/files/nvngx_dlss.dll) is copied into the package by tools/make_package.py, never committed
 
 # Built install packages (made from install/ + the build)
 dist/

@@ -2080,7 +2080,7 @@ namespace
 
         ImGui::TextColored(ImVec4(1.0f, 0.85f, 0.2f, 1.0f), "Arkham Knight VR");
         ImGui::SameLine();
-        ImGui::TextDisabled("   build: AKN5C-0.2.2  " __DATE__ " " __TIME__);   // the same tag as the status file
+        ImGui::TextDisabled("   version 0.3.0  (" __DATE__ ")");   // PANELTIDY4: the release number
 
         ImGui::Separator();
         {   // FIRSTPERSON 2026-10-11 (JJ: "like Arkham City and put it at the top of the overlay"): Batman City's panel rows
@@ -2114,7 +2114,8 @@ namespace
             ImGui::TextColored(vrOn ? kGreen : kAmber, "%s",
                 vrOn ? "VR on" : (akvr_xr_session_running() ? "VR connected, not showing yet" : "VR not connected"));
             ImGui::SameLine();
-            const char* stereo = akvr_xr_native()
+            const char* stereo = akvr_engine_stereo() ? "native stereo"
+                : akvr_xr_native()
                 ? (akvr_xr_kat_feed() ? (akvr_xr_eye_applied() ? "true 3D, each eye's own view" : "true 3D (geo-11)") : "3D OFF (geo-11 feed off)")
                 : "3D by alternating eyes";
             ImGui::TextDisabled("|  %.0f fps  |  %s  |  head tracking %s",
@@ -2184,7 +2185,7 @@ namespace
             ach |= ImGui::RadioButton("soft##eyeaa", &aa, 1); ImGui::SameLine();
             ach |= ImGui::RadioButton("SMAA##eyeaa", &aa, 2);
             if (ach) { akvr_eyeaa_mode_set(aa); settings_save(); }
-            ImGui::TextDisabled("   %s", akvr_eyeaa_diag());
+            if (g_showAdvanced) ImGui::TextDisabled("   %s", akvr_eyeaa_diag());   // PANELTIDY4: numbers for tests only
         }
         if (g_traceRows || g_modeRows)
         { ImGui::SameLine(); ImGui::TextColored(kGreen, "saved"); }
@@ -2275,34 +2276,25 @@ namespace
                     ImGui::TextDisabled("   smooth only when the game keeps up with the headset's rate (one eye per frame)");
                     using StFn = const char* (*)(); static StFn s_st = nullptr;
                     if (!s_st) { HMODULE m = GetModuleHandleW(L"XINPUT9_1_0.dll"); if (m) s_st = (StFn)GetProcAddress(m, "akn_afw_status"); }
-                    if (s_st) { ImGui::PushTextWrapPos(0.0f); ImGui::TextDisabled("   %s", s_st()); ImGui::PopTextWrapPos(); }
+                    if (s_st && g_showAdvanced) { ImGui::PushTextWrapPos(0.0f); ImGui::TextDisabled("   %s", s_st()); ImGui::PopTextWrapPos(); }
                 }
-                {   // MKEYE 2026-10-11 (akvr_native/NOTES.md RETHINK MARKERS 2): the A/B for the new marker method, live
-                    const int em = akn_query("akn_marker_eye_mode");
-                    bool mk = em != 0;
-                    bool mkStart = false;   // MKREC2: ticking the box starts the recording itself (JJ's 04:32 run: the button never fired)
-                    if (em >= 0 && ImGui::Checkbox("markers drawn in each eye at their object (new method; off = old cards)##mkeye", &mk)) { akn_command(mk ? "mkeye 1" : "mkeye 0"); mkStart = mk; }
-                    if (em >= 0)
-                    {   // MKREC: 25 s of per-frame marker numbers (AKN) + both eye pictures every 2 s (here)
-                        const ULONGLONG tnow = GetTickCount64();
-                        if (g_mkrecEnd && tnow < g_mkrecEnd) ImGui::TextColored(ImVec4(1.0f, 0.7f, 0.25f, 1.0f), "   recording markers... %llu s left", (g_mkrecEnd - tnow) / 1000 + 1);
-                        else if (ImGui::Button("Record markers (25 s)##mkrec") || mkStart)
-                        {
-                            SYSTEMTIME st; GetLocalTime(&st);
-                            wchar_t d[96]; swprintf_s(d, L"akvr_captures\\mkrec_%02d%02d%02d\\", st.wHour, st.wMinute, st.wSecond);
-                            g_mkrecDir = d;
-                            std::wstring sp = settings_path();
-                            if (!sp.empty()) CreateDirectoryW((sp.substr(0, sp.find_last_of(L"\\/") + 1) + g_mkrecDir).c_str(), nullptr);
-                            g_mkrecShot = 0; g_mkrecNext = GetTickCount64() + 300; g_mkrecEnd = GetTickCount64() + 25000;
-                            akn_command("mkrec 2100");
-                        }
-                    }
-                }
+                // PANELTIDY4 2026-10-11: the marker method switch and the marker recorder are gone - markers are placed per
+                // vertex in 3D (MKGS, JJ "perfect"); AKN commands mkeye / mkrec stay for tests.
             }
         }
         ImGui::SetNextItemOpen(false, ImGuiCond_Once); if (ImGui::CollapsingHeader("VIEW"))
         {
-            if (akvr_xr_native())
+            if (akvr_engine_stereo())
+            {   // PANELTIDY4 2026-10-11: native stereo's world scale = game units per metre (the eye distance sent to AKN and
+                // the head lean both use it; xr.cpp akn_send_eyes); the geo-11 slider below did nothing here
+                static ULONGLONG s_wsT = 0;
+                float ws = akvr_head_pos_scale() / kLeanAt1;
+                if (SliderStep("world scale  (1.00 = life size)", &ws, 0.5f, 2.0f, "%.2f")) { akvr_head_pos_scale_set(ws * kLeanAt1); s_wsT = GetTickCount64(); }
+                if (ImGui::IsItemDeactivatedAfterEdit() || (s_wsT && GetTickCount64() - s_wsT > 1000 && !ImGui::IsAnyItemActive())) { settings_save(); s_wsT = 0; }
+                ImGui::SameLine();
+                if (ImGui::Button("1.00##wsn")) { akvr_head_pos_scale_set(kLeanAt1); settings_save(); }
+            }
+            else if (akvr_xr_native())
             {
                 // World scale: geo-11's separation x convergence, live (GEOLIVE / VRSEP).
                 float gs = akvr_geo11conv_scale();
@@ -2394,7 +2386,7 @@ namespace
                     if (ImGui::RadioButton(lbl, cur == s.h)) { set_h(s.h > maxH ? maxH : s.h); settings_save(); }
                 }
                 const int h = akvr_engine_res();
-                const int w = (akvr_xr_native() ? (h * akvr_geo11_shape()) / 1000 : (h * akvr_engine_shape()) / 1000) & ~7;
+                const int w = ((akvr_xr_native() && !akvr_engine_stereo()) ? (h * akvr_geo11_shape()) / 1000 : (h * akvr_engine_shape()) / 1000) & ~7;   // PANELTIDY4: native stereo uses engineshape
                 if (h)
                 {
                     ImGui::TextDisabled("   now %u x %u per eye  ->  next launch %d x %d  (%.1f million pixels per eye; higher = sharper, slower)",
@@ -2624,7 +2616,7 @@ namespace
               if (gc) akvr_gamegrade_set(ga > 0.001f, ga);
               if (ec) akvr_post_set(false, cp, cs, 0.0f, ed);
               if (hc || gc || ec) pch = true;
-              ImGui::TextDisabled("   %ld passes, %ld glows drawn | picture in: format %d | %s", akvr_hdr_curve_draws(), akvr_hdr_glow_runs(), akvr_hdr_scene_format(), akvr_gamegrade_diag()); }
+              if (g_showAdvanced) ImGui::TextDisabled("   %ld passes, %ld glows drawn | picture in: format %d | %s", akvr_hdr_curve_draws(), akvr_hdr_glow_runs(), akvr_hdr_scene_format(), akvr_gamegrade_diag()); }
             // MODGLOW: the mod's own glow
             { bool on; float gi, gt, gr; akvr_glow_get(on, gi, gt, gr);
               bool ch = ImGui::Checkbox("glow##modglow", &on);
@@ -2642,7 +2634,7 @@ namespace
               if (ImGui::Button("reset grading")) { gl = 0.0f; gg = 1.0f; gn = 1.0f; gch = true; }
               if (gch) { akvr_grade_set(gl, gg, gn); pch = true; } }
             if (pch) settings_save();
-            ImGui::TextDisabled("   %s", akvr_eyeaa_diag());
+            if (g_showAdvanced) ImGui::TextDisabled("   %s", akvr_eyeaa_diag());
         }
         ImGui::SetNextItemOpen(false, ImGuiCond_Once); if (ImGui::CollapsingHeader("ZOOM VIGNETTE"))
         {
@@ -2655,182 +2647,13 @@ namespace
             if (g_showAdvanced && SliderStep("zoom when the game's view is narrower than  (deg)", &vb, 0.0f, 120.0f, "%.0f")) { akvr_xr_vig_below_set(vb); s_vigDirty = true; }   // PANELTIDY2
             static bool s_prev = false;
             if (ImGui::Checkbox("preview the vignette now", &s_prev)) akvr_xr_vig_preview(s_prev);
-            ImGui::TextDisabled("   %s", akvr_xr_vig_diag());
+            if (g_showAdvanced) ImGui::TextDisabled("   %s", akvr_xr_vig_diag());
             if (s_vigDirty && !ImGui::IsAnyItemActive()) { settings_save(); s_vigDirty = false; }
         }
         else akvr_xr_vig_preview(false);   // never leave a preview on behind a closed section
 
-        // ---- FIND A SHADER (SHADERFINDER 2026-10-01) ----------------------------------------------
-        // JJ: "Is there a way I can do this without being at the actual physical keyboard?" geo-11's shader finder
-        // (hunting=2 in the fix's d3dx.ini, FIX_CHANGES 3c) listens for numpad keys; these buttons press them.
-        // DRAWPROBE2 (JJ 2026-10-01: one rain row only, "there must be other rain shaders"; the step-through rows
-        // are not something JJ will use - removed). The world rain particles and the draws around them, by shader pair.
-        // PANELTIDY2: the rain is fixed (JJ: "I think he's fixed it") - the probe is a test tool, advanced only.
-        ImGui::SetNextItemOpen(false, ImGuiCond_Once); if (ImGui::CollapsingHeader("RAIN TEST  (check the rain hangs in space)"))   // RAINCHECK 2026-10-02: JJ - the option "is gone in the overlay"; shown without advancedpanel again
-        {
-            // RAINTIDY 2026-10-02 â€” JJ: "I don't know what each older test option does or what I should be setting it to".
-            // Three controls, each explained; the rain-hunt controls are folded away (advancedpanel=1 only).
-            ImGui::TextWrapped("To check the rain: pause the game, tick the first box, turn your head. Untick it to get "
-                               "the picture back.");
-            if (akvr_engine_stereo())
-            {   // PANELRAIN 2026-10-08 (engine stereo: the game draws both eyes; AKN hides / pauses the rain itself)
-                const int rv = akn_query("akn_rain_view");
-                bool only = rv == 2, hide = rv == 1;
-                if (ImGui::Checkbox("show only the rain  (everything else disappears)##akn", &only)) akn_command(only ? "rainview 2" : "rainview 0");
-                if (ImGui::Checkbox("hide the rain  (everything else stays)##akn", &hide)) akn_command(hide ? "rainview 1" : "rainview 0");
-                bool paused = akn_query("akn_rain_pause") == 1;
-                if (ImGui::Checkbox("pause the rain  (it hangs still, like in the pause menu)##akn", &paused)) akn_command(paused ? "rainpause 1" : "rainpause 0");
-                bool farA = akn_query("akn_far_rain") == 1;
-                if (ImGui::Checkbox("rain stays in the world when you turn your head  (the fix - keep ON)##akn", &farA)) akn_command(farA ? "farrain 1" : "farrain 0");
-            }
-            else
-            {
-                bool every = akvr_probe_every_draw();
-                if (ImGui::Checkbox("show only the rain  (everything else disappears)", &every))
-                { akvr_probe_every_draw_set(every); if (every) akvr_test_tools_set(true); }
-                bool noRain = akvr_hide_rain();   // NORAIN 2026-10-07: the opposite of the box above
-                if (ImGui::Checkbox("hide the rain  (everything else stays; off again at the next start)", &noRain)) akvr_hide_rain_set(noRain);
-                if (noRain) { ImGui::SameLine(); ImGui::TextDisabled("%ld rain draws hidden", akvr_rain_hidden()); }
-                bool farOn = akvr_far_rain();
-                if (ImGui::Checkbox("rain stays in the world when you turn your head  (the fix - keep ON)", &farOn)) { akvr_far_rain_set(farOn); settings_save(); }
-                // THREADSYNC 2026-10-02 (OneFrameThreadLag=False + one head pose delay for everything): JJ - "rain streaks
-                // ignore camera movement" and "rain matches the world's frame" are not needed any more; removed from the
-                // panel (settings rainnostretch / rainframefix still read, default off). Test tools: the two crashes
-                // with the threads in step came with them on - say so on the box.
-                bool tt = akvr_test_tools();
-                if (ImGui::Checkbox("test tools on  (recorders for F2 - can crash the game; turn off when not testing)", &tt)) { akvr_test_tools_set(tt); settings_save(); }
-            }
-            if (g_showAdvanced && ImGui::TreeNode("old rain-hunt controls (finished - leave alone)"))
-            {
-            ImGui::TextDisabled("   %s", akvr_far_rain_diag());
-            // NEARRAIN (JJ: "Can't we hang them in space like the rest of them?") - earlier draw-side tests
-            {
-                int nm = akvr_near_rain_mode();
-                ImGui::TextUnformatted("older tests, streaks 0-2047:");
-                ImGui::SameLine();
-                bool ch = ImGui::RadioButton("as the game draws it", &nm, 0);   // FARRAIN: the default again
-                ImGui::SameLine();
-                ch |= ImGui::RadioButton("hidden", &nm, 2);
-                ImGui::SameLine();
-                ch |= ImGui::RadioButton("take head movement off", &nm, 3);
-                ImGui::SameLine();
-                ch |= ImGui::RadioButton("turn back (old test)", &nm, 1);
-                if (ch) { akvr_near_rain_mode_set(nm); settings_save(); }
-                // NEARRAIN2 (JJ: the block still turns with the head): which camera the correction uses
-                const int lag = akvr_near_rain_lag();
-                ImGui::Text("   camera frames back: %d%s", lag, lag == 0 ? "  (the rain draw's own)" : "");
-                ImGui::SameLine();
-                if (ImGui::Button("-##nrl")) { akvr_near_rain_lag_set(lag - 1); settings_save(); }
-                ImGui::SameLine();
-                if (ImGui::Button("+##nrl")) { akvr_near_rain_lag_set(lag + 1); settings_save(); }
-                ImGui::TextDisabled("   %s", akvr_near_rain_diag());
-                ImGui::Separator();
-            }
-            // DRAWPROBE4b (JJ: "I don't have a checkbox called the world rain" - DRAWPROBE3's groups skip it)
-            for (int i = 0; i < akvr_probe_kind_count(); ++i)
-            {
-                unsigned long long ps = 0, vs = 0; int tags = 0; long draws = 0; unsigned cnt = 0, inst = 0;
-                bool seen = false, hide = false;
-                if (!akvr_probe_kind(i, ps, vs, tags, draws, cnt, inst, seen, hide) || !(tags & 1)) continue;
-                ImGui::PushID(5000 + i);
-                if (ImGui::Checkbox("hide the world rain", &hide)) akvr_probe_kind_hide(i, hide);
-                ImGui::PopID();
-            }
-            // RAINPARTS (JJ: the stuck streaks are part of the world rain draw)
-            // RAINPARTS2: a streak count in steps of 256 (the stuck streaks are at the start of the list)
-            const int parts = akvr_probe_rain_parts();
-            if (parts < 0) ImGui::Text("world rain: all streaks drawn");
-            else ImGui::Text("world rain: only the first %d streaks drawn", parts);
-            if (ImGui::Button("start at 2560##rp")) akvr_probe_rain_parts_set(2560);
-            ImGui::SameLine();
-            if (ImGui::Button("256 fewer##rp")) akvr_probe_rain_parts_set(parts < 0 ? 2560 : (parts >= 256 ? parts - 256 : 0));
-            ImGui::SameLine();
-            if (ImGui::Button("256 more##rp")) akvr_probe_rain_parts_set(parts < 0 ? -1 : parts + 256);
-            ImGui::SameLine();
-            if (ImGui::Button("draw all##rp")) akvr_probe_rain_parts_set(-1);
-            bool all = akvr_probe_all_but_rain();
-            if (ImGui::Checkbox("hide everything below except the world rain", &all)) { akvr_probe_all_but_rain_set(all); if (all) akvr_test_tools_set(true); }   // RAINCHECK: needs the test tools
-            // DRAWPROBE4 (JJ: with all see-through draws hidden the stuck rain stays): the wider tests
-            bool allCs = akvr_probe_all_cs();
-            if (ImGui::Checkbox("hide all compute work  (effects the game calculates instead of drawing)", &allCs)) akvr_probe_all_cs_set(allCs);
-            const int ncs = akvr_probe_cs_count();
-            char csLabel[96];
-            _snprintf_s(csLabel, sizeof(csLabel), _TRUNCATE, "compute shaders (%d)###cslist", ncs);
-            if (ImGui::TreeNode(csLabel))
-            {
-                for (int i = 0; i < ncs; ++i)
-                {
-                    unsigned long long h = 0; long pf = 0; bool seen = false, hide = false;
-                    if (!akvr_probe_cs(i, h, pf, seen, hide)) continue;
-                    const char* name = h == 0xa96594b16ceb399bull ? "the fix's 'rain haloing'"
-                                     : (h == 0xbc5c6aebf60c9308ull ? "the fix's 'rain haloing 2 (splash)'" : "");
-                    ImGui::PushID(1000 + i);
-                    if (ImGui::Checkbox("hide", &hide)) akvr_probe_cs_hide(i, hide);
-                    ImGui::SameLine();
-                    ImGui::Text("%2d  %s%s", i + 1, name, seen ? "" : "  (not running now)");
-                    ImGui::SameLine();
-                    ImGui::TextDisabled("  %016llx  %ld a frame", h, pf);
-                    ImGui::PopID();
-                }
-                ImGui::TreePop();
-            }
-            const int nk = akvr_probe_kind_count();
-            if (nk == 0) ImGui::TextDisabled("   no rain drawn yet");
-            // groups: one per vertex shader, in order of first appearance
-            unsigned long long gvs[256]; int gn = 0;
-            for (int i = 0; i < nk; ++i)
-            {
-                unsigned long long ps = 0, vs = 0; int tags = 0; long draws = 0; unsigned cnt = 0, inst = 0;
-                bool seen = false, hide = false;
-                if (!akvr_probe_kind(i, ps, vs, tags, draws, cnt, inst, seen, hide) || (tags & 1)) continue;
-                bool dup = false;
-                for (int g = 0; g < gn && !dup; ++g) dup = gvs[g] == vs;
-                if (!dup && gn < 256) gvs[gn++] = vs;
-            }
-            for (int g = 0; g < gn; ++g)
-            {
-                int kinds = 0, onScreen = 0; long drawsNow = 0;
-                for (int i = 0; i < nk; ++i)
-                {
-                    unsigned long long ps = 0, vs = 0; int tags = 0; long draws = 0; unsigned cnt = 0, inst = 0;
-                    bool seen = false, hide = false;
-                    if (!akvr_probe_kind(i, ps, vs, tags, draws, cnt, inst, seen, hide) || vs != gvs[g] || (tags & 1)) continue;
-                    ++kinds; if (seen) { ++onScreen; drawsNow += draws; }
-                }
-                ImGui::PushID(g);
-                bool gh = akvr_probe_group_hidden(gvs[g]);
-                if (ImGui::Checkbox("hide", &gh)) akvr_probe_group_hide(gvs[g], gh);
-                ImGui::SameLine();
-                char label[160];
-                _snprintf_s(label, sizeof(label), _TRUNCATE, "group %d: %d kinds, %d on screen now (%ld draws a frame)###grp",
-                            g + 1, kinds, onScreen, drawsNow);
-                if (ImGui::TreeNode(label))
-                {
-                    for (int i = 0; i < nk; ++i)
-                    {
-                        unsigned long long ps = 0, vs = 0; int tags = 0; long draws = 0; unsigned cnt = 0, inst = 0;
-                        bool seen = false, hide = false;
-                        if (!akvr_probe_kind(i, ps, vs, tags, draws, cnt, inst, seen, hide) || vs != gvs[g] || (tags & 1)) continue;
-                        ImGui::PushID(i);
-                        if (ImGui::Checkbox("hide", &hide)) akvr_probe_kind_hide(i, hide);
-                        ImGui::SameLine();
-                        ImGui::Text("%s%s", (tags & 64) ? "drawn by a count the GPU supplies"
-                                            : ((tags & 2) ? "uses the rain's picture" : ((tags & 12) ? "next to the rain" : "see-through")),
-                                    seen ? "" : "  (not on screen now)");
-                        ImGui::SameLine();
-                        ImGui::TextDisabled("  %016llx  %ld x %u x %u", ps, draws, cnt, inst);
-                        ImGui::PopID();
-                    }
-                    ImGui::TreePop();
-                }
-                ImGui::SameLine();
-                ImGui::TextDisabled("  %016llx", gvs[g]);
-                ImGui::PopID();
-            }
-            ImGui::TextDisabled("   %s", akvr_probe_diag());
-            ImGui::TreePop();
-            }   // RAINTIDY: old rain-hunt controls
-        }
+        // PANELTIDY4 2026-10-11: the RAIN TEST section and the old rain-hunt controls are gone from the panel (the rain is
+        // fixed: RAINONCE / FARRAIN2 / RAINDEPTH). AKN commands rainview / rainpause / farrain stay for tests.
 
         // ---- MENUS AND SCREENS ------------------------------------------------------
         ImGui::SetNextItemOpen(false, ImGuiCond_Once); if (ImGui::CollapsingHeader("MENUS AND SCREENS"))
@@ -2838,7 +2661,7 @@ namespace
             {   // MENUFIT 2026-10-06 - JJ: the gadget wheel stretched, the AR challenges screen clipped
                 bool mf = akvr_menu_fit();
                 if (ImGui::Checkbox("keep pop-up menus in their own shape  (gadget wheel, challenges)", &mf)) { akvr_menu_fit_set(mf); settings_save(); }
-                ImGui::TextDisabled("   %ld fixes so far (%ld screen-size questions)", akvr_menu_fit_writes(), akvr_menu_fit_res_seen());
+                if (g_showAdvanced) ImGui::TextDisabled("   %ld fixes so far (%ld screen-size questions)", akvr_menu_fit_writes(), akvr_menu_fit_res_seen());
             }
             bool scrMode = akvr_xr_screen_mode();
             if (ImGui::Checkbox("float as a screen now  (Pause key)", &scrMode))
@@ -2881,7 +2704,7 @@ namespace
             // AUDIOSYNC (JJ: "maybe we need to pause the audio so it syncs up with ... the menu screen appearing")
             bool as = akvr_audiosync();
             if (ImGui::Checkbox("start-up: hold the sound while the game loads the menu", &as)) { akvr_audiosync_set(as); settings_save(); }
-            ImGui::TextDisabled("   %s", akvr_audiosync_diag());
+            if (g_showAdvanced) ImGui::TextDisabled("   %s", akvr_audiosync_diag());
             float pscr = akvr_xr_pause_zoom() * 100.0f;
             if (SliderStep("map size %", &pscr, 10.0f, 100.0f, "%.0f"))   // PAUSESIZE: the pause menu has its own size now
                 akvr_xr_pause_zoom_set(pscr / 100.0f);
@@ -3178,10 +3001,8 @@ namespace
         {
             ImGui::TextDisabled("F8 show/hide this panel   |   hold both stick clicks = use it with the controller");
             ImGui::TextDisabled("F12 recenter   |   F11 head tracking on/off   |   Pause/Break float as a screen");
-            ImGui::TextDisabled("F2 save a recording + pictures   |   Ctrl+F1..F7 are geo-11's keys");
-            ImGui::TextDisabled("F7 freecam   |   F9 retry camera hook");
-            ImGui::TextDisabled("Ins/Del menu screen size   |   Home/End field of view   |   PgUp/PgDn lean amount");
-            ImGui::TextDisabled("[ / ] 3D depth   |   \\ switch stereo mode   |   F3 keep-focus   |   F4 release the pad");
+            ImGui::TextDisabled("F2 save a capture (both eyes + settings, in akvr_captures)");
+            ImGui::TextDisabled("F3 keep-focus   |   F4 release the pad");   // PANELTIDY4: geo-11 and old test keys no longer listed
         }
         // SAVEFIX: save any slider change once nothing is being dragged (see g_sliderDirty).
         if (g_sliderDirty && !ImGui::IsAnyItemActive())

@@ -1,8 +1,6 @@
 <#
-  AKVR uninstaller: removes the VR mod and the geo-11 3D fix from Batman: Arkham Knight and puts
-  back the files the first install replaced.
-
-  It also sets the game's graphics settings back to the game's own defaults.
+  AKVR uninstaller: removes the VR mod from Batman: Arkham Knight (and geo-11 / the 3D fix an older version
+  installed), puts back the files the first install replaced, and puts back the player's own graphics settings.
 
   Double-click Uninstall-AKVR.bat. Optional: -GameDir "<folder with BatmanAK.exe>", -Yes (no questions,
   backups kept), -RemoveBackups (also delete the vrmod_backup folders).
@@ -76,17 +74,19 @@ if (Get-Process -Name 'BatmanAK' -ErrorAction SilentlyContinue) { Fail 'the game
 
 if (-not $Yes) {
     Write-Host ''
-    Write-Host '  This removes the VR mod and the geo-11 3D fix from that folder, including your VR' -ForegroundColor White
-    Write-Host '  settings and the "Batman Arkham Knight (VR)" shortcuts, puts back the files the first' -ForegroundColor White
-    Write-Host '  install replaced, and leaves the game with your normal (2D) graphics settings.' -ForegroundColor White
+    Write-Host '  This removes the VR mod from that folder, including your VR settings and the' -ForegroundColor White
+    Write-Host '  "Batman Arkham Knight (VR)" shortcuts, puts back the files the first install replaced,' -ForegroundColor White
+    Write-Host '  and leaves the game with your normal graphics settings.' -ForegroundColor White
     $answer = Read-Host '  Continue? (Y/N)'
     if ($answer -notmatch '^\s*[Yy]') { Say '   Nothing was changed.' 'Yellow'; exit 0 }
 }
 
-# ---- 2. the 3D fix ----------------------------------------------------------------------------
-Step '2. Removing the 3D fix'
+# ---- 2. geo-11 and the 3D fix (installed by versions up to 0.2.1) ---------------------------------
+$hadFix = (Test-Path (Join-Path $GameDir 'geo11.dll')) -or (Test-Path (Join-Path $GameDir 'd3dx.ini'))
+if ($hadFix) { Step '2. Removing geo-11 and the 3D fix (from an older version of the mod)' }
 # The fix author's own uninstall.bat lists every file the fix can add; it deletes itself at the end.
-if (Test-Path (Join-Path $GameDir 'uninstall.bat')) {
+if (-not $hadFix) { }
+elseif (Test-Path (Join-Path $GameDir 'uninstall.bat')) {
     # Its DEL lines are relative, so it must run IN the game folder (Push-Location does not move cmd).
     Start-Process -FilePath "$env:SystemRoot\System32\cmd.exe" -ArgumentList '/c', 'uninstall.bat' -WorkingDirectory $GameDir -WindowStyle Hidden -Wait
     Say '   removed with the fix''s own uninstall.bat' 'Green'
@@ -95,10 +95,10 @@ if (Test-Path (Join-Path $GameDir 'uninstall.bat')) {
 }
 # What the fix's list does not cover (and a safety net if it was missing).
 $n = 0
-foreach ($f in 'd3dx.ini', 'd3dxdm.ini', 'd3dx_user.ini', 'd3d11.dll', 'dxgi.dll', 'nvapi64.dll', 'd3d11_log.txt', 'dxgi_log.txt', 'nvapi_log.txt',
+if ($hadFix) { foreach ($f in 'd3dx.ini', 'd3dxdm.ini', 'd3dx_user.ini', 'd3d11.dll', 'dxgi.dll', 'nvapi64.dll', 'd3d11_log.txt', 'dxgi_log.txt', 'nvapi_log.txt',
                'ShaderFixes', 'ShaderFixesDM', 'ShaderCache', 'ShaderCacheDM', 'DMAutoPatchCache', 'DMAutoPatchFailures', 'uninstall.bat') {
     $n += Remove-IfThere (Join-Path $GameDir $f)
-}
+} }
 if ($n) { Say "   $n more fix file(s) or folder(s) removed" 'Green' }
 
 # ---- 3. the mod ---------------------------------------------------------------------------------
@@ -112,18 +112,26 @@ if (Test-Path -LiteralPath $lastFile) { $profLast = (Get-Content -LiteralPath $l
 if (Test-Path -LiteralPath (Join-Path $GameDir 'akvr_profiles\2d')) {
     & robocopy (Join-Path $GameDir 'akvr_profiles\2d') $prof2d /E /R:1 /W:1 /NFL /NDL /NJH /NJS /NP | Out-Null
 }
-# The VR launcher and its shortcuts.
+# The VR launchers and their shortcuts (today's and older versions' names).
 $n = 0
-$n += Remove-IfThere (Join-Path $GameDir 'AKVR-Launch-VR.bat')
+foreach ($l in 'AKVR-Launch-VR.bat', 'AKVR-Launch-VR-SteamVR.bat', 'AKVR-Launch-VR-EngineStereo.bat', 'AKVR-Launch-VR-EngineStereo-SteamVR.bat') {
+    $n += Remove-IfThere (Join-Path $GameDir $l)
+}
 foreach ($place in @([Environment]::GetFolderPath('Desktop'), [Environment]::GetFolderPath('Programs'))) {
-    if ($place) { $n += Remove-IfThere (Join-Path $place 'Batman Arkham Knight (VR).lnk') }
+    if (-not $place) { continue }
+    foreach ($s in 'Batman Arkham Knight (VR).lnk', 'Batman Arkham Knight (VR, SteamVR).lnk', 'Uninstall Batman Arkham Knight VR.lnk') { $n += Remove-IfThere (Join-Path $place $s) }
 }
 # dinput8.dll only if it is ours (the name is common to other mods).
 $proxy = Join-Path $GameDir 'dinput8.dll'
 if ((Test-Path $proxy) -and ([System.Text.Encoding]::ASCII.GetString([System.IO.File]::ReadAllBytes($proxy))).Contains('AKVR')) {
     Remove-Item -LiteralPath $proxy -Force; $n++
 }
-foreach ($f in 'geo11.dll', 'dxgi.dll.wrapmode', 'akvr_fix_backup') { $n += Remove-IfThere (Join-Path $GameDir $f) }
+# XINPUT9_1_0.dll (native stereo + DLSS) likewise only if it is ours; its folder akn holds DLSS and its logs.
+$xin = Join-Path $GameDir 'XINPUT9_1_0.dll'
+if ((Test-Path $xin) -and ([System.Text.Encoding]::ASCII.GetString([System.IO.File]::ReadAllBytes($xin))).Contains('akn_api_version')) {
+    Remove-Item -LiteralPath $xin -Force; $n++
+}
+foreach ($f in 'akn', 'geo11.dll', 'dxgi.dll.wrapmode', 'akvr_fix_backup') { $n += Remove-IfThere (Join-Path $GameDir $f) }
 # The mod's settings, logs and captures.
 foreach ($item in Get-ChildItem -LiteralPath $GameDir -Filter 'akvr_*') { Remove-Item -LiteralPath $item.FullName -Recurse -Force; $n++ }
 Say "   $n file(s) removed" 'Green'
@@ -137,6 +145,8 @@ function Test-PreModBackup([string]$dir) {
     if (Test-Path -LiteralPath (Join-Path $dir 'geo11.dll')) { return $false }
     $p = Join-Path $dir 'dinput8.dll'
     if ((Test-Path -LiteralPath $p) -and ([System.Text.Encoding]::ASCII.GetString([System.IO.File]::ReadAllBytes($p))).Contains('AKVR')) { return $false }
+    $x = Join-Path $dir 'XINPUT9_1_0.dll'
+    if ((Test-Path -LiteralPath $x) -and ([System.Text.Encoding]::ASCII.GetString([System.IO.File]::ReadAllBytes($x))).Contains('akn_api_version')) { return $false }
     return $true
 }
 $backups = @(Get-ChildItem -LiteralPath $GameDir -Directory -Filter 'vrmod_backup_*' | Sort-Object Name | Where-Object { Test-PreModBackup $_.FullName })

@@ -1,4 +1,4 @@
-"""Build the AKVR download package: akvr/dist/AKVR-ArkhamKnight/ and akvr/dist/AKVR-ArkhamKnight.zip.
+"""Build the AKVR download package (native stereo, 0.3.0 on): akvr/dist/AKVR-ArkhamKnight/ and akvr/dist/AKVR-ArkhamKnight.zip.
 
 The zip has no top folder (Windows' "Extract All" already makes one named after the zip) and uses
 standard forward-slash entry names. 2026-09-29: a zip made with PowerShell 5.1 (Compress-Archive /
@@ -21,14 +21,14 @@ FILES = {  # package path -> source path (relative to akvr/)
     'Install-AKVR.ps1': 'install/Install-AKVR.ps1',
     'Uninstall-AKVR.bat': 'install/Uninstall-AKVR.bat',
     'Uninstall-AKVR.ps1': 'install/Uninstall-AKVR.ps1',
-    'AKVR-fix-patches.ps1': 'tools/AKVR-fix-patches.ps1',
-    'AKVR-Launch-VR.bat': 'install/AKVR-Launch-VR.bat',         # VRLAUNCH: the installer puts it in the game folder + shortcuts
-    'dinput8.dll': 'build-dinput8/Release/dinput8.dll',
+    'AKVR-Launch-VR.bat': 'install/AKVR-Launch-VR.bat',                  # the installer puts both in the game folder + shortcuts
+    'AKVR-Launch-VR-SteamVR.bat': 'install/AKVR-Launch-VR-SteamVR.bat',
+    'dinput8.dll': 'build-dinput8/Release/dinput8.dll',                  # head tracking, headset output, panel
+    'XINPUT9_1_0.dll': 'native/build/Release/XINPUT9_1_0.dll',          # native stereo + DLSS
     'README.md': 'README.md',
-    'files/d3d11.dll': 'install/files/d3d11.dll',
-    'files/nvapi64.dll': 'install/files/nvapi64.dll',
-    'files/d3dxdm.ini': 'install/files/d3dxdm.ini',
-    'files/akvr_settings.ini': 'install/files/akvr_settings.ini',   # the tested setup, first install only
+    'LICENSE-luma-framework.md': 'LICENSE-luma-framework.md',            # Luma's licence: names must be kept
+    'files/nvngx_dlss.dll': 'native/third_party/ngx/bin/nvngx_dlss.dll', # NVIDIA DLSS 310.9.1 (the tested copy)
+    'files/akvr_settings.ini': 'install/files/akvr_settings.ini',       # the tested setup, first install only
     'files/README.txt': 'install/files/README.txt',
 }
 
@@ -36,8 +36,10 @@ FILES = {  # package path -> source path (relative to akvr/)
 def main():
     # PACKAGING_GUIDE section 12: test tools behind one switch, off in the package
     with open(os.path.join(AKVR, 'install', 'files', 'akvr_settings.ini'), encoding='utf-8', errors='replace') as f:
-        if any(line.strip() == 'testtools=1' for line in f):
-            raise SystemExit('refusing: install/files/akvr_settings.ini has testtools=1')
+        lines = [line.strip() for line in f]
+        for bad in ('testtools=1', 'advancedpanel=1'):
+            if bad in lines:
+                raise SystemExit('refusing: install/files/akvr_settings.ini has ' + bad)
     if os.path.isdir(PKG):
         shutil.rmtree(PKG)
     for dst, src in FILES.items():

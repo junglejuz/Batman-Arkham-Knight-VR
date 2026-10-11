@@ -1,28 +1,22 @@
 ﻿<#
-  AKVR installer: sets up the Batman: Arkham Knight geo-11 3D fix for VR and installs the mod.
+  Batman: Arkham Knight VR installer. The game draws both eyes itself (native stereo); no 3D fix is needed.
 
-  Double-click Install-AKVR.bat. It finds the game by itself, downloads the 3D fix if it is not in
-  your Downloads folder, backs up anything it replaces, and asks if it cannot find something.
-  See the README, "Installing".
+  Double-click Install-AKVR.bat. It finds the game by itself, backs up anything it replaces, saves your
+  graphics settings for the uninstaller, and asks if it cannot find something. See the README, "Installing".
 
-  Optional, to skip the searching:
-    -GameDir "<the game's folder>" -FixArchive "<fix .7z>" -ModDll "<dinput8.dll>" -Picture Low|Medium|High
+  Optional: -GameDir "<the game's folder>"   -Yes (no questions: an older geo-11 install is removed)
 #>
-param([string]$GameDir, [string]$FixArchive, [string]$ModDll, [string]$Picture)
+param([string]$GameDir, [switch]$Yes)
 
 $Game = @{
     Mod          = 'AKVR'
     Name         = 'Batman: Arkham Knight'
     Exe          = 'BatmanAK.exe'
     SteamFolder  = 'Batman Arkham Knight\Binaries\Win64'                      # under steamapps\common
-    FixMatch     = 'arkham.*knight.*geo-?11.*\.(7z|zip)$'   # the fix's file name
-    FixPage      = 'https://masterotaku.s3.amazonaws.com/Batman+Arkham+Knight/Batman_Arkham_Knight_geo11_fix.7z'
-    AddNonSquare = $true                         # keep 3D on the tall VR picture (FIX_CHANGES.md section 3)
-    FixPatches   = 'AKVR-fix-patches.ps1'       # the mod's HUD edits to the fix (FIX_CHANGES.md sections 1-2)
-    # The game's graphics settings the mod was tested with (BmSystemSettings.ini [SystemSettings]),
-    # set on the first install only. = JJ's confirmed graphics menu, 2026-09-29: Max FPS 90, texture
-    # resolution / shadow quality / level of detail High, texture filtering 2x anisotropic (as the game
-    # saves them). The stock 60 fps cap was the cause of the blur and the changed pose delay.
+    # The game's graphics settings the mod was tested with (BmSystemSettings.ini [SystemSettings]), written into
+    # the VR copy of the settings on the first install only (the player's own stay for playing from Steam).
+    # JJ's confirmed graphics menu: Max FPS 90 (the mod lifts the cap in VR anyway), texture resolution / shadow
+    # quality / level of detail High, texture filtering 2x anisotropic, NVIDIA GameWorks effects off.
     GameGraphics = [ordered]@{
         'MaxFPS'                         = '90.000000'
         'TextureResolution'              = '2'
@@ -31,16 +25,13 @@ $Game = @{
         'MaxDrawDistanceScale'           = '1.200000'
         'SkeletalMeshDisplayFactorScale' = '0.800000'
         'TextureFiltering'               = '1'
-        # GameWorks off (JJ, 2026-09-29: a player who had them on kept them on - the stock install
-        # has them off, so the first list never needed them).
         'bEnableInteractiveSmoke'        = '0'
         'bEnableInteractivePaperDebris'  = '0'
         'bEnableRainFX'                  = '0'
         'bEnableVolumetricLighting'      = '0'
     }
-    # The same menu in NVIDIA's settings store (GFXSettings.BatmanArkhamKnight.xml), which the game reads
-    # at every start and saves back into the ini (that is how MotionBlur came back, FIX_CHANGES.md section 6).
-    # Only options already in the file are changed; no file = the game builds it from the ini.
+    # The same menu in NVIDIA's settings store (GFXSettings.BatmanArkhamKnight.xml), which the game reads at every
+    # start and saves back into the ini. Only options already in the file are changed.
     GameStore    = [ordered]@{
         'Texture_Resolution'       = '2'
         'Shadow_Quality'           = '2'
@@ -51,17 +42,15 @@ $Game = @{
         'Rain_FX'                  = 'false'
         'Volumetric_Lighting'      = 'false'
     }
-    # The picture size per eye offered on a first install (the height; the mod derives the width from
-    # the headset's shape, ~1.01 wide:tall on a Quest 3). High = the tested setup (RTX 4070 Ti, 45 fps).
-    # Written as engineres + rendersize in akvr_settings.ini; the panel's "picture height per eye" later.
-    PictureSizes = [ordered]@{
-        'Low'    = @{ Height = 2016; Note = 'for most graphics cards' }
-        'Medium' = @{ Height = 2432; Note = 'for fast graphics cards' }
-        'High'   = @{ Height = 2860; Note = 'what the mod was tested with (RTX 4070 Ti)' }
+    # The mod's files: next to this script in the package, or the build folders when run from the project.
+    ModFiles     = [ordered]@{
+        'dinput8.dll'     = @('dinput8.dll', '..\build-dinput8\Release\dinput8.dll')
+        'XINPUT9_1_0.dll' = @('XINPUT9_1_0.dll', '..\native\build\Release\XINPUT9_1_0.dll')
     }
-    PictureDefault = 'Medium'
-    OldProxy     = 'version.dll'
-    BuildDirs    = @('build-dinput8', 'build')
+    Launchers    = [ordered]@{
+        'AKVR-Launch-VR.bat'         = 'Batman Arkham Knight (VR)'
+        'AKVR-Launch-VR-SteamVR.bat' = 'Batman Arkham Knight (VR, SteamVR)'
+    }
 }
 
 # ---------------------------------------------------------------------------------------------
@@ -137,61 +126,6 @@ function Resolve-GameDir([string]$picked) {
     if (Test-Path -LiteralPath (Join-Path $picked $Game.Exe)) { return @($picked) }
     return @(Get-ChildItem -LiteralPath $picked -Filter $Game.Exe -Recurse -Depth 4 -File -ErrorAction SilentlyContinue |
         ForEach-Object { $_.DirectoryName } | Select-Object -Unique)
-}
-
-# Where people put downloads: next to this script, the one or two folders above it (unzipping
-# makes a folder inside Downloads, sometimes a folder inside that), and the Downloads folder.
-function Find-Download([string]$pattern) {
-    $up1 = Split-Path $PSScriptRoot -Parent
-    $up2 = if ($up1) { Split-Path $up1 -Parent } else { $null }
-    $dirs = @($PSScriptRoot, $up1, $up2, (Get-DownloadsDir)) | Where-Object { $_ -and (Test-Path $_) } | Select-Object -Unique
-    return Get-ChildItem -Path $dirs -File -ErrorAction SilentlyContinue |
-        Where-Object { $_.Name -match $pattern } |
-        Sort-Object LastWriteTime -Descending | Select-Object -First 1
-}
-
-# ---- unpacking --------------------------------------------------------------------------------
-
-function Expand-Any([string]$archive, [string]$dest) {
-    New-Item -ItemType Directory -Force -Path $dest | Out-Null
-    $old = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
-    try {
-        # Windows 11's built-in tar opens .7z and .zip.
-        $tar = Join-Path $env:SystemRoot 'System32\tar.exe'
-        if (Test-Path $tar) {
-            & $tar -xf $archive -C $dest 2>&1 | Out-Null
-            if ($LASTEXITCODE -eq 0) { return }
-        }
-        # Older Windows: fall back to 7-Zip if it is installed.
-        $sevenZip = @("$env:ProgramFiles\7-Zip\7z.exe", "${env:ProgramFiles(x86)}\7-Zip\7z.exe") |
-            Where-Object { Test-Path $_ } | Select-Object -First 1
-        if ($sevenZip) {
-            & $sevenZip x -y "-o$dest" $archive 2>&1 | Out-Null
-            if ($LASTEXITCODE -eq 0) { return }
-        }
-    } finally { $ErrorActionPreference = $old }
-    Fail "could not unpack $(Split-Path $archive -Leaf). Install 7-Zip (https://www.7-zip.org) and run this again."
-}
-
-# The fixes come as an archive holding another archive (FixFiles.7z). Unpack until we reach the
-# folder that has d3dx.ini in it.
-function Get-FixRoot([string]$dir, [int]$depth = 0) {
-    if (Test-Path (Join-Path $dir 'd3dx.ini')) { return $dir }
-    if ($depth -gt 3) { return $null }
-    $inner = Get-ChildItem $dir -File | Where-Object { $_.Extension -in '.7z', '.zip' }
-    $n = 0
-    foreach ($a in $inner) {
-        $n++
-        $out = Join-Path $dir ("_inner$n")
-        Expand-Any $a.FullName $out
-        $r = Get-FixRoot $out ($depth + 1)
-        if ($r) { return $r }
-    }
-    foreach ($sub in (Get-ChildItem $dir -Directory)) {
-        $r = Get-FixRoot $sub.FullName ($depth + 1)
-        if ($r) { return $r }
-    }
-    return $null
 }
 
 # ---- ini editing (keeps the file's own bytes, line endings and lack of a BOM) ---------------
@@ -291,11 +225,16 @@ function Get-GfxStoreCandidates {
         ForEach-Object { Join-Path $_ 'WB Games\Batman Arkham Knight\GFXSettings.BatmanArkhamKnight.xml' }
 }
 
-function Add-IniBlock($doc, [string[]]$block) {
-    while ($doc.Lines.Count -gt 0 -and $doc.Lines[$doc.Lines.Count - 1].Trim() -eq '') { $doc.Lines.RemoveAt($doc.Lines.Count - 1) }
-    $doc.Lines.Add('')
-    foreach ($l in $block) { $doc.Lines.Add($l) }
-    $doc.Lines.Add('')
+
+function Test-Ours([string]$path) {   # our proxy DLLs carry the mod's name; the file names are common to other mods
+    if (-not (Test-Path -LiteralPath $path)) { return $false }
+    $t = [System.Text.Encoding]::ASCII.GetString([System.IO.File]::ReadAllBytes($path))
+    return $t.Contains('AKVR') -or $t.Contains('akn_api_version')
+}
+
+function Remove-IfThere([string]$path) {
+    if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Recurse -Force; return 1 }
+    return 0
 }
 
 # =============================================================================================
@@ -331,119 +270,74 @@ if (-not $GameDir) {
 }
 $GameDir = (Resolve-Path $GameDir).Path
 Say "   $GameDir" 'Green'
-
 $proc = Get-Process -Name ([System.IO.Path]::GetFileNameWithoutExtension($Game.Exe)) -ErrorAction SilentlyContinue
 if ($proc) { Fail "the game is running. Close it and run this again." }
 
-# The picture size, asked only when the tested VR settings will be copied in (first install).
-$pictureH = $null
-if ($Game.PictureSizes -and -not (Test-Path (Join-Path $GameDir 'akvr_settings.ini'))) {
-    $names = @($Game.PictureSizes.Keys)
-    if ($Picture) {
-        $Picture = $names | Where-Object { $_ -eq $Picture } | Select-Object -First 1
-        if (-not $Picture) { Fail "-Picture must be one of: $($names -join ', ')" }
-    } else {
-        Step 'Picture sharpness'
-        Say '   Sharper pictures need a faster graphics card (every picture is drawn twice).'
-        Say '   You can change it later: F8, "picture height per eye".'
-        for ($i = 0; $i -lt $names.Count; $i++) {
-            $s = $Game.PictureSizes[$names[$i]]
-            Say ("     {0}  {1,-7} {2} pixels tall per eye - {3}" -f ($i + 1), $names[$i], $s.Height, $s.Note)
-        }
-        $def = [array]::IndexOf($names, $Game.PictureDefault) + 1
-        while (-not $Picture) {
-            $a = (Read-Host "   Type 1-$($names.Count) and press Enter (just Enter = $def, $($Game.PictureDefault))").Trim()
-            if ($a -eq '') { $a = "$def" }
-            $n = 0
-            if ([int]::TryParse($a, [ref]$n) -and $n -ge 1 -and $n -le $names.Count) { $Picture = $names[$n - 1] }
-        }
-    }
-    $pictureH = $Game.PictureSizes[$Picture].Height
-    Say "   $Picture ($pictureH pixels tall per eye)" 'Green'
-}
+# ---- 2. the package -----------------------------------------------------------------------
 
-# ---- 2. the downloads ---------------------------------------------------------------------
-
-Step '2. Finding your downloads'
-if (-not $FixArchive) { $f = Find-Download $Game.FixMatch; if ($f) { $FixArchive = $f.FullName } }
-if (-not $FixArchive) {
-    # FIXDOWNLOAD 2026-10-04 (as SKVR's installer): not downloaded yet - fetch it into a folder of the installer's own
-    # under TEMP (nothing left on the desktop or in Downloads; a reinstall uses the copy there).
-    $dlDir = Join-Path $env:TEMP "$($Game.Mod)-fix-download"
-    $target = Join-Path $dlDir ([Uri]::UnescapeDataString((Split-Path $Game.FixPage -Leaf)))
-    if ((Test-Path $target) -and (Get-Item $target).Length -gt 100KB) { $FixArchive = $target }
-}
-if (-not $FixArchive) {
-    New-Item -ItemType Directory -Force -Path $dlDir | Out-Null
-    Say "   The $($Game.Name) geo-11 fix is not in your Downloads folder - downloading it from"
-    Say "   $($Game.FixPage)"
-    try {
-        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-        $oldProgress = $ProgressPreference; $ProgressPreference = 'SilentlyContinue'   # the progress bar slows it down a lot
-        Invoke-WebRequest -Uri $Game.FixPage -OutFile $target -UseBasicParsing
-        $ProgressPreference = $oldProgress
-        if ((Get-Item $target).Length -gt 100KB) { $FixArchive = $target }
-    } catch { Say "   the download failed: $($_.Exception.Message)" 'Yellow' }
-}
-if (-not $FixArchive) {
-    Say "   Please download the fix from $($Game.FixPage) and pick the file."
-    $FixArchive = Select-File "Pick the $($Game.Name) geo-11 fix you downloaded"
-}
-if (-not $FixArchive -or -not (Test-Path $FixArchive)) { Fail "no 3D fix to install. Download it from $($Game.FixPage)" }
-Say "   3D fix: $FixArchive" 'Green'
-
+Step '2. Checking the download'
 $files = Join-Path $PSScriptRoot 'files'
-foreach ($need in 'd3d11.dll', 'nvapi64.dll', 'd3dxdm.ini') {
-    if (-not (Test-Path (Join-Path $files $need))) { Fail "the 'files' folder next to this script is missing $need. Download the whole install folder again." }
+$src = @{}
+foreach ($name in $Game.ModFiles.Keys) {
+    $p = $Game.ModFiles[$name] | ForEach-Object { Join-Path $PSScriptRoot $_ } | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
+    if (-not $p) { Fail "$name is missing next to this script. Download the whole package again and unpack all of it." }
+    $src[$name] = (Resolve-Path -LiteralPath $p).Path
 }
-Say "   geo-11 $((Get-Item (Join-Path $files 'd3d11.dll')).VersionInfo.FileVersion) and the VR settings: $files" 'Green'
-
-if (-not $ModDll) {
-    $candidates = @(Join-Path $PSScriptRoot 'dinput8.dll')
-    foreach ($b in $Game.BuildDirs) { $candidates += (Join-Path $PSScriptRoot "..\$b\Release\dinput8.dll") }
-    $ModDll = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+foreach ($need in 'nvngx_dlss.dll', 'akvr_settings.ini') {
+    if (-not (Test-Path (Join-Path $files $need))) { Fail "the 'files' folder next to this script is missing $need. Download the whole package again." }
 }
-if ($ModDll) { $ModDll = (Resolve-Path $ModDll).Path; Say "   mod: $ModDll" 'Green' }
-else { Say "   mod: dinput8.dll not found next to this script - the 3D fix will be set up, but copy the mod in afterwards." 'Yellow' }
-
-# ---- 3. unpack ----------------------------------------------------------------------------
-
-Step '3. Unpacking'
-$work = Join-Path $env:TEMP ("$($Game.Mod)-install-" + [guid]::NewGuid().ToString('N').Substring(0, 8))
-Expand-Any $FixArchive (Join-Path $work 'fix')
-$fixRoot = Get-FixRoot (Join-Path $work 'fix')
-if (-not $fixRoot -or -not (Test-Path (Join-Path $fixRoot 'd3d11.dll'))) {
-    Fail "that download does not look like a geo-11 fix (no d3dx.ini / d3d11.dll inside). Make sure you took the geo-11 version, not the 3D Vision one."
+foreach ($l in $Game.Launchers.Keys) {
+    if (-not (Test-Path (Join-Path $PSScriptRoot $l))) { Fail "$l is missing next to this script. Download the whole package again." }
 }
-$fixCount = (Get-ChildItem $fixRoot -Recurse -File).Count
-Say "   3D fix: $fixCount files"
+Say '   everything is there' 'Green'
+
+# ---- 3. an older version of this mod (geo-11) -----------------------------------------------
+# Versions up to 0.2.1 used geo-11 and masterotaku's 3D fix (geo-11 renamed to geo11.dll by our installer). This
+# version does not need them: remove them so nothing of the old setup is left behind.
+
+$oldGeo = (Test-Path (Join-Path $GameDir 'geo11.dll')) -or (Test-Path (Join-Path $GameDir 'dxgi.dll.wrapmode'))
+if ($oldGeo) {
+    Step '3. An older version of the mod (with geo-11) is installed'
+    Say '   This version does not need geo-11 or the 3D fix any more.'
+    $go = $Yes
+    if (-not $go) { $go = (Read-Host '   Remove geo-11 and the 3D fix now? Recommended. (Y/N)') -match '^\s*[Yy]' }
+    if ($go) {
+        if (Test-Path (Join-Path $GameDir 'uninstall.bat')) {
+            # the fix author's own list; its DEL lines are relative, so it must run IN the game folder
+            Start-Process -FilePath "$env:SystemRoot\System32\cmd.exe" -ArgumentList '/c', 'uninstall.bat' -WorkingDirectory $GameDir -WindowStyle Hidden -Wait
+        }
+        $n = 0
+        foreach ($f in 'geo11.dll', 'dxgi.dll.wrapmode', 'akvr_fix_backup', 'd3dx.ini', 'd3dxdm.ini', 'd3dx_user.ini', 'd3d11.dll', 'dxgi.dll',
+                       'nvapi64.dll', 'd3d11_log.txt', 'dxgi_log.txt', 'nvapi_log.txt', 'ShaderFixes', 'ShaderFixesDM', 'ShaderCache',
+                       'ShaderCacheDM', 'DMAutoPatchCache', 'DMAutoPatchFailures', 'uninstall.bat', 'AKVR-Launch-VR-EngineStereo.bat',
+                       'AKVR-Launch-VR-EngineStereo-SteamVR.bat') {
+            $n += Remove-IfThere (Join-Path $GameDir $f)
+        }
+        Say "   geo-11 and the 3D fix removed ($n files and folders)" 'Green'
+    } else {
+        Say '   kept. The mod works either way; the uninstaller removes them later.' 'Yellow'
+    }
+}
 
 # ---- 4. back up what is there now ----------------------------------------------------------
 
 Step '4. Backing up your current files'
 $backup = Join-Path $GameDir ('vrmod_backup_' + (Get-Date -Format 'yyyy-MM-dd_HHmmss'))
-New-Item -ItemType Directory -Force -Path $backup | Out-Null
-$names = @(Get-ChildItem $fixRoot -File | ForEach-Object { $_.Name }) +
-         @('geo11.dll', 'dinput8.dll', 'dxgi.dll', 'dxgi.dll.wrapmode', 'd3dx_user.ini', 'version.dll')
 $saved = 0
-foreach ($n in ($names | Select-Object -Unique)) {
+foreach ($n in $Game.ModFiles.Keys) {
     $p = Join-Path $GameDir $n
-    if (Test-Path $p -PathType Leaf) { Copy-Item $p (Join-Path $backup $n); $saved++ }
-}
-foreach ($d in (Get-ChildItem $fixRoot -Directory)) {
-    $p = Join-Path $GameDir $d.Name
-    if (Test-Path $p -PathType Container) {
-        & robocopy $p (Join-Path $backup $d.Name) /E /R:1 /W:1 /NFL /NDL /NJH /NJS /NP | Out-Null
-        $saved++
+    # a file of the same name from another mod is kept; our own older copy needs no backup
+    if ((Test-Path $p -PathType Leaf) -and -not (Test-Ours $p)) {
+        New-Item -ItemType Directory -Force -Path $backup | Out-Null
+        Copy-Item $p (Join-Path $backup $n); $saved++
     }
 }
-if ($saved -eq 0) { Remove-Item $backup; Say '   nothing to back up (fresh install)' }
+if ($saved -eq 0) { Say '   nothing to back up' }
 else { Say "   saved in $backup" 'Green' }
 
-# The player's own graphics settings, before the mod ever touches them, so the uninstaller can put them
-# back exactly (JJ, 2026-09-29: "game defaults" are not what a player had - resolution, GameWorks,
-# texture filtering). Two places: the game's BmSystemSettings.ini, and NVIDIA's settings store in
-# Documents (Documents may be moved; see Get-GfxStoreCandidates). Only once: never over a saved copy.
+# The player's own graphics settings, before the mod ever touches them, so the uninstaller can put them back
+# exactly. Two places: the game's BmSystemSettings.ini, and NVIDIA's settings store in Documents (Documents may be
+# moved; see Get-GfxStoreCandidates). Only once: never over a saved copy, never once the mod has run.
 $gfxBackup = Join-Path $GameDir 'vrmod_graphics_backup'
 if (-not (Test-Path $gfxBackup) -and -not (Test-Path (Join-Path $GameDir 'akvr_settings.ini'))) {
     New-Item -ItemType Directory -Force -Path $gfxBackup | Out-Null
@@ -454,177 +348,105 @@ if (-not (Test-Path $gfxBackup) -and -not (Test-Path (Join-Path $GameDir 'akvr_s
     foreach ($s in Get-GfxStoreCandidates) {
         if (Test-Path -LiteralPath $s) { Copy-Item -LiteralPath $s (Join-Path $gfxBackup 'GFXSettings.BatmanArkhamKnight.xml'); $storeNote = "saved from $s"; break }
     }
-    # What was (not) there, so the uninstaller can also remove files the player never had.
     @("BmSystemSettings.ini: $iniNote", "GFXSettings store: $storeNote") | Set-Content -LiteralPath (Join-Path $gfxBackup 'README.txt')
     Say '   your graphics settings saved (vrmod_graphics_backup) - the uninstaller puts them back' 'Green'
 }
 
-# ---- 5. install the 3D fix ----------------------------------------------------------------
+# ---- 5. the mod ---------------------------------------------------------------------------
 
-Step '5. Installing the 3D fix'
-& robocopy $fixRoot $GameDir /E /R:1 /W:1 /NFL /NDL /NJH /NJS /NP | Out-Null
-if ($LASTEXITCODE -ge 8) { Fail "could not copy the fix into the game folder. Try right-clicking the .bat and 'Run as administrator'." }
-Say "   copied into the game folder" 'Green'
-
-# Our tested geo-11 (the fix may ship an older or newer one) and its settings for VR:
-# output to the mod, world scale 1.00, automatic depth off. See files\README.txt.
-foreach ($f in 'd3d11.dll', 'nvapi64.dll', 'd3dxdm.ini') { Copy-Item (Join-Path $files $f) (Join-Path $GameDir $f) -Force }
-Say "   geo-11 $((Get-Item (Join-Path $files 'd3d11.dll')).VersionInfo.FileVersion) and its VR settings copied in" 'Green'
-
-# ---- 6. set geo-11 up for the headset -----------------------------------------------------
-
-Step '6. Setting geo-11 up for VR'
-
-# geo-11 normally runs as the game's d3d11.dll. For VR it must be loaded by the mod instead,
-# under the name geo11.dll, so Virtual Desktop can still find the headset.
-$d3d11 = Join-Path $GameDir 'd3d11.dll'
-$alias = Join-Path $GameDir 'geo11.dll'
-if (Test-Path $alias) { Remove-Item $alias -Force }
-Rename-Item $d3d11 'geo11.dll'
-Say '   geo-11 renamed to geo11.dll (the mod loads it)' 'Green'
-
-# The fix's own dxgi.dll is a second geo-11 piece that VR does not use. Park it.
-if (Test-Path (Join-Path $fixRoot 'dxgi.dll')) {
-    Move-Item (Join-Path $GameDir 'dxgi.dll') (Join-Path $GameDir 'dxgi.dll.wrapmode') -Force
-    Say '   the fix''s dxgi.dll set aside (dxgi.dll.wrapmode)' 'Green'
+Step '5. Installing the mod'
+foreach ($n in $Game.ModFiles.Keys) {
+    try { Copy-Item $src[$n] (Join-Path $GameDir $n) -Force }
+    catch { Fail "could not copy $n into the game folder ($($_.Exception.Message)). Try right-clicking Install-AKVR.bat and 'Run as administrator'." }
 }
+New-Item -ItemType Directory -Force -Path (Join-Path $GameDir 'akn') | Out-Null
+Copy-Item (Join-Path $files 'nvngx_dlss.dll') (Join-Path $GameDir 'akn\nvngx_dlss.dll') -Force
+Say '   dinput8.dll, XINPUT9_1_0.dll and NVIDIA DLSS (akn\nvngx_dlss.dll) copied' 'Green'
 
-$ini = Read-Ini (Join-Path $GameDir 'd3dx.ini')
-Set-IniValue $ini 'load_library_redirect' '0' $null
-if ($Game.AddNonSquare -and -not ($ini.Lines | Where-Object { $_ -match '^\s*match_width\s*=\s*!height' })) {
-    Add-IniBlock $ini @(
-        "; $($Game.Mod): keep 3D on pictures that are not 16:9 (the VR picture is taller)",
-        '[TextureOverrideAllNonSquareRT]',
-        'match_type = Texture2D',
-        'match_bind_flags = +render_target',
-        'match_width = !height',
-        'StereoMode = 1')
-}
-Save-Ini $ini
-Say '   d3dx.ini updated' 'Green'
-
-# The mod's edits to the fix's own HUD shaders (HUD distance, steady HUD layer, reticles at scene depth).
-# They are made on the player's copy of the fix, never shipped. Record: FIX_CHANGES.md.
-if ($Game.FixPatches) {
-    Step '6b. Adjusting the 3D fix''s HUD for VR'
-    # The project's master copy (akvr\tools) when run from the project, else the copy shipped beside this script.
-    $patch = @((Join-Path $PSScriptRoot "..\tools\$($Game.FixPatches)"), (Join-Path $PSScriptRoot $Game.FixPatches)) |
-        Where-Object { Test-Path $_ } | Select-Object -First 1
-    if (-not $patch) { Fail "$($Game.FixPatches) is missing next to this script. Download the whole install folder again." }
-    & powershell -NoProfile -ExecutionPolicy Bypass -File $patch -Mode apply -GameDir $GameDir
-    if ($LASTEXITCODE -ne 0) {
-        Fail "some HUD edits could not be applied (see above). This fix version may differ from the one the mod was tested with. Your previous files are in $backup."
-    }
-    Say '   HUD edits applied (the fix author''s originals are in akvr_fix_backup)' 'Green'
-}
-
-# ---- 7. the mod ---------------------------------------------------------------------------
-
-Step '7. Installing the mod'
-if ($Game.OldProxy) {
-    $old = Join-Path $GameDir $Game.OldProxy
-    if ((Test-Path $old) -and ([System.Text.Encoding]::ASCII.GetString([System.IO.File]::ReadAllBytes($old))).Contains($Game.Mod)) {
-        Move-Item $old (Join-Path $GameDir ($Game.OldProxy + '.old-' + $Game.Mod)) -Force
-        Say "   an older copy of the mod ($($Game.OldProxy)) was set aside" 'Green'
-    }
-}
-if ($ModDll) {
-    Copy-Item $ModDll (Join-Path $GameDir 'dinput8.dll') -Force
-    Say '   dinput8.dll copied' 'Green'
-} else {
-    Say "   skipped - copy the mod's dinput8.dll into $GameDir yourself" 'Yellow'
-}
-
-# The tested VR setup (eye order, render size and shape, HUD size, pose delay, ...). The mod's
-# built-in defaults are NOT that setup (JJ's fresh-install test, 2026-09-29: eyes swapped, flat
-# 16:9 picture). Only on a first install: an existing settings file is the player's own.
-# The uninstaller lives in the game folder, so players don't need to keep the download (JJ).
+# The uninstaller lives in the game folder, so players don't need to keep the download.
 foreach ($u in 'Uninstall-AKVR.bat', 'Uninstall-AKVR.ps1') {
     $s = Join-Path $PSScriptRoot $u
     if (Test-Path $s) { Copy-Item $s (Join-Path $GameDir $u) -Force }
 }
-if (Test-Path (Join-Path $GameDir 'Uninstall-AKVR.bat')) { Say '   Uninstall-AKVR.bat put in the game folder' 'Green' }
+Say '   Uninstall-AKVR.bat put in the game folder' 'Green'
 
+# The tested VR settings. Only on a first install: an existing file is the player's own. A settings file from a
+# geo-11 version (no DLSS line) holds settings this version does not use: it is set aside and replaced.
 $settings = Join-Path $GameDir 'akvr_settings.ini'
 $tested   = Join-Path $files 'akvr_settings.ini'
-if (Test-Path $settings) { Say '   your existing VR settings kept (akvr_settings.ini)' 'Green' }
-elseif (Test-Path $tested) {
+$firstVr = -not (Test-Path $settings)
+if (-not $firstVr -and -not (Select-String -LiteralPath $settings -Pattern '^dlss=' -Quiet)) {
+    Move-Item -LiteralPath $settings -Destination (Join-Path $GameDir 'akvr_settings.from-older-version.ini') -Force
+    $firstVr = $true
+    Say '   the older version''s VR settings set aside (akvr_settings.from-older-version.ini)' 'Yellow'
+}
+if (-not $firstVr) { Say '   your existing VR settings kept (akvr_settings.ini)' 'Green' }
+else {
     Copy-Item $tested $settings
     Say '   tested VR settings copied in (akvr_settings.ini)' 'Green'
-    if ($pictureH) {
-        $doc = Read-Ini $settings
-        foreach ($k in 'engineres', 'rendersize') {
-            for ($i = 0; $i -lt $doc.Lines.Count; $i++) { if ($doc.Lines[$i] -match "^$k=") { $doc.Lines[$i] = "$k=$pictureH" } }
-        }
-        Save-Ini $doc
-        Say "   picture size set: $Picture" 'Green'
-    }
-    # VRLAUNCH (2026-10-02, JJ): Steam starts the game normally (2D); the VR shortcut starts VR. The mod keeps
-    # each mode's graphics settings (akvr_profiles\{2d,vr}) and swaps them when the mode changes, so the
-    # player's own settings stay as they are for 2D. The tested VR graphics settings (JJ's fresh-install test,
-    # 2026-09-29: the stock 60 fps cap and higher detail blurred head movement) go into the VR copy only.
-    # FIX_CHANGES.md section 6.
+    # VRLAUNCH: Steam starts the game normally (2D); the VR shortcut starts VR. The mod keeps each mode's graphics
+    # settings (akvr_profiles\{2d,vr}) and swaps them when the mode changes, so the player's own settings stay as
+    # they are for 2D. The tested VR graphics settings go into the VR copy only.
     $profVr = Join-Path $GameDir 'akvr_profiles\vr'
     New-Item -ItemType Directory -Force -Path $profVr | Out-Null
-    if ($Game.GameGraphics) {
-        $gen = Join-Path $GameDir '..\..\BmGame\Config\BmSystemSettings.ini'
-        if (Test-Path $gen) {
-            $vrIni = Join-Path $profVr 'BmSystemSettings.ini'
-            Copy-Item $gen $vrIni -Force
-            $n = Set-SystemSettings $vrIni $Game.GameGraphics
-            Say "   VR graphics settings prepared ($n changed): Max FPS 90, High detail, 2x anisotropic filtering, GameWorks off" 'Green'
-        } else {
-            Say '   the game has not been started yet: its VR graphics settings are made on the first VR start' 'Yellow'
-        }
+    $gen = Join-Path $GameDir '..\..\BmGame\Config\BmSystemSettings.ini'
+    if (Test-Path $gen) {
+        $vrIni = Join-Path $profVr 'BmSystemSettings.ini'
+        if (-not (Test-Path $vrIni)) { Copy-Item $gen $vrIni -Force }
+        $n = Set-SystemSettings $vrIni $Game.GameGraphics
+        Say "   VR graphics settings prepared ($n changed): High detail, 2x anisotropic filtering, GameWorks off" 'Green'
+    } else {
+        Say '   the game has not been started yet: its VR graphics settings are made on the first VR start' 'Yellow'
     }
-    if ($Game.GameStore) {
-        $store = Get-GfxStoreCandidates | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
-        if ($store) {
-            $vrStore = Join-Path $profVr 'GFXSettings.BatmanArkhamKnight.xml'
-            Copy-Item -LiteralPath $store $vrStore -Force
-            $n = Set-GfxStore $vrStore $Game.GameStore
-            Say "   the same settings prepared for NVIDIA's settings store ($n changed)" 'Green'
-        }
+    $store = Get-GfxStoreCandidates | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
+    if ($store) {
+        $vrStore = Join-Path $profVr 'GFXSettings.BatmanArkhamKnight.xml'
+        if (-not (Test-Path $vrStore)) { Copy-Item -LiteralPath $store $vrStore -Force }
+        $n = Set-GfxStore $vrStore $Game.GameStore
+        Say "   the same settings prepared for NVIDIA's settings store ($n changed)" 'Green'
     }
-    # The files the game holds now are the player's (2D): that is what ran last.
-    [IO.File]::WriteAllText((Join-Path $GameDir 'akvr_profiles\last.txt'), '2d')
+    $last = Join-Path $GameDir 'akvr_profiles\last.txt'
+    if (-not (Test-Path $last)) { [IO.File]::WriteAllText($last, '2d') }   # the files the game holds now are the player's
     Say '   your normal graphics settings untouched (they stay for playing from Steam)' 'Green'
 }
 
-# ---- 8. starting the game in VR -----------------------------------------------------------------
-# VRLAUNCH: the launcher leaves a note the mod reads at the next start, then asks Steam to start the game;
-# a normal Steam start (no note) plays in 2D with nothing of the mod running.
-Step '8. The VR shortcut'
-$launcher = Join-Path $PSScriptRoot 'AKVR-Launch-VR.bat'
-if (Test-Path $launcher) {
-    Copy-Item $launcher (Join-Path $GameDir 'AKVR-Launch-VR.bat') -Force
-    $made = @()
-    try {
-        $shell = New-Object -ComObject WScript.Shell
+# ---- 6. the VR shortcuts ----------------------------------------------------------------------
+# Starting the game from Steam plays it normally with nothing of the mod running; the shortcuts start it in VR.
+Step '6. The VR shortcuts'
+$made = 0
+try {
+    $shell = New-Object -ComObject WScript.Shell
+    foreach ($l in $Game.Launchers.Keys) {
+        Copy-Item (Join-Path $PSScriptRoot $l) (Join-Path $GameDir $l) -Force
         foreach ($place in @([Environment]::GetFolderPath('Desktop'), [Environment]::GetFolderPath('Programs'))) {
             if (-not $place) { continue }
-            $lnk = $shell.CreateShortcut((Join-Path $place 'Batman Arkham Knight (VR).lnk'))
+            $lnk = $shell.CreateShortcut((Join-Path $place ($Game.Launchers[$l] + '.lnk')))
             $lnk.TargetPath = Join-Path $env:SystemRoot 'System32\cmd.exe'
-            $lnk.Arguments = '/c "' + (Join-Path $GameDir 'AKVR-Launch-VR.bat') + '"'
+            $lnk.Arguments = '/c "' + (Join-Path $GameDir $l) + '"'
             $lnk.WorkingDirectory = $GameDir
             $lnk.WindowStyle = 7                                     # minimised: no console flashing up
             $lnk.IconLocation = (Join-Path $GameDir $Game.Exe) + ',0'
             $lnk.Description = "Start $($Game.Name) in VR (from Steam it starts normally)"
             $lnk.Save()
-            $made += $place
+            $made++
         }
-    } catch { Say "   could not make the shortcut: $($_.Exception.Message)" 'Yellow' }
-    if ($made.Count) { Say '   "Batman Arkham Knight (VR)" on your desktop and in the Start menu' 'Green' }
-    else { Say "   start VR with AKVR-Launch-VR.bat in $GameDir" 'Yellow' }
-} else {
-    Say '   AKVR-Launch-VR.bat is missing next to this script - start VR with -akvr in Steam''s launch options' 'Yellow'
-}
-
-Remove-Item $work -Recurse -Force -ErrorAction SilentlyContinue
+    }
+    # and one for removing the mod, in the Start menu (as Batman City VR; PACKAGING_GUIDE section 12)
+    $progs = [Environment]::GetFolderPath('Programs')
+    if ($progs) {
+        $lnk = $shell.CreateShortcut((Join-Path $progs 'Uninstall Batman Arkham Knight VR.lnk'))
+        $lnk.TargetPath = Join-Path $env:SystemRoot 'System32\cmd.exe'
+        $lnk.Arguments = '/c "' + (Join-Path $GameDir 'Uninstall-AKVR.bat') + '"'
+        $lnk.WorkingDirectory = $GameDir
+        $lnk.Description = "Remove $($Game.Name) VR and put your settings back"
+        $lnk.Save()
+    }
+} catch { Say "   could not make the shortcuts: $($_.Exception.Message)" 'Yellow' }
+if ($made) { Say '   "Batman Arkham Knight (VR)" and "Batman Arkham Knight (VR, SteamVR)" on your desktop and in the Start menu' 'Green' }
+else { Say "   start VR with AKVR-Launch-VR.bat in $GameDir" 'Yellow' }
 
 Write-Host ''
 Write-Host '  Done.' -ForegroundColor Green
 Write-Host "  To play in VR: start your headset's PC VR software, then the desktop shortcut 'Batman Arkham Knight (VR)'." -ForegroundColor White
-Write-Host "  Starting $($Game.Name) from Steam as usual plays it normally, on your monitor." -ForegroundColor White
-Write-Host "  The first VR start can take a few minutes while geo-11 prepares its shaders." -ForegroundColor White
+Write-Host "  For SteamVR, use 'Batman Arkham Knight (VR, SteamVR)'. Starting the game from Steam plays it normally." -ForegroundColor White
 Write-Host ''
