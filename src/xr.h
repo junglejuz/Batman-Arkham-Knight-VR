@@ -88,6 +88,7 @@ void        akvr_xr_pause_zoom_set(float v);
 bool        akvr_xr_auto_main_menu();              // treat the first camera-live stretch after launch as the main menu
 void        akvr_xr_auto_main_menu_set(bool on);
 bool        akvr_xr_main_menu_detected();          // currently in that main-menu phase
+bool        akvr_xr_menu_scene();                  // MENUSIDE5: the menu scene from its first live frame, or the main menu
 int         akvr_xr_menu_phase();                  // AUDIOSYNC: 0 = start-up, 1 = main menu, 2 = after it
 void        akvr_xr_set_screen_hold(bool on);      // ENTRYHOLD: floating screen keeps its last picture
 void        akvr_xr_set_anamorphic(bool on);       // this frame's 3D went through projVR (present at its shape)
@@ -115,6 +116,18 @@ long        akvr_xr_fps_lock_early();
 bool        akvr_xr_menu3d_active();               // MENU3D: main menu live + head-tracked, text pinned
 bool        akvr_xr_menu3d();
 void        akvr_xr_menu3d_set(bool on);
+int         akvr_xr_hud_in_eye();                  // HUDINEYE: 1 = gameplay HUD drawn into the eyes (game blend)
+void        akvr_xr_hud_in_eye_set(int v);
+int         akvr_xr_space_mode();                  // SVRSPACE: 0 auto (STAGE under SteamVR), 1 LOCAL, 2 STAGE
+void        akvr_xr_space_mode_set(int v);
+int         akvr_xr_svr_straight();                // SVRSTRAIGHT: 0 off, 1 auto (SteamVR), 2 always
+void        akvr_xr_svr_straight_set(int v);
+long        akvr_xr_straight_frames();
+const char* akvr_xr_hie_diag();
+int         akvr_xr_markercut();                   // MARKERCUT: markers drawn into each eye at their object
+void        akvr_xr_markercut_set(int v);
+bool        akvr_xr_menu_one_spot();               // MENU3D: main menu eyes from one spot (old MENUCLOSE), default off
+void        akvr_xr_menu_one_spot_set(bool on);
 bool        akvr_xr_menu_flat();                   // MENUFLAT: floating screens show one eye to both
 void        akvr_xr_menu_flat_set(bool on);
 bool        akvr_xr_menu3d_offset(float& dyawDeg, float& dpitchDeg);   // head turn since the pinned menu appeared
@@ -192,6 +205,8 @@ float       akvr_xr_load_zoom();        // LOADSIZE: the loading screen into the
 void        akvr_xr_load_zoom_set(float v);
 float       akvr_xr_load_up();          // LOADUP: loading screens up (+) / down (-), degrees
 void        akvr_xr_load_up_set(float v);
+float       akvr_xr_screen_near();      // SCREENNEAR: start-up / title and loading screens' distance, metres
+void        akvr_xr_screen_near_set(float v);
 void        akvr_xr_menu_pose_delay_set(int frames);
 // ZOOMVIG: our own peripheral vignette while the game's zoom narrows its FOV (or while previewing)
 float       akvr_xr_vig_strength();     // 0 = off
@@ -214,6 +229,9 @@ void        akvr_xr_hud_lazy_deg_set(float d);
 float       akvr_xr_hud_half_ipd();
 void        akvr_xr_eye_image_size(uint32_t& w, uint32_t& h);   // ONE eye's image (half the width in geo-11 SBS)
 void        akvr_xr_submitted_fov_deg(float& h, float& v);      // FULL angles we actually submitted last frame
+ID3D11Texture2D* akvr_xr_eyes_texture();
+ID3D11Texture2D* akvr_xr_akn_sbs();   // MKREC
+const char*      akvr_xr_card_diag();                           // EYESHOT: the first marker card's numbers                        // EYESHOT: both eyes as sent to the headset, HUD drawn in (engine stereo)
 ID3D11Texture2D* akvr_xr_katanga_texture();                     // geo-11's shared surface (F2 grab), may be null
 // What the OpenXR runtime asks for per eye, and its hard ceiling. The recommended
 // size already allows for the lens-distortion resample, so it is normally larger

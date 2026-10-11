@@ -680,6 +680,26 @@ the tested copies). Untested in the headset. Rollback: `akvr/diagnostics/before-
 
 ---
 
+## 1t. ShaderFixesDM: the distance blur can be turned down on its own (AKVR, DOFBLUR, 2026-10-06)
+
+**File:** `ShaderFixesDM\bd67c92e94ebccd1-cs.txt` (the fix's geo-11 converted copy of the game's depth-of-field setup
+compute shader); `-cs.bin` deleted. Detect: marker `// AKVR DOFBLUR`.
+
+**Why:** JJ wants the distance blur off without losing the rest. DepthOfField=False (BmSystemSettings) is sharp and ~10 fps
+faster but also drops the game's exposure adaptation and colour grading (AKVR SHCENSUS, 2026-10-06). Decompiled (AKVR
+DOFDUMP + geo-11 0.6.90 `cmd_Decompiler -d`): this shader reads each pixel's depth, works out its distance and its blur
+amount `cb0[6].y * (1 - cb0[6].x / distance)` (four times, one 2x2 block) and packs it with a half-size copy of the
+picture for the blur passes.
+
+**Edit:** `dcl_constantbuffer CB13[1], immediateIndexed` after the first constant-buffer line; just before the first
+`mul rN.w, r0.z, cb0[6].y`: `add r29.x, l(1.000000), -cb13[0].x`; after each of the four `mul rN.w, r0.[xz], cb0[6].y`:
+`mul rN.w, rN.w, r29.x`. r29 is free (30 temps declared; the file uses r0-r9 and geo-11's r30). AKVR binds cb13 around
+this dispatch with x = 1 - "distance blur kept" (panel); unbound = 0 = the game's blur unchanged.
+
+**Tested:** assembled with `cmd_Decompiler -a`, loaded in `tools/shader_driver_test` (vstest, compute); the patch script
+run twice on a copy (second run "already patched"); the live file compared byte for byte with the tested copy.
+Backup: `akvr/diagnostics/before-DOFBLUR-20261006/` and `akvr_fix_backup\ShaderFixesDM\`.
+
 ## 1s. ShaderFixesDM: an on-target piece takes its object's own distance, not what is drawn behind it (AKVR, TARGETDIST, 2026-10-02)
 
 **Files:** all 13 HUD `-vs.txt` (after 1r); `-vs.bin` deleted.
@@ -984,3 +1004,6 @@ baseline versions). Needs JJ: where the 2026-09-26 update came from, or an in-ga
 | 2026-10-02 | TARGETUP | 13 HUD vertex shaders: 1q block replaced, on-target pieces keep the world's up (CB13[11]) | 1r |
 | 2026-10-02 | TARGETDIST | 13 HUD vertex shaders: a known object distance (point row .w) replaces the depth search result | 1s |
 | 2026-10-05 | DOFOFF (mod) | BmSystemSettings DepthOfField / DefaultDepthOfField forced False in every section, VR launch only (earlyres comfort list; the 2D profile keeps its own) | 6 |
+| 2026-10-06 | AAHIGH (JJ's game only) | GFXSettings store Anti-Aliasing 1 -> 2 and BmSystemSettings [SystemSettings] Antialiasing=1 -> 2 (VR profile live), to compare edges; backups diagnostics/before-AAHIGH-20261006 | 6 |
+| 2026-10-06 | DOFTEST (JJ's game only, TEST) | dofoff=0 in akvr_settings.ini + BmSystemSettings DepthOfField lines restored to the game's values (True in top + buckets 2-5) to test whether DOFOFF made the picture brighter; backups diagnostics/before-DOFTEST-20261006 | 6 |
+| 2026-10-06 | DOFBLUR | DoF setup CS bd67c92e94ebccd1 (ShaderFixesDM, the fix's geo-11 copy): the 4 blur amounts x (1 - cb13[0].x) via r29; .bin deleted; AKVR's 'distance blur kept' slider binds cb13 | 1t |

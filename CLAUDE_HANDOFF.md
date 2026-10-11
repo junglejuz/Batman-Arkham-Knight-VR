@@ -29,6 +29,121 @@ build-by-build log of this session's HUD work). Every change to the 3D fix's fil
 
 ## Where things stand
 
+**COSTSWEEP -> SKIPSTEPS (2026-10-06, build SKIPSTEPS-0.2.2, deployed, untested):** JJ: DoF off live = 69 -> 84 fps but
+loses the glow (DoF, bloom and exposure are one block). COSTSWEEP (panel button; drops each of the 55 DoF-on-only
+shaders for 60 frames, akvr_captures/cost_*/costs.txt): normal 13.92 ms; savings: 679d7ed1 1.07 ms (black picture -
+keep), ed72bff8 0.42 (per-tile max motion = motion-blur groundwork), 491bf40c 0.37 (JJ's "B": no visible change),
+bd67c92e 0.33 (DoF blur amounts), ff444aaf 0.28 (JJ's "A": changes the glow - keep); the rest within noise. Panel
+"SKIP UNNEEDED STEPS" tickboxes for ed72 / 491bf / bd67 (setting skipsteps, bits 4/2/8 of g_blurOff), expected
+~1.1 ms (~72 -> ~78 fps). RISK: a dropped step leaves its outputs from an older frame - if bloom reads bd67's
+half-size colour, the glow could lag/freeze; JJ checks each tick for any change (glow, colours, fast motion).
+
+**GAMEAA + DOFLIVE (2026-10-06, build DOFLIVE-0.2.2, deployed, untested):**
+- JJ confirmed: DepthOfField=False at start loses the map (3D map black). BLURAB 17:57 (DoF on): the cb13 bind ran every
+  frame, yet keep0-vs-keep1 differences = keep1-vs-keep1 noise and sharpness unchanged -> the game hardly blurs the
+  distance in play; the "softness" was its SMAA. Blur slider removed from the panel (fix step 1t still applied:
+  harmless when cb13 is unbound; remove it from the patch script before packaging).
+- GAMEAA: panel tickbox "the game's own anti-aliasing (SMAA)" drops PS cca9fb2e050c4100 (SMAA edge detection) live.
+  Little fps gain (expected). Settings gameaaoff.
+- DOFLIVE: the settings table (STATIC, RVA 0x30AFC3C: "DepthOfField" -> value pointer +8 = UBOOL at RVA 0x3123790;
+  MotionBlur / Bloom / ... sit 4 bytes apart, types 5 = bool) lets the mod switch DoF LIVE. Panel: "on" / "off during
+  play (on again for the map, pause and menus)" (dofplayoff); xr.cpp writes it each Present from effGameplay && !pause
+  live. The game always starts with DoF on now (the panel clears dofoff). Darkening applies while the live value is 0.
+  UNKNOWN: whether the renderer honours a live change (test: fps + look in play, map still drawn).
+- Also: settings parse else-if chain hit MSVC C1061 - newer keys are separate ifs at the top of the loop.
+
+**MAPFLY + GRADING (2026-10-06, build GRADING-0.2.2, deployed, untested):**
+- Black map: F2 16:34 katanga shows the map UI but no 3D map; dofoff=1 that launch. Suspect DepthOfField=False also
+  drops the map's 3D render (same post block). NOT confirmed: ask JJ to open the map with DoF on.
+- MAPFLY: mode timeline: each map open = "pause look on" -> 0.1 s "screen" -> "pause look off" (the first map frames
+  pass the pause test). Pause look now starts only after the test held 250 ms (s_fitsSince), the eye picture held
+  meanwhile (pauseHold || g_pauseWaiting). Watch: pause entry 0.25 s later; the held picture must not look frozen-wrong.
+- GRADING: panel drawer GRADING (lift -0.3..0.3, gamma 0.5..2, gain 0.5..2, reset), eyeaa.cpp/eyeaa.hlsl grade() on
+  the display-referred world picture before the sRGB write; mode 0 + non-neutral grade uses PS_Copy. Settings
+  gradelift / gradegamma / gradegain.
+
+**MAPUPRIGHT + WORLDCARD (2026-10-06, build WORLDCARD-0.2.2, deployed, untested):**
+- JJ: game AA vs blur: the "distance blur" he saw is most likely the game's SMAA (sweep: dropping the SMAA PSs gave the
+  biggest sharpness gain; DoF off also drops SMAA). Told him: DoF on + game AA Off in the graphics menu = right colours,
+  no SMAA; EYEAA can add smoothing. DOFBLUR slider has no visible effect - proposed removing it (+ fix step 1t), no
+  answer yet.
+- MAPUPRIGHT: JJ: the map should open upright, not by head tilt. xr.cpp leaving gameplay hung the frozen picture at
+  the drawn pose (PAUSEPOSE 2026-09-26, for the old pause window); with PAUSELOOK on, the map is the main user ->
+  level_pose (heading only). Drawn pose kept only with the pause look off.
+- WORLDCARD: JJ captures 05:29:13/18/20: an upgrade info card moves opposite to head turns on the room-fixed HUD layer
+  (also "anything else similar"). hudlayers.txt (live matrices) is identical across the three - the movement is not
+  in node 2D matrices (3D-flagged parts K4/0.0.0.0.1.0.0.3.x/.4.x and K11/0.0.9.0 are constant too). F2 now records
+  2 HUD frames of per-draw constants (MARKREC/CBDUMP, hudmarks.csv + hudcb.txt) without test tools. NEXT: two F2s with
+  the card visible, head turned left vs right (game camera still); diff hudcb.txt matrices per draw; route draws whose
+  projection follows the game camera into the game picture (general rule), or tick the part on-target.
+
+**EYEAA (2026-10-06, build EYEAA-0.2.2, deployed, NOT tested even on the fake headset - SWBF2 was running):** JJ: keep
+anti-aliasing with DoF off (the game's SMAA passes c91f6f07/cca9fb2e only run with DoF on). eyeaa.cpp smooths each
+eye on the native copy (xr.cpp: geo-11 surface box -> headset image): copy into an own UNORM view, then SMAA 1x
+(vendor/smaa: Jimenez et al., MIT; luma edges, preset high) or "soft" (AKVR's own FXAA-style pass; NVIDIA's FXAA file
+says "all rights reserved", so not used). Output through an sRGB RTV, linear values (FAIL-STR-033). Shaders built by
+tools/build_eyeaa_shaders.bat (fxc 10.0.26100) into src/shaders/eyeaa_*.h. Panel "EDGE SMOOTHING added by the mod:
+off / soft / SMAA" (eyeaa, default 0). Also: DOFON (panel "on" now writes DepthOfField=True back in [SystemSettings]
++ buckets 2-5), DOFPANEL (choice + its slider grouped, live line: blur step running / turned down). The DOFBLUR slider
+still showed no visible effect for JJ with DoF really on - readout pending. Watch EYEAA for: milky/dark picture, cost.
+
+**DOFBLUR + DOFQUICK (2026-10-06, build DOFBLUR-0.2.2 + fix step 1t, deployed, untested):** JJ: A (ff444 skip) = more
+glow, B (491bf skip) = no visible change. DOFDUMP (every launch saves the candidate shaders' bytecode to
+akvr_captures/shaders/) + cmd_Decompiler: c91f6f07/cca9fb2e = SMAA (blend weights / edges; "sharper" in the sweep = no
+AA); bd67c92e94ebccd1 = the DoF setup CS (blur amount from distance). Fix step 1t scales its amount by (1 - cb13.x);
+panel "distance blur kept" (blurkeep, 1 = game's). BLUROFF's pass skipping is retired (setting no longer read).
+DOFQUICK: panel "Depth of field: off" (next start; dofoff) + "darken while depth of field is off" (dofdarken, 0.15):
+the PAUSEDIM black layer at that alpha while DoF is off this start. With DoF off the colour grading is gone too (not
+just exposure) - darkening only helps the brightness. Shipped defaults still to decide (code: dofoff 1, blurkeep 1).
+Rollback: `diagnostics/before-DOFBLUR-20261006/` + patch script undo.
+
+**DOF hunt -> BLUROFF (2026-10-06, build BLUROFF-0.2.2, deployed, hash checked, untested by JJ):**
+- DOFTEST result (JJ): DoF back on = right brightness, graphics menu fixed (MENULIST), distance blurrier, ~10 fps
+  slower. DoF off = +10 fps, sharp, brighter, "slightly less rain". F6 (the fix's DOF_Menu skip) changes nothing.
+- SHCENSUS (F2 now also writes shaders.csv: 60 frames of every game draw's PS/VS + RT size and every dispatch's CS):
+  02:15 (DoF on) vs 02:17 (off). DepthOfField=False removes a whole block: the exposure reduction chain (compute,
+  groups 46..1 down to 1x1: 8a2474b5, 03f8e07d, 3af5896d, 73c61d67, aec3267b, 338d5609, 5a4ba544, 7fa6a54d,
+  f48055cd, 92fb1685/09a4d19e x8) = no eye adaptation -> brighter; and the half-size passes; the final post PS
+  changes permutation. Scene differences make the rest noisy.
+- SWEEP (panel button "Find the depth-of-field blur", SWEEPBUTTON; Shift+F2): drops one candidate shader at a time,
+  saves the katanga picture (akvr_captures/sweep_*/NN_<hash>_<drops>.bmp). sweep_20261006_023525 + scratch
+  sweepan.py: ff444aaf3a323a65 (full-size CS) distance +20% sharper, 491bf40c8b149566 (half-size CS) +31%, mean
+  brightness unchanged; 679d7ed1d48858e9 blacks the picture; 7fa6a54d/f48055cd (1x1) +0.13 brightness (exposure).
+- BLUROFF: panel "Distance blur: game's / off A (ff444) / off B (491bf) / off A+B", live, saved (bluroff=). Needs
+  DepthOfField=True (dofoff=0 now in JJ's settings; the code default dofoff=1 still forces it off for others -
+  decide the shipped default after JJ picks). Watch for ghosting/stale blur while moving (a skipped pass leaves its
+  output from an older frame).
+- Also fixed on the way: grab_texture takes a path RELATIVE to the game folder.
+Rollback: `diagnostics/before-SWEEP-20261006/`.
+
+**MENULIST + DOFSWITCH (2026-10-06, build MENULIST-0.2.2, deployed, hash checked, untested):**
+- MENULIST: JJ: graphics menu flickers, shows only its first four options. F2 01:59 hudsplit.csv: every 3rd frame the
+  menu draws its option list into a 1472x1216 target (69 draws) + a 1024x64 strip. layer_bind took any target >=
+  1000x1000 as the HUD: H was released and remade at 1472x1216, the list drawn into it, H remade at full size next
+  frame -> flicker + missing options, and xr.cpp then used the freed H (the real cause of the MENUCRASH crash; the
+  "geo-11 rebuilt it" guard was a second line and never fired: 0/0). Fix: a target smaller than H is the game's own.
+  LAYERSHOT (hudlayer.bmp) never saved in today's pause/menu captures - not explained yet.
+- DOFSWITCH: JJ: "the game is brighter all of a sudden ... especially in the menus". Suspect DOFOFF: BATMAN_CITY_PLAN
+  2.3 warns DepthOfField off killed tonemapping in Mass Effect. New setting dofoff (default 1; read from the WHOLE
+  settings file - earlyres's load_settings only reads the first 4 KB, and rendersquare/bigreschrome/hudraise/
+  hudaspect sit past it in JJ's file and have never been read at start-up: left as is). TEST set up: dofoff=0 and the
+  DepthOfField lines restored (FIX_CHANGES DOFTEST). The other suspect is AAHIGH (anti-aliasing High, set just before
+  JJ's last launch). If brightness is back to normal with DoF on: DoF off is the cause -> keep the game's DoF and
+  remove only the distance blur another way (shader), or leave it on.
+Rollback: `diagnostics/before-DOFTEST-20261006/`.
+
+**MENUCRASH (2026-10-06, build MENUCRASH-0.2.2, DLL deployed, hash checked, untested):** JJ opened the game's graphics
+menu in VR -> "Rendering thread exception: Fatal error!". Dump (tools/dumpmods.py maps the report's truncated
+addresses with the dump's module bases): access violation reading 0x68 in d3d11 CreateShaderResourceView, called by
+xr.cpp hud_conv_draw (the HUD layer's colour conversion, dinput8+0x46390) <- xr submit (+0x3F510) <- hkPresent
+(+0x1A5A0) <- geo11 Present. The source is hudsplit's g_Hsrc: the REAL texture inside geo-11's stand-in for our HUD
+image H, found ONCE (check_H_real). Likely geo-11 rebuilt it when the menu re-applied the display settings, leaving
+g_Hsrc dangling (INFERRED - not proven from the dump). Fix: the found path (H+off[+sub]) is kept and re-read every
+frame (hsrc_refresh: function-table + size check, follows a move, searches again once a second after a loss), and
+xr.cpp wraps the SRV creation and the raw copy in SEH (a fault drops the HUD layer for that frame and triggers the
+search). Status line "HUD layer: ... geo-11 rebuilt it moves/losses". Ask JJ to open the graphics menu in VR again
+and change a setting. Rollback: `diagnostics/before-MENUCRASH-20261006/`.
+
 **RELEASE v0.2.1 (2026-10-05, PRE-release, commit 19d752d pushed):** JJ: "package it up with all the settings and
 everything and deploy it". Package = build DIVEFIX2 (same hash as JJ's game) + JJ's live akvr_settings.ini (only the
 K1 hudcontainers fingerprint differed from the last package); make_package checks OK; downloaded back, hash equal.
@@ -927,3 +1042,208 @@ notes: the installer downloads the fix. Repo is now junglejuz/Batman-Arkham-Knig
 NOTE for making the repo public (JJ asked): the fix's LICENSE.txt (Alejandro Rodriguez Solis / masterotaku) is
 personal, non-commercial, and says "You may not modify, adapt ... or create derivative works"; the patch script
 edits the fix on the player's machine and contains fragments of its shader text. Get the author's OK first.
+
+## MODGLOW + ZOOMEDGE (2026-10-06), build MODGLOW-ZOOMEDGE-0.2.2, installed (dinput8 hash C3171170), untested
+
+- MODGLOW: the mod's own glow while depth of field is off (always-off or "off during play" with the game's block off
+  right now). eyeaa.cpp: dual-filter mip chain on the eye picture: GlowPre (soft threshold, linear light, half size),
+  5 downs, additive ups (radius weights the wide levels), added in the final pass before grading. 6 R11G11B10 levels.
+  Panel drawer "GLOW (the mod's own ...)": on, intensity 0-3 (0.6), threshold 0.3-1 (0.75), radius 0-1.5 (0.7);
+  settings glowon/glowint/glowthr/glowrad. Runs through the EYEAA path even when edge smoothing is off.
+- ZOOMEDGE: a player reported that the game's zoom overlay still flashes at vignette 0. The hide (ZOOMHIDE) waited for
+  the FOV to drop below vigbelow 45, but the game fades its overlay in from the start of the zoom. akvr_xr_vig_active now
+  also counts "narrowing": FOV 3+ deg below a baseline that follows slow changes at 15 deg/s and freezes while narrowed,
+  plus a 0.4 s hold after. A lasting narrower FOV above 45 that stays unchanged for 3 s is taken as the new normal.
+- MODGLOW2 (same day): JJ "need more radius". 8 levels (to 1/256), radius 0-3, and the final mix divides by the sum of
+  radius^k (x3), so radius changes the spread, not the brightness (0.7 looks as before). Installed, untested.
+
+## PANELDEPTH + GAMEGRADE + MENUFIT (2026-10-06), build MENUFIT-0.2.2, installed, untested in the headset
+
+JJ: (1) the upright panel "looks like it's tilting backwards"; (2) D-pad pop-ups: one "stretched vertically" (F2
+213501/213544 = RadialGadgetSelect), one "overly bright and clipped" (F2 213601 = MissionWheel / LeaderboardMini, AR
+challenges); (3) DoF off is "decidedly flatter", DoF on "a bit brighter, a bit more blue ... more interesting"
+(F2 214017 on / 214022 off: the difference is not just the glows).
+- PANELDEPTH (xr.cpp): the panel quad is upright in LOCAL already; VD draws quads with no parallax, so it read as
+  leaning back. Now one quad per eye via hud_eye_pair (same as HUDEYES).
+- GAMEGRADE: the game's last post step CS 679d7ed1 (disassembled) = bloom (t2, threshold cb0[10].x) + scene (t0),
+  divided by eye adaptation (t3 1x1), 30% radial edge darkening, Hable filmic (A .22 B .30 C .10 D .20 E .01 F .30,
+  white scale 1.6629), gamma 1/2.2, then a 16^3 colour table t1 (256x16 strip, slices along blue), film grain. The
+  DoF-off path draws PS 9d2a0f06b5a5315b / c0af99686f49c503 instead (added to the dump list: read them next launch to
+  see its curve). eyeaa.cpp copies t1 every 0.5 s while DoF is on (staging read back a frame later), saves it to
+  akvr_captures\gamegrade.bin (loaded at start), and applies it in the final pass (game_grade, after the glow, before
+  JJ's lift/gamma/gain) while DoF is off. Panel: drawer "DEPTH OF FIELD OFF: GLOW + THE GAME'S COLOURS", tickbox +
+  strength; settings gamegrade / gamegradeamt. Not copied: eye adaptation, edge darkening, the Hable curve.
+- MENUFIT (earlyres.cpp): suspect the pop-ups' Scaleform scale mode (+0xe8: 2 ExactFit stretches, 3 NoBorder crops).
+  Movies whose first-seen mode is 2/3 are switched to 1 (ShowAll); restore_mode now restores the fitted mode.
+  F2 status prints every piece's "fit mode X, now Y": CHECK it to confirm the suspicion. Panel tickbox in MENUS AND
+  SCREENS; setting menufit. "Overly bright" is not explained yet.
+
+## POSTFX (2026-10-06), build POSTFX-0.2.2, installed, untested in the headset
+
+JJ: one "POST EFFECTS" drawer for the colour grade, glow and grading (GRADING and the DoF-off drawer merged), plus the
+auto exposure, edge darkening and contrast curve. eyeaa.hlsl post(): display picture -> linear, + glow, x auto
+exposure, x edge darkening (the game's formula, 0.3), film curve = the game's Hable on 20.34 x (linear^1.68 + 0.0005)
+/ hable(11.2), -> display, the game's colour table, then JJ's lift/gamma/gain. Curve fitted (with the edge darkening)
+to F2 214022 (off) -> 214017 (on) by brightness quantiles, rms 0.013; the remaining gap is the colour cast (table) and
+glow. Auto exposure: ln brightness of eye 0 into 256x256 R16F, GenerateMips -> 1x1, eased into a shared 1x1 (1.5 s);
+both eyes use it; factor exp(clamp(s (ln 0.0253 - ln avg), +-2 stops)), neutral at that rooftop scene. All five only
+while DoF is off. Settings curveon / curvecontrast / curvestops / autoexp / edgedark. Once akvr_captures\gamegrade.bin
+exists, re-fit the curve WITH the table applied (it may add contrast of its own).
+The DoF-off-only PS 9d2a0f06 / c0af9968 in SHCENSUS are surface materials (9d2a = cube-map reflection), not the
+off-path tonemap.
+
+## CURVE2 (2026-10-06), build CURVE2-0.2.2, installed, untested in the headset
+
+JJ: the film curve "is clipping values, both brightnesses and colours, especially in the highlights"; more contrast
+brought the detail back. Cause: the game's Hable curve with white 11.2 expects HDR input; on our 0..1 picture the
+fitted exposure 20.34 put every linear value above ~0.7 past white (clipped per channel). Even pinned so white -> 1 the
+Hable shoulder squeezes linear 0.5..1 into display 0.95..1 (flat highlights). Replaced by a 256-entry tone table on
+the display value (eyeaa.cpp kTone, monotone cubic through 0.08->0.062, 0.166->0.163, 0.277->0.36, 0.45->0.64,
+0.7->0.85, 1->1, read off the F2 214022 -> 214017 quantile map; slope 0.48 at white). Slider = strength 0..1.5 (1 =
+matched; setting key curvestrength, old curvecontrast ignored); exposure in stops before it. The glow is now added
+after the curve. LESSON: a game's HDR tone curve cannot be reused on a finished LDR picture; fit a display-space curve.
+
+## DXGI11 (2026-10-06), build DXGI11-0.2.2, installed, untested
+
+JJ: through SteamVR (VD's OpenVR driver shimming a forced vrto3d HMD) Battlefront II reached the headset, Batman did
+not. Steam\logs\xrclient_BatmanAK.txt: every projection view "failed to submit ... SharedTexturesNotSupported" (3814;
+9008 in the Aug 7 run, i.e. SteamVR has never shown AKVR since geo-11), after "Failed to create sync texture. Ensure
+application was built using DXGI 1.1 or later (i.e. Call CreateDXGIFactory1)". Arkham Knight imports the DXGI 1.0
+CreateDXGIFactory. Same failure + fix as BioShock Infinite VR (references/bioshock-vr-latest/docs/STATUS.md):
+hooks.cpp install_creation_hooks now answers CreateDXGIFactory with CreateDXGIFactory1 (MinHook on the export, before
+geo-11 loads). Setting dxgi11=0 turns it off (read in earlyres with dofoff); status line "DXGI 1.1 factory upgrade".
+VERIFY: after a SteamVR launch, xrclient_BatmanAK.txt must have no SharedTexturesNotSupported; also re-check VD (VDXR).
+Test bench without the headset: SteamVR with the vrto3d driver forced reproduces the failure.
+- DXGI11B (2026-10-07): JJ's SteamVR run with DXGI11 still failed - the hook answered 0 calls: it was installed after
+  akvr_xr_try_init, and SteamVR's instance takes seconds, so the game made its factory first. install_dxgi11_hook()
+  now runs at the top of init_thread. VERIFIED on SteamVR (Quest via VD's OpenVR driver, "oculus"): 2 calls answered,
+  xrclient_BatmanAK.txt 0 SharedTexturesNotSupported / 0 sync-texture errors since launch. SHAREPROBE (status line)
+  shows the game device then makes keyed-mutex textures fine. Still to check: picture in the headset (JJ), VDXR route.
+- WRONG PICTURE + geo-11 (2026-10-07). JJ on DXGI11B via SteamVR: "way too close ... eyes too separated". The status
+  said NATIVE(SBS) 1444/eye, katanga "mapping not found", HUD "wrapper never seen" = geo-11 never attached; the eyes
+  were the flat frame cut in half. Test launches (SteamVR, Quest via VD's OpenVR driver, by Claude, no headset needed):
+    SHAREPROBE fresh device + dxgi off  -> geo-11 NOT attached (the probe's throw-away D3D11 device took geo-11:
+                                          never create a device in a geo-11 process; fresh-device test removed)
+    probe fixed + dxgi11 on (any form)  -> geo-11 NOT attached, 0 share errors
+    probe fixed + dxgi11=0              -> geo-11 attached, GEO11(katanga) 2888x2860, HUD layer live (= JJ's 23:40 run)
+  Both CreateDXGIFactory calls come from BatmanAK.exe. So: SteamVR needs a 1.1 factory chain (sync texture), geo-11
+  only attaches when the game's factory is 1.0. Shipped DXGIOFF: dxgi11 default 0 (opt-in 1 = game calls, 2 = all;
+  note settings_save drops the key). Not explained: why geo-11 fails on a 1.1 factory (3Dmigoto's
+  Hooked_CreateDXGIFactory/1 look alike); turn on geo-11's log to see. Real fix candidate: a separate D3D11 device
+  for the OpenXR session, created from a Factory1 adapter BEFORE geo-11 loads, eyes copied across via a shared texture.
+  SteamVR has never worked for AKVR with geo-11 (Aug 7 too); VD route unaffected.
+
+## HDRCURVE (2026-10-07), build HDRCURVE-0.2.2, installed, NOT run yet (Battlefront II was open)
+
+JJ: DoF off "still clipping like it's low dynamic range compared to when the depth of field is turned on". The DoF-off
+final pass is PS c0af99686f49c503 (dumped by the DOFDUMP list): out = pow(saturate(lerp(scene*cb0[6], cb0[7].rgb,
+cb0[7].w)), cb0[8].x) - the HDR scene HARD CLIPPED per channel, no tone curve. Nothing after it can recover that, so
+CURVE2/POSTFX curves were working on already-clipped data. hudsplit.cpp HDRCURVE: in the game-layer Draw/DrawIndexed
+hooks, when that PS is bound, AKVR binds its own PS (src/shaders/tonefix.hlsl, built by build_eyeaa_shaders.bat) +
+cb13 {exposure 2.51 x 2^stops, 1/hable(11.2), on}: same pass with the game's Hable curve instead of the clip. 2.51
+fitted to F2 214022 -> 214017 (mids); a scene value 4.5x the old clip point now reaches white. Panel POST EFFECTS: "film
+curve on the full-range picture" + "film exposure (stops)" (settings hdrcurve / hdrexp); the display-space curve
+(CURVE2) is now "extra contrast curve", default OFF, key renamed dispcurve. Status line "film curve on the full-range
+picture: ... passes drawn". VERIFY: passes drawn > 0 in DoF-off gameplay, no crash, geo-11 stereo intact.
+- POSTOK (2026-10-07), build POSTOK-0.2.2, installed, untested: JJ "make sure all these post effects are disabled
+  during menu screens and title screens". xr.cpp g_postOk = (gameplay || camRun3D) && !pauseLive && !pauseWaiting &&
+  !screen mode && !(auto main menu && menu phase < 2) - set each frame next to effGameplay; akvr_xr_post_ok(). eyeaa
+  gates grading, glow, colour table, curves, auto exposure, edge darkening on it; HDRCURVE leaves the game's own pass
+  outside it. Edge smoothing (SMAA/soft) is not a post effect and still runs everywhere.
+
+## GRADEFIT + ZOOMPRESS + MENUFIT2 (2026-10-07), build MENUFIT2-0.2.2, installed, untested
+
+- GRADEFIT: JJ "it appears to be the colour grade which is clipping". The copied table is strong (neutral 0.67 ->
+  .86/.99/.94, G/B reach 1.0 from ~0.7). HDRCURVE's exposure 2.51 was fitted to the DoF-on picture, which already
+  contains the table, so the table brightened twice. Refit WITH the table (trilinear, F2 214022 -> 214017): 1.87 matches
+  levels and colour (mean RGB .136/.206/.229 vs .130/.206/.227; 0.2% clipped vs 0.4%). Film exposure = lerp(2.51, 1.87,
+  grade weight); auto-exposure neutral point lerp(0.0295, 0.0226) after the curve, 0.0253 without it.
+- ZOOMPRESS: overlay still flashed at vignette 0. gamepad.cpp records the right-stick click press (alone, not the
+  menu chord); akvr_xr_vig_active returns true for 0.8 s after it in play.
+- MENUFIT2: gadget wheel still stretched; F2 01:03 shows RadialGadgetSelect fit mode 1 already (MENUFIT did nothing).
+  Cause in its AS (hud-scripts-20260926 RadialGadgetSelect.as ~line 700): XI_GetScreenSize -> if X/Y < 16:9,
+  GrandRightParent.scaleY = stageHeight / VignetteStartHeight. Natives found via the table "UGFxMoviePlayerexec...":
+  execSetVariableNumber RVA 0x61aa90 / Int 0x61ac90 -> virtual SetVariableNumber/Int slots 0x318/0x320. earleyres
+  install_res_fix hooks the natives (prologue checked), hooks the virtuals on first call, and answers ResolutionY with
+  ResolutionX*9/16 after a ResolutionX to the same player within 2 s. Panel line shows "screen-size questions": if it
+  stays 0 with the wheel opened, the script uses another setter.
+
+## GAMELOOK + MENUFIT2b (2026-10-07), build GAMELOOK-0.2.2, installed, NOT run (Battlefront II open)
+
+JJ (F2 012715): "all the colour grading options together just clip the shit out of the highlights" (neon signs lose
+detail and colour), six sliders over three options; the gadget wheel "looks posterised"; wheel still stretched, "0
+screen-size questions". Log: "menufit2: the set-variable natives are not where expected" - the fixed-address prologue
+check failed, so nothing was hooked.
+- GAMELOOK: root cause = applying the game's colour table / curves to the finished 8-bit picture (double brightening,
+  per-channel clipping, banding in dark scenes such as the wheel's dimmed world). tonefix.hlsl (the HDRCURVE pass that
+  replaces DoF-off PS c0af...) now does the game's 679d chain on the full-range scene: edge darkening on the scene,
+  Hable, gamma (cb0[8]), then the copied 16^3 table (t8, R32G32B32A32 copy on the game-side device, linear sampler s7,
+  refreshed when eyeaa's g_ggVer changes; akvr_gamegrade_snapshot). cb13 = {exposure, 1/hable(11.2), on, table
+  strength}, {edge, n}. Exposure 1.87 with the table / 2.51 without. eyeaa skips its table / display curve / edge / AE
+  while the pass is on; AE default 0. Panel POST EFFECTS: one "the game's look" tickbox + exposure + colour grade
+  strength + edge darkening + reset; then glow; then lift/gamma/gain.
+- MENUFIT2b: natives taken from the game's own native table at RVA 0x3039a50 (Int) / 0x3039a60 (Number), names checked;
+  the log line now prints the table addresses and the bytes at the old fixed address. VERIFY "menufit2:" lines in
+  akvr_startup_log.txt and the panel's "screen-size questions" > 0 after opening the wheel.
+- GLOWFIRST (2026-10-07), build GLOWFIRST-0.2.2, installed, NOT run (Battlefront II open). JJ: "the glows aren't the
+  same colour as what's behind them" (glow added after the table) + "the glow should go before any of it". hudsplit
+  tg_run: on the game-side context just before the final pass, toneglow.hlsl pre (soft threshold on the curve-mapped
+  brightness of scene*cb0[6]) -> 7 downs -> additive ups into 8 R16G16B16A16F levels (never square: geo-11 may share
+  square targets between eyes), all state saved/restored; tonefix adds level 0 (t9) to the scene BEFORE edge / curve /
+  table. eyeaa's own glow is off while the pass is on. Readout: "passes, glows drawn | picture in: format N" - N is the
+  scene format the game hands the final pass (if 8-bit UNORM, highlights are clipped upstream and no curve can fix it).
+  MENUFIT2b log from JJ's GAMELOOK run: "set-variable natives hooked / hooked" (the table read works; bytes matched).
+  Check whether the wheel's screen-size questions are counted now. RISK: if geo-11 shares our glow targets between
+  the eyes, glows would sit at the wrong depth / look doubled.
+
+## SOFTSWEEP (2026-10-07), build SOFTSWEEP-0.2.2, installed
+
+JJ: no stand-in matches the DoF-on look ("No matter what I do..."); the game's auto exposure is part of the DoF block,
+so a fixed exposure can't match across scenes (his pair: game ~35% darker in that scene). He rejected "DoF on + game AA
+off" because DoF off is "much sharper". MEASURED on his F2 pair 015049 (off) / 015056 (on), levels matched: fine
+detail +12% overall with DoF off, most on the NEAR floor, distance about equal - so something in the block softens the
+near field beyond SMAA. The 10-06 sweep could not show it (every picture vs the first; rain splashes and the cape moved
+the near-floor detail by +-13% between two normal pictures). New panel button "Find what softens the picture":
+pairs (normal, then one candidate dropped) for all 40 candidates (679d excluded), plus DoF fully off and game AA off,
+DoF forced on otherwise (xr.cpp g_dofTest override), full-resolution 1024x640 patches of the left eye (near = lower
+middle, mid = centre) into akvr_captures\soft_<time>\NNN_<kind>_<hash>_{near,mid}.bmp. Analyse each drop against the
+normal picture right before it; compare with the dofoff pair.
+- NORAIN (2026-10-07), build NORAIN-0.2.2, installed: RAIN TEST drawer "hide the rain" (the opposite of "show only
+  the rain"): probe_skip drops PS 5d787946eda54077 (world rain) and 37313d9770da1c5e (second rain system), counter
+  shown. Not saved. For the SOFTSWEEP run (rain made sweep pictures noisy). Splash/ripple shaders not included.
+
+## SOFTSWEEP result + NEARSOFT (2026-10-07), build NEARSOFT-0.2.2, installs when the game closes
+
+soft_023156 (JJ, rain hidden; he moved a little in the first pairs). Detail = mean |Laplacian|, vs the normal picture
+just before; noise between consecutive normals: near sd 5.3%, mid 1.1%. Contrast-normalised (/std):
+  DoF fully off (clean last pair 084/085): near +2.5%, mid -4%  -> DoF itself barely sharpens anything
+  game AA (SMAA) off:                       near -1%,   mid +8%  -> SMAA softens the middle distance
+  drop PS d252a8db4903737f:                  near +9.6% (raw +33%, brightness -3%), mid +0.4%
+d252a8db = PS at 1444x1430 (half size), 4 draws a frame, in BOTH the DoF-on and DoF-off census - not part of the DoF
+block; guess: wet-floor reflections (unconfirmed; added to the dump list). Live switch: SKIP UNNEEDED STEPS
+"half-size layer that softens the near floor" (blur-off bit 16, probe_skip). Large brightness swings on drops 7fa6 /
+f480 / 8a24 / 92fb = exposure / glow passes, not sharpness.
+- GRADEDOF (2026-10-07), build GRADEDOF-0.2.2 (installs when the game closes): lift/gamma/gain only while depth of
+  field is off in play (graded = dofOffNow && ...). Fixed an operator-precedence bug: "postOk && lift || gamma || gain"
+  let gamma and gain run in menus.
+
+## TONETEST result -> NOSTANDIN (2026-10-07), build NOSTANDIN-0.2.2 (installs when the game closes)
+
+JJ: "the game's look" tick stays on but the effect "only appears for a split second". tonetest=1 run (akvr_captures\
+tonetest.txt + 5 pictures): the full-range pass ran every frame (70-90 passes/s) before and after the scripted off/on;
+the glow halo is there at 18 / 25.3 / 27 / 35 s. Cause of the impression: with the switch OFF, eyeaa's old after-the-
+fact stand-ins (glow, copied table, display curve, auto exposure 0.5 from JJ's file, edge darkening) came back, so off
+looked much like on apart from the swap. NOSTANDIN: those eyeaa stand-ins never run now (glow/gg/curve/ae/edge = false);
+glow, table and edge exist only in the full-range pass; off = the game's plain DoF-off picture (+ JJ's grading while
+DoF is off). TONETEST code stays (tonetest=1, not saved).
+- GRADEDOF2 (2026-10-07), build GRADEDOF2-0.2.2 (installs when the game closes): JJ "grading tools are still affecting
+  everything when you've got depth of field on". eyeaa runs whenever SMAA/soft is on (eyeaa=2), and its final step
+  always applied lift/gamma/gain from the cb; `graded` only gated whether the pass ran. cb now gets neutral 0/1/1
+  unless graded. Lesson: an effect's on/off must gate its PARAMETERS too, not just whether the pass runs.
+- SCENEFMT (2026-10-07), build SCENEFMT-0.2.2, installed: JJ "no matter how much you increase the exposure or the gain,
+  all that does is just start to clip ... doesn't raise the highlight level" - the symptom of a scene already capped at
+  1.0 before the DoF-off final pass (a flat plateau the curve can only push into white). Status line now prints the
+  scene view format of the DoF-off final pass (PS c0af t0) and of the DoF-on final step (CS 679d t0, recorded when the
+  table is grabbed). If the off one is 28/24 (UNORM) and the on one float, the DoF-off path loses highlights upstream
+  and no curve can recover them -> recommend DoF on + game AA off + NEARSOFT. Colour grade strength now 0..2 (exposure
+  weight clamped at 1).

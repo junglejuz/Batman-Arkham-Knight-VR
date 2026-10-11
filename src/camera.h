@@ -17,6 +17,7 @@ bool         akvr_camera_install();
 bool         akvr_camera_installed();
 uintptr_t    akvr_camera_target();   // resolved injection address (0 if not found)
 uint64_t     akvr_camera_finalize_count(); // # times the camera-finalize fn ran (M4a-0 cadence)
+uint64_t     akvr_camera_write_count();    // PAUSESTAMP: finalizes + the pause look's own camera writes
 CameraView   akvr_camera_read();     // snapshot of the live camera fields
 float        akvr_camera_game_fov(); // ZOOMVIG: the game's own FOV this frame (deg, before the headset lock)
 bool         akvr_camera_main_view_live();   // PAUSELOOK: main view still drawn through the player camera
@@ -148,3 +149,17 @@ void           akvr_projvr_diag(float& ratio, int& hits, float& farp);  // diagn
 // Both projection axes before/after the rewrite, plus the ones we rejected.
 void           akvr_projvr_diag2(float& origH, float& origV, float& postH, float& postV,
                                  int& skips, float& skipFov, float& skipRatio);
+
+// FIRSTPERSON 2026-10-11 (camera.cpp): the camera at Batman's head, like Batman City
+void        akvr_fp_set(bool on);
+bool        akvr_fp();
+bool        akvr_fp_active();          // applied at the last camera update (Batman on foot, not a menu)
+void        akvr_fp_fwd_set(float cm); // camera in front of his face
+float       akvr_fp_fwd();
+void        akvr_fp_up_set(float cm);
+float       akvr_fp_up();
+void        akvr_fp_head_set(bool on); // camera follows his head (off = steady point above the body)
+bool        akvr_fp_head();
+void        akvr_fp_smooth_set(float s);
+float       akvr_fp_smooth();
+const char* akvr_fp_status();

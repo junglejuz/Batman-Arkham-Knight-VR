@@ -24,10 +24,14 @@
 // when the call returns. xr.cpp copies H into a headset swapchain and submits it as a quad in
 // VIEW space (head-locked, placed by the compositor every refresh) at the HUD distance.
 // geo-11's HUD shift is held at 0 while this runs (geo11conv.cpp), so H holds ONE flat HUD.
+#include "akn_link.h"
 #include "hudsplit.h"
 #include "geo11conv.h"
 #include "xr.h"   // RETSQUASH: akvr_xr_game_tan
 #include "camera.h"   // NEARRAIN: akvr_camera_base_axes
+#include "vslayout.h"   // MKBATCH: batched HUD vertex shader layouts
+struct ID3D11DeviceContext;
+void akvr_gamegrade_grab(ID3D11DeviceContext *c);   // eyeaa.cpp: GAMEGRADE
 bool akvr_hud_room_all();   // earlyres.cpp: ROOMALL (whole HUD in the room) - BANDOFF
 int  akvr_hud_target_points(float* xy, int max, int rtW, int rtH, float* off, float* xf);   // earlyres.cpp: TARGETDEPTH / TARGETSTOCK / TARGETSCALE; off = view depth per point (TARGETDIST)
 const char* akvr_marker_dist_diag();   // earlyres.cpp: TARGETDIST
@@ -41,6 +45,20 @@ bool akvr_hud_marks_ready();                                                    
 #include <cstdint>
 #include <cmath>
 #include <string>
+#include <unordered_map>
+#include <vector>
+#include "shaders/tonefix_ps.h"   // HDRCURVE (after windows.h: BYTE)
+#include "../../akvr_native/src/flare_shaders.h"   // FLAREOFF3: Luma's two AK lens flare shaders (generated, credit inside)
+#include <d3dcompiler.h>
+#include "shaders/toneglow_vs.h"   // GLOWFIRST
+#include "shaders/toneglow_pre.h"
+#include "shaders/toneglow_down.h"
+#include "shaders/toneglow_up.h"
+void akvr_glow_get(bool& on, float& intensity, float& threshold, float& radius);   // eyeaa.cpp: MODGLOW settings
+bool akvr_xr_post_ok();   // xr.cpp: POSTOK
+float akvr_gamegrade_weight();   // eyeaa.cpp: GRADEFIT
+bool akvr_gamegrade_snapshot(std::vector<float>& out, UINT& n, long& ver);   // eyeaa.cpp: GAMELOOK
+void akvr_post_get(bool& curveOn, float& contrast, float& stops, float& autoExp, float& edge);   // eyeaa.cpp
 
 namespace {
     constexpr uintptr_t kRenderUI = 0x1405de350;
@@ -86,6 +104,13 @@ namespace {
     int  g_Hreal = -1;                          // H is a real d3d11 texture: -1 not made yet, 0 no, 1 yes
     char g_Hmodule[64] = "";
     ID3D11Texture2D* g_Hsrc = nullptr;          // the REAL texture that holds H's pixels (not owned)
+    // MENUCRASH 2026-10-06 - JJ: opening the game's graphics menu (VR, geo-11) crashed: "Rendering thread exception"
+    // in d3d11 CreateShaderResourceView called from xr.cpp hud_conv_draw on g_Hsrc. geo-11 rebuilt the real texture
+    // behind H (the menu re-applies the display settings) and g_Hsrc, read once, pointed at freed memory. The path
+    // it was found by is kept and re-read every frame (hsrc_refresh), so g_Hsrc follows geo-11's current texture.
+    uintptr_t g_HsrcOff = 0, g_HsrcSub = 0;    // H+off -> p; texture = p (sub == -1) or *(p + sub)
+    uintptr_t g_texVt = 0;                      // a real d3d11 texture's function table
+    long g_HsrcMoves = 0, g_HsrcLost = 0;
     char g_Hfound[240] = "";                    // what the unwrap search found (diag)
     UINT g_reqN = 0;                            // the game's last requested targets (restore)
     ID3D11RenderTargetView* g_reqRtv[D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT] = {};
@@ -360,10 +385,108 @@ namespace {
     CreateVSFn oCreateVS[3] = {};
     void* g_createVsTarget[3] = {};
     void sh_note(const void* code, SIZE_T len, void* obj);   // DRAWPROBE, below
+    // MKGS 2026-10-11 (JJ: the card method split the marker's elements and changed its size - "It should be fixed at the
+    // source"): the geo-11 version placed every HUD vertex in 3D per eye INSIDE the game's own HUD draw (patched HUD
+    // shaders). Here: for each small vertex shader the game creates, its output signature is read from the bytecode and a
+    // matching geometry shader is built on first use. AKN binds it on a marker piece's per-eye draw: every vertex's HUD
+    // position (x, y) becomes K0 + x Kx + y Ky (cb13) = that eye's clip position of the point on an upright card at the
+    // marker's world point - an exact perspective per vertex, the piece stays in its own draw, nothing cut or resized.
+    // MKGS2 2026-10-11 (JJ 13:3x: markers "still rotating on their own axes slightly when moving my head"): the 13:29 log said
+    // "geometry shaders built 0, failed 0" - every marker draw took the affine row fallback, so MKGS never ran. The fixed
+    // 2048-slot table filled up with the game's world vertex shaders long before the HUD's were created, so the HUD shaders
+    // were never found. Now: an unbounded map keyed by the shader object, holding only the generated GS source (a few hundred
+    // bytes; nothing for shaders whose signature is not supported).
+    struct MkGsEnt { std::string src; ID3D11GeometryShader* gs = nullptr; int state = 0; };   // state 0 not built, 1 built, -1 failed / unsupported
+    std::unordered_map<void*, MkGsEnt> g_mkGs; SRWLOCK g_mkGsLock = SRWLOCK_INIT;
+    volatile LONG c_mkGsBuilt = 0, c_mkGsFail = 0, c_mkGsNoted = 0, c_mkGsUnsup = 0, c_mkGsMiss = 0;
+    char g_mkGsErr[256] = {};   // the first build failure's message
+    std::string mkgs_source(const std::vector<uint8_t>& c);
+    void mkgs_note(const void* code, SIZE_T len, void* vs)
+    {
+        if (!code || !vs || len < 32) return;
+        // the device just accepted these bytes; mkgs_source bounds-checks every read against the length
+        std::string src = mkgs_source(std::vector<uint8_t>((const uint8_t*)code, (const uint8_t*)code + len));
+        AcquireSRWLockExclusive(&g_mkGsLock);
+        MkGsEnt& e = g_mkGs[vs];   // a reused object address replaces the old entry
+        if (e.gs) { e.gs->Release(); e.gs = nullptr; }
+        e.src = std::move(src); e.state = e.src.empty() ? -1 : 0;
+        ReleaseSRWLockExclusive(&g_mkGsLock);
+        InterlockedIncrement(e.state == 0 ? &c_mkGsNoted : &c_mkGsUnsup);
+    }
+    // the GS source for the VS's output signature (DXBC OSGN); empty = not supported (packed registers, odd masks)
+    std::string mkgs_source(const std::vector<uint8_t>& c)
+    {
+        if (c.size() < 32 || memcmp(c.data(), "DXBC", 4) != 0) return "";
+        const uint32_t nch = *(const uint32_t*)(c.data() + 28);
+        for (uint32_t k = 0; k < nch && 32 + k * 4 + 4 <= c.size(); ++k)
+        {
+            const uint32_t off = *(const uint32_t*)(c.data() + 32 + k * 4);
+            if (off + 8 > c.size()) return "";
+            const char* fc = (const char*)c.data() + off;
+            if (memcmp(fc, "OSGN", 4) != 0) continue;
+            const uint8_t* d = c.data() + off + 8; const uint32_t dsz = *(const uint32_t*)(c.data() + off + 4);
+            if (off + 8 + dsz > c.size() || dsz < 8) return "";
+            const uint32_t cnt = *(const uint32_t*)d;
+            std::string st = "struct V {\n"; int lastReg = -1; bool havePos = false;
+            for (uint32_t i = 0; i < cnt; ++i)
+            {
+                const uint8_t* e = d + 8 + i * 24; if (e + 24 > d + dsz) return "";
+                const uint32_t nameOff = *(const uint32_t*)e, semIdx = *(const uint32_t*)(e + 4), sysv = *(const uint32_t*)(e + 8), ctype = *(const uint32_t*)(e + 12), reg = *(const uint32_t*)(e + 16);
+                const uint8_t mask = e[20];
+                if (nameOff >= dsz) return "";
+                const char* name = (const char*)d + nameOff;
+                if ((int)reg <= lastReg) return "";   // two outputs share a register: not handled
+                lastReg = (int)reg;
+                int comps = 0; for (int b = 0; b < 4; ++b) if (mask & (1 << b)) ++comps;
+                if (comps == 0 || mask != ((1 << comps) - 1)) return "";
+                const char* ty = ctype == 1 ? "uint" : ctype == 2 ? "int" : "float";
+                char line[160];
+                if (sysv == 1) { if (comps != 4) return ""; _snprintf_s(line, sizeof(line), _TRUNCATE, "  float4 pos : SV_Position;\n"); havePos = true; }
+                else _snprintf_s(line, sizeof(line), _TRUNCATE, "  %s%s f%u : %s%u;\n", ty, comps == 1 ? "" : comps == 2 ? "2" : comps == 3 ? "3" : "4", i, name, semIdx);
+                st += line;
+            }
+            if (!havePos) return "";
+            st += "};\n";
+            return "cbuffer AkvrMk : register(b13) { float4 K0; float4 Kx; float4 Ky; float4 Kp; };\n" + st +
+                   "[maxvertexcount(3)] void main(triangle V i[3], inout TriangleStream<V> s)\n"
+                   "{ [unroll] for (int k = 0; k < 3; ++k) { V o = i[k]; float2 p = o.pos.xy / o.pos.w; float4 q = K0 + p.x * Kx + p.y * Ky; q.z = 0.5 * q.w; o.pos = q; s.Append(o); } s.RestartStrip(); }\n";
+        }
+        return "";
+    }
+    ID3D11GeometryShader* mkgs_get(void* vsv)
+    {
+        ID3D11VertexShader* vs = (ID3D11VertexShader*)vsv;
+        if (!vs) return nullptr;
+        AcquireSRWLockExclusive(&g_mkGsLock);
+        auto it = g_mkGs.find(vs);
+        MkGsEnt* e = it != g_mkGs.end() ? &it->second : nullptr;
+        if (!e) InterlockedIncrement(&c_mkGsMiss);   // created before our hook, or by another device
+        ID3D11GeometryShader* out = nullptr;
+        if (e && e->state == 0)
+        {
+            e->state = -1;
+            const std::string& src = e->src;
+            using CompileFn = HRESULT(WINAPI*)(LPCVOID, SIZE_T, LPCSTR, const D3D_SHADER_MACRO*, ID3DInclude*, LPCSTR, LPCSTR, UINT, UINT, ID3DBlob**, ID3DBlob**);
+            static CompileFn compile = nullptr; if (!compile) { HMODULE m = LoadLibraryW(L"d3dcompiler_47.dll"); compile = m ? (CompileFn)GetProcAddress(m, "D3DCompile") : nullptr; }
+            ID3DBlob* b = nullptr; ID3DBlob* er = nullptr; ID3D11Device* dev = nullptr; vs->GetDevice(&dev);
+            if (!src.empty() && compile && dev && SUCCEEDED(compile(src.data(), src.size(), "akvr_mkgs", nullptr, nullptr, "main", "gs_5_0", 0, 0, &b, &er)) && b &&
+                SUCCEEDED(dev->CreateGeometryShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &e->gs)))
+            { e->state = 1; InterlockedIncrement(&c_mkGsBuilt); }
+            else
+            {
+                InterlockedIncrement(&c_mkGsFail);
+                if (!g_mkGsErr[0]) _snprintf_s(g_mkGsErr, sizeof(g_mkGsErr), _TRUNCATE, "%s", !compile ? "no d3dcompiler_47" : er ? (const char*)er->GetBufferPointer() : "CreateGeometryShader failed");
+            }
+            if (b) b->Release(); if (er) er->Release(); if (dev) dev->Release();
+        }
+        if (e && e->state == 1) out = e->gs;
+        ReleaseSRWLockExclusive(&g_mkGsLock);
+        return out;
+    }
     template <int K> HRESULT __stdcall hkCreateVS(ID3D11Device* d, const void* code, SIZE_T len, ID3D11ClassLinkage* cl, ID3D11VertexShader** out)
     {
         HRESULT hr = oCreateVS[K](d, code, len, cl, out);
-        if (SUCCEEDED(hr) && out) { vs_note(code, len, *out); sh_note(code, len, *out); }
+        if (SUCCEEDED(hr) && out) { vs_note(code, len, *out); sh_note(code, len, *out); if (*out) mc_queue(code, len, *out, 1); if (*out) mkgs_note(code, len, *out); }   // MKSINGLE / MKGS
         return hr;
     }
 
@@ -379,17 +502,38 @@ namespace {
     // testtools=1 in the settings file. The live fixes (FARRAIN, NEARRAIN when set, PSMARK) do not depend on it.
     volatile bool g_testTools = false;
     constexpr int kShMap = 1 << 17;
-    struct ShEnt { void* obj; uint64_t h; };
+    struct ShEnt { void* obj; uint64_t h; uint32_t crc; };   // DLSS D0: crc = Luma's shader name (CRC-32 of the bytecode)
     ShEnt   g_shMap[kShMap];
     SRWLOCK g_shLock = SRWLOCK_INIT;
     uint32_t sh_slot(const void* p) { return (uint32_t)((((uintptr_t)p) >> 4) * 2654435761u) & (kShMap - 1); }
-    void sh_put(void* obj, uint64_t h)
+    void sh_put(void* obj, uint64_t h, uint32_t crc = 0)
     {
         if (!obj) return;
         AcquireSRWLockExclusive(&g_shLock);
         for (uint32_t i = sh_slot(obj), n = 0; n < 256; ++n, i = (i + 1) & (kShMap - 1))
-            if (!g_shMap[i].obj || g_shMap[i].obj == obj) { g_shMap[i] = { obj, h }; break; }
+            if (!g_shMap[i].obj || g_shMap[i].obj == obj) { g_shMap[i] = { obj, h, crc }; break; }
         ReleaseSRWLockExclusive(&g_shLock);
+    }
+    uint32_t sh_get_crc(const void* obj)
+    {
+        if (!obj) return 0;
+        uint32_t c = 0;
+        AcquireSRWLockShared(&g_shLock);
+        for (uint32_t i = sh_slot(obj), n = 0; n < 256; ++n, i = (i + 1) & (kShMap - 1))
+        {
+            if (!g_shMap[i].obj) break;
+            if (g_shMap[i].obj == obj) { c = g_shMap[i].crc; break; }
+        }
+        ReleaseSRWLockShared(&g_shLock);
+        return c;
+    }
+    uint32_t crc32_buf(const void* p, size_t n)
+    {   // standard CRC-32 (reflected 0xEDB88320), as ReShade's compute_crc32 that Luma names shaders with
+        static uint32_t tab[256]; static bool init = false;
+        if (!init) { for (uint32_t i = 0; i < 256; ++i) { uint32_t c = i; for (int k = 0; k < 8; ++k) c = (c & 1) ? 0xEDB88320u ^ (c >> 1) : c >> 1; tab[i] = c; } init = true; }
+        uint32_t c = 0xFFFFFFFFu; const uint8_t* b = (const uint8_t*)p;
+        for (size_t i = 0; i < n; ++i) c = tab[(c ^ b[i]) & 0xFF] ^ (c >> 8);
+        return c ^ 0xFFFFFFFFu;
     }
     uint64_t sh_get(const void* obj)
     {
@@ -408,11 +552,14 @@ namespace {
     // akvr_shader_<hash>.bin next to the game exe, for cmd_Decompiler -d. JJ's DRAWPROBE2 capture: a second rain
     // particle system (PS 37313d9770da1c5e / VS 2aafb19df6567d30, 6 x 20480, uses the rain texture, drawn right
     // after the world rain) that the fix never patched; the world rain VS f50d1365e929b3a0 for comparison.
-    const uint64_t kDumpSh[] = { 0x2aafb19df6567d30ull, 0x37313d9770da1c5eull, 0xf50d1365e929b3a0ull };
-    volatile LONG g_dumped[3] = {};
+    // DOFDUMP 2026-10-06: plus the DoF candidates from SHCENSUS/SWEEP (and the DoF-off final post shaders), saved
+    // once each in EVERY launch (only these hashes), to read with cmd_Decompiler -d.
+    const uint64_t kDumpSh[] = { 0x599bd060016570bbull, 0x54cd897e5ce3b8b3ull, 0x5c9618a3350ea2ddull, 0x94f88871e378a57cull, 0x97657b85916f6399ull, 0xc9b47e60935f3f03ull, 0xfd60f2d764b91756ull, 0x4b432a87d072f988ull, 0x91e2b2225bf3ea04ull, 0x05154232f7872d0dull, 0x9938094af96353c0ull, 0x2aafb19df6567d30ull, 0x37313d9770da1c5eull, 0xf50d1365e929b3a0ull, 0x53fbc09e594d753cull, 0x24b12a6db37cce3eull, 0xcd8954e7b4fa5269ull, 0x3394df335fc5af55ull, 0xaee2a54e2c55f085ull, 0xaaeb97a5fdfc6543ull, 0x3de8ffc9a08651e5ull, 0xc5826416fc90be53ull, 0x7bc164ffe7d8267full, 0xf15c568dbe5fd8d1ull, 0x7fa538b3ba7c1091ull, 0x4637ed07f23a7a08ull, 0x48bdd7f7d90fb074ull, 0x09f65aa84b45bbc5ull, 0x6b057302c3e385ffull, 0x0eff3397efd01197ull, 0x39882999b6182fb9ull, 0xf24e00cf6cc927e7ull, 0xa604aa27d79ebc88ull, 0x930713b7c89e597aull, 0xbaf10e6bd8e27752ull, 0x5c9375e97d0e05efull, 0x4762798063a0763full, 0xcca9fb2e050c4100ull, 0xc91f6f0798a296a9ull, 0x0538920e4247cdf5ull, 0xff444aaf3a323a65ull, 0xbd67c92e94ebccd1ull, 0xed72bff815f35134ull, 0x491bf40c8b149566ull, 0x679d7ed1d48858e9ull, 0x8a2474b5f10caa50ull, 0xf6b60038df3c5f8eull, 0x53d7993337c2ff86ull, 0x92fb168506dc721aull, 0x09a4d19e408bed04ull, 0xb7f14acc058bce77ull, 0x5a4ba544adfd9b77ull, 0x7fa6a54dd602e404ull, 0xf48055cdb6a44445ull, 0x83125122196a72acull, 0x065426089ba1284aull, 0x3df408afbcc9696aull, 0x394272cd5e832650ull, 0x9d2a0f06b5a5315bull, 0xc0af99686f49c503ull, 0xd252a8db4903737full };   // + GAMEGRADE: the two once-a-frame PS only seen with DoF off
+    constexpr int kDumpN = (int)(sizeof(kDumpSh) / sizeof(kDumpSh[0]));
+    volatile LONG g_dumped[kDumpN] = {};
     void sh_dump(uint64_t h, const void* code, SIZE_T len)
     {
-        for (int i = 0; i < 3; ++i)
+        for (int i = 0; i < kDumpN; ++i)
         {
             if (h != kDumpSh[i] || InterlockedExchange(&g_dumped[i], 1)) continue;
             wchar_t path[MAX_PATH];
@@ -427,21 +574,193 @@ namespace {
             CloseHandle(f);
         }
     }
+    // SUITGLOSS3 2026-10-09: pixel shaders that read the camera DIRECTION rows of the view buffer (cb1[11..13]) but never
+    // its position row (cb1[14]) take gloss / rim from the camera's aim. Every pixel shader is disassembled once on a
+    // worker thread and flagged; AKN gives those draws the head-free game camera's rows (akvr_shader_camdir).
+    typedef HRESULT(WINAPI* DisasmFn)(LPCVOID, SIZE_T, UINT, LPCSTR, ID3DBlob**);
+    struct McJob { void* obj; std::vector<uint8_t> code; int kind = 0; };   // kind 0 pixel shader, 1 vertex shader (MKSINGLE)
+    std::vector<McJob> g_mcQ; SRWLOCK g_mcLock = SRWLOCK_INIT; HANDLE g_mcEvent = nullptr; volatile LONG g_mcStarted = 0;
+    constexpr int kMcMap = 1 << 14;
+    volatile LONG c_mcSeen = 0, c_vrFound = 0;
+    // SUITGLOSS2 2026-10-09 (JJ: the matcap swap changed nothing): shaders that read the camera DIRECTION rows cb1[11..13]
+    // without the position row cb1[14] (e.g. a rim / gloss from the camera's forward axis = depends on the eye's AIM only)
+    void* volatile g_vrSet[kMcMap] = {};
+    bool vr_has(const void* obj)
+    {
+        if (!obj) return false;
+        for (uint32_t i = sh_slot(obj) & (kMcMap - 1), n = 0; n < 64; ++n, i = (i + 1) & (kMcMap - 1)) { void* v = g_vrSet[i]; if (!v) return false; if (v == obj) return true; }
+        return false;
+    }
+    void vr_add(void* obj)
+    {
+        for (uint32_t i = sh_slot(obj) & (kMcMap - 1), n = 0; n < 64; ++n, i = (i + 1) & (kMcMap - 1))
+            if (InterlockedCompareExchangePointer((PVOID volatile*)&g_vrSet[i], obj, nullptr) == nullptr || g_vrSet[i] == obj) return;
+    }
+    // MKSINGLE: vertex shaders that place ONE piece per draw (position x / y = dp4 with cb0[6] / cb0[7], immediate indexing)
+    void* volatile g_v1Set[kMcMap] = {}; volatile LONG c_v1Found = 0;
+    bool v1_has(const void* obj)
+    {
+        if (!obj) return false;
+        for (uint32_t i = sh_slot(obj) & (kMcMap - 1), n = 0; n < 64; ++n, i = (i + 1) & (kMcMap - 1)) { void* v = g_v1Set[i]; if (!v) return false; if (v == obj) return true; }
+        return false;
+    }
+    void v1_add(void* obj)
+    {
+        for (uint32_t i = sh_slot(obj) & (kMcMap - 1), n = 0; n < 64; ++n, i = (i + 1) & (kMcMap - 1))
+            if (InterlockedCompareExchangePointer((PVOID volatile*)&g_v1Set[i], obj, nullptr) == nullptr || g_v1Set[i] == obj) return;
+    }
+    bool v1_pattern(const char* t)
+    {
+        if (strstr(t, "cb0[r")) return false;   // per-vertex (batched) placement
+        const char* d = strstr(t, ", position"); if (!d) return false;
+        const char* o = d; while (o > t && *o != 'o') --o;   // "dcl_output_siv oN.xyzw, position"
+        int reg = -1; if (sscanf_s(o, "o%d", &reg) != 1 || reg < 0) return false;
+        char fx[24], fy[24]; snprintf(fx, sizeof(fx), "dp4 o%d.x, ", reg); snprintf(fy, sizeof(fy), "dp4 o%d.y, ", reg);
+        const char* ax = strstr(t, fx); const char* ay = strstr(t, fy);
+        if (!ax || !ay) return false;
+        const char* ex = strchr(ax, '\n'); const char* ey = strchr(ay, '\n');
+        const std::string lx(ax, ex ? ex - ax : strlen(ax)), ly(ay, ey ? ey - ay : strlen(ay));
+        return lx.find("cb0[6]") != std::string::npos && ly.find("cb0[7]") != std::string::npos;
+    }
+    // MKBATCH 2026-10-09: batched HUD vertex shaders (several pieces per draw, each with its own position rows in cb0)
+    struct VbEntry { void* volatile obj; VsBatchLayout L; volatile LONG ready; };
+    constexpr int kVbMap = 4096; VbEntry g_vb[kVbMap] = {}; volatile LONG c_vbFound = 0;
+    void vb_add(void* obj, const VsBatchLayout& L)
+    {
+        for (uint32_t i = sh_slot(obj) & (kVbMap - 1), n = 0; n < 64; ++n, i = (i + 1) & (kVbMap - 1))
+            if (InterlockedCompareExchangePointer((PVOID volatile*)&g_vb[i].obj, obj, nullptr) == nullptr || g_vb[i].obj == obj)
+            {   // ready written last: a reader seeing it sees the whole layout
+                g_vb[i].L = L; MemoryBarrier(); g_vb[i].ready = 1; return;
+            }
+    }
+    // out[32]: rowX, rowY, stride, rows, base, rowW, nPiece, prow[12], pstride[12] (MKBATCH / MKTAG)
+    bool vb_get(const void* obj, int* out)
+    {
+        if (!obj) return false;
+        for (uint32_t i = sh_slot(obj) & (kVbMap - 1), n = 0; n < 64; ++n, i = (i + 1) & (kVbMap - 1))
+        {
+            void* v = g_vb[i].obj; if (!v) return false;
+            if (v == obj)
+            {
+                if (!g_vb[i].ready) return false;
+                MemoryBarrier(); const VsBatchLayout& L = g_vb[i].L;
+                out[0] = L.rowX; out[1] = L.rowY; out[2] = L.stride; out[3] = L.rows; out[4] = L.base; out[5] = L.rowW; out[6] = L.nPiece;
+                for (int q = 0; q < 12; ++q) { out[7 + q] = L.prow[q]; out[19 + q] = L.pstride[q]; }
+                return true;
+            }
+        }
+        return false;
+    }
+    bool vr_pattern(const char* t)
+    {   // camera direction rows read, camera position row never (positions must keep each eye's own turned frame)
+        const char* body = strstr(t, "dcl_temps"); if (!body) body = t;
+        const bool dir = strstr(body, "cb1[11]") || strstr(body, "cb1[12]") || strstr(body, "cb1[13]");
+        return dir && !strstr(body, "cb1[14]");
+    }
+    DWORD WINAPI mc_worker(LPVOID)
+    {
+        HMODULE m = LoadLibraryW(L"d3dcompiler_47.dll");
+        DisasmFn dis = m ? (DisasmFn)GetProcAddress(m, "D3DDisassemble") : nullptr;
+        for (;;)
+        {
+            WaitForSingleObject(g_mcEvent, 1000);
+            for (;;)
+            {
+                McJob j;
+                AcquireSRWLockExclusive(&g_mcLock);
+                if (g_mcQ.empty()) { ReleaseSRWLockExclusive(&g_mcLock); break; }
+                j = std::move(g_mcQ.back()); g_mcQ.pop_back();
+                ReleaseSRWLockExclusive(&g_mcLock);
+                if (!dis) continue;
+                ID3DBlob* txt = nullptr;
+                if (SUCCEEDED(dis(j.code.data(), j.code.size(), 0, nullptr, &txt)) && txt)
+                {
+                    InterlockedIncrement(&c_mcSeen);
+                    if (j.kind == 0 && vr_pattern((const char*)txt->GetBufferPointer())) { vr_add(j.obj); InterlockedIncrement(&c_vrFound); }   // SUITGLOSS3
+                    if (j.kind == 1 && v1_pattern((const char*)txt->GetBufferPointer())) { v1_add(j.obj); InterlockedIncrement(&c_v1Found); }   // MKSINGLE
+                    else if (j.kind == 1) { VsBatchLayout bl; if (vs_batch_layout((const char*)txt->GetBufferPointer(), bl)) { vb_add(j.obj, bl); InterlockedIncrement(&c_vbFound); } }   // MKBATCH
+                    txt->Release();
+                }
+            }
+        }
+    }
+    bool mc_copy(void* dst, const void* src, SIZE_T n) { __try { memcpy(dst, src, n); return true; } __except (EXCEPTION_EXECUTE_HANDLER) { return false; } }
+    void mc_queue(const void* code, SIZE_T len, void* obj, int kind = 0)
+    {
+        if (!code || !obj || len < 32 || len > (1u << 20)) return;
+        if (!InterlockedExchange(&g_mcStarted, 1)) { g_mcEvent = CreateEventW(nullptr, FALSE, FALSE, nullptr); CloseHandle(CreateThread(nullptr, 0, mc_worker, nullptr, 0, nullptr)); }
+        McJob j; j.obj = obj; j.kind = kind; j.code.resize(len);
+        if (!mc_copy(j.code.data(), code, len)) return;
+        AcquireSRWLockExclusive(&g_mcLock); g_mcQ.push_back(std::move(j)); ReleaseSRWLockExclusive(&g_mcLock);
+        if (g_mcEvent) SetEvent(g_mcEvent);
+    }
     void sh_note(const void* code, SIZE_T len, void* obj)
     {
         if (!code || !obj) return;
         uint64_t h = 0;
         __try { h = fnv64(code, len); } __except (EXCEPTION_EXECUTE_HANDLER) { h = 0; }
-        if (h) { sh_put(obj, h); if (g_testTools) sh_dump(h, code, len); }
+        uint32_t crc = 0;
+        __try { crc = crc32_buf(code, len); } __except (EXCEPTION_EXECUTE_HANDLER) { crc = 0; }
+        if (h) { sh_put(obj, h, crc); sh_dump(h, code, len); }   // DOFDUMP: every launch (fixed list)
     }
     typedef HRESULT (__stdcall* CreatePSFn)(ID3D11Device*, const void*, SIZE_T, ID3D11ClassLinkage*, ID3D11PixelShader**);
     CreatePSFn oCreatePS[3] = {};
     void* g_createPsTarget[3] = {};
     int   g_psHooks = 0;
+    // FLAREOFF3 2026-10-10 (JJ: lens flares still on; then crashes in 4 of 5 sessions once AKN swapped them at every
+    // PSSetShader / CSSetShader bind - those hooks also ran for Virtual Desktop's in-process device and the game's
+    // recording threads). Now Luma's way: when the game CREATES the flare sprite PS (CRC32 0x2CCEAEA7) or the bloom /
+    // flare ghosts / lens dirt CS (0xB42A7F40), Luma's copy compiled with DISABLE_LENS_FLARE_AND_LENS_DIRT=1 is created
+    // instead and handed to the game as its shader. Once per shader at load; nothing per frame. Setting flareoff= (1).
+    int g_flareOff = 1; volatile LONG g_flareSwapped[2] = {}; char g_flareDiag[200] = "lens flare off: the game has not created its flare shaders yet";
+    bool flare_code(int kind, std::vector<uint8_t>& out)
+    {   // compiled once per kind (game load thread)
+        static std::vector<uint8_t> s_code[2]; static int s_state[2] = {};
+        if (s_state[kind] == 0)
+        {
+            s_state[kind] = -1;
+            using CompileFn = HRESULT(WINAPI*)(LPCVOID, SIZE_T, LPCSTR, const D3D_SHADER_MACRO*, ID3DInclude*, LPCSTR, LPCSTR, UINT, UINT, ID3DBlob**, ID3DBlob**);
+            HMODULE m = LoadLibraryW(L"d3dcompiler_47.dll");
+            CompileFn compile = m ? (CompileFn)GetProcAddress(m, "D3DCompile") : nullptr;
+            const D3D_SHADER_MACRO mac[] = { { "DISABLE_LENS_FLARE_AND_LENS_DIRT", "1" }, { nullptr, nullptr } };
+            ID3DBlob* b = nullptr; ID3DBlob* e = nullptr;
+            const char* src = kind == 0 ? kFlarePsHlsl : kBloomCsHlsl; const size_t n = kind == 0 ? sizeof(kFlarePsHlsl) - 1 : sizeof(kBloomCsHlsl) - 1;
+            if (compile && SUCCEEDED(compile(src, n, kind == 0 ? "LensFlare_0x2CCEAEA7" : "BloomLensFlareLensDirt_0xB42A7F40", mac, nullptr, "main", kind == 0 ? "ps_5_0" : "cs_5_0", 0, 0, &b, &e)) && b)
+            { s_code[kind].assign((const uint8_t*)b->GetBufferPointer(), (const uint8_t*)b->GetBufferPointer() + b->GetBufferSize()); s_state[kind] = 1; }
+            if (b) b->Release(); if (e) e->Release();
+        }
+        if (s_state[kind] != 1) return false;
+        out = s_code[kind];
+        return true;
+    }
+    int flare_kind_of(const void* code, SIZE_T len)
+    {
+        if (!g_flareOff || !code || len < 32) return -1;
+        uint32_t crc = 0;
+        __try { crc = crc32_buf(code, len); } __except (EXCEPTION_EXECUTE_HANDLER) { return -1; }
+        return crc == 0x2CCEAEA7u ? 0 : crc == 0xB42A7F40u ? 1 : -1;
+    }
+    void flare_note(int kind, bool ok)
+    {
+        if (ok) InterlockedIncrement(&g_flareSwapped[kind]);
+        _snprintf_s(g_flareDiag, sizeof(g_flareDiag), _TRUNCATE, "lens flare off %d: flare sprite shader replaced %ld x, bloom / ghosts / dirt shader replaced %ld x%s",
+                    g_flareOff, g_flareSwapped[0], g_flareSwapped[1], ok ? "" : " - a replacement FAILED, the game's own is used");
+    }
     template <int K> HRESULT __stdcall hkCreatePS(ID3D11Device* d, const void* code, SIZE_T len, ID3D11ClassLinkage* cl, ID3D11PixelShader** out)
     {
+        if (flare_kind_of(code, len) == 0)
+        {   // FLAREOFF3
+            std::vector<uint8_t> rep;
+            if (flare_code(0, rep))
+            {
+                HRESULT hr2 = oCreatePS[K](d, rep.data(), rep.size(), cl, out);
+                flare_note(0, SUCCEEDED(hr2));
+                if (SUCCEEDED(hr2) && out && *out) { sh_note(code, len, *out); return hr2; }   // keeps the game shader's own hash
+            }
+            else flare_note(0, false);
+        }
         HRESULT hr = oCreatePS[K](d, code, len, cl, out);
-        if (SUCCEEDED(hr) && out && *out) sh_note(code, len, *out);
+        if (SUCCEEDED(hr) && out && *out) { sh_note(code, len, *out); mc_queue(code, len, *out); }   // SUITGLOSS
         return hr;
     }
     // shaders (and PS textures 0-7, blend) bound on each game-side context (immediate + the game's deferred ones)
@@ -468,7 +787,55 @@ namespace {
     extern volatile LONG g_nearMode, g_rainParts;   // NEARRAIN / RAINPARTS, below: they need the bound pixel shader
     extern volatile LONG g_rainNoStretch;          // RAINSTRETCH, below
     extern volatile LONG g_rainFrameFix;           // FRAMEPAIR (rain), below
-    bool ps_track() { return g_testTools || g_nearMode != 0 || g_rainParts >= 0 || g_rainNoStretch || g_rainFrameFix; }
+    // SHCENSUS 2026-10-06 - JJ: the game's depth of field (DepthOfField=True) is slower, blurs the distant city and
+    // keeps the right brightness; off (DOFOFF) the picture is sharp and fast but brighter (part of the colour step
+    // goes with it). The fix's F6 DoF skip changes nothing in gameplay. To find the blur passes: F2 records, for the
+    // next 60 frames, every game-side draw's pixel/vertex shader (and every dispatch's compute shader) with its render
+    // target size into shaders.csv. One capture with DoF on and one with it off, same spot: the difference is DoF.
+    volatile LONG g_censusLeft = 0;
+    wchar_t g_censusPath[MAX_PATH] = L"";
+    struct CenEnt { int kind; uint64_t a, b; int w, h; long n; };
+    CenEnt g_cen[4096]; int g_cenN = 0; long g_cenFrames = 0;
+    SRWLOCK g_cenLock = SRWLOCK_INIT;
+    void census_note(int kind, uint64_t a, uint64_t b, int w, int h)
+    {
+        AcquireSRWLockExclusive(&g_cenLock);
+        int k = 0;
+        for (; k < g_cenN; ++k) { const CenEnt& e = g_cen[k]; if (e.kind == kind && e.a == a && e.b == b && e.w == w && e.h == h) break; }
+        if (k == g_cenN && g_cenN < 4096) g_cen[g_cenN++] = { kind, a, b, w, h, 0 };
+        if (k < 4096) ++g_cen[k].n;
+        ReleaseSRWLockExclusive(&g_cenLock);
+    }
+    // (The SWEEP test that found these is removed: CLEANTESTS 2026-10-09.)
+    // BLUROFF 2026-10-06 - the SWEEP (sweep_20261006_023525, DoF on): dropping compute shader ff444aaf3a323a65 (full
+    // size, 361x358 groups) made the distance 20% sharper, 491bf40c8b149566 (half size, 181x179) 31%, both with the
+    // brightness unchanged (mean +-0.004; the exposure chain 7fa6a54d/f48055cd/8a2474b5 changed it by +0.07..0.14 and
+    // 679d7ed1 blacked the picture). Live panel choice: 0 the game's blur, 1 no ff444, 2 no 491bf, 3 neither.
+    constexpr uint64_t kDofApplyCs = 0xff444aaf3a323a65ull, kDofBlurCs = 0x491bf40c8b149566ull;
+    volatile LONG g_blurOff = 0, g_blurDropped = 0;
+    // GAMEAA 2026-10-06 - JJ: a switch for the game's anti-aliasing alone (DepthOfField=False also loses the map, the
+    // colours and the exposure). The game's SMAA edge-detection pixel shader cca9fb2e050c4100 (decompiled: DOFDUMP; the
+    // blend-weight pass c91f6f07 searches the edges it writes) is dropped: no edges -> no blending -> the picture as
+    // drawn. SWEEP 02:35 picture 24: dropping it changed nothing else.
+    constexpr uint64_t kSmaaEdgePs = 0xcca9fb2e050c4100ull;
+    volatile bool g_gameAaOff = false;
+    volatile LONG g_gameAaSkips = 0;
+    // NORAIN 2026-10-07 - JJ: "add an option in the overlay in the rain section to turn off the rain. We have an option
+    // to show only the rain, we just need the opposite." Drops the draws of the two rain systems: the world rain (PS
+    // 5d787946eda54077, the one "show only the rain" keeps) and the second rain particle system (PS 37313d9770da1c5e,
+    // DRAWPROBE2). Not saved: a test switch, off at every start.
+    volatile bool g_hideRain = false;
+    volatile LONG g_rainHidden = 0;
+    // HDRCURVE 2026-10-07 (src/shaders/tonefix.hlsl): the depth-of-field-off final pass c0af99686f49c503 clips the HDR
+    // scene at 1; AKVR draws its own copy with the game's film curve in its place. Live: on/off, exposure in stops.
+    constexpr uint64_t kOffTonePs = 0xc0af99686f49c503ull;
+    volatile bool  g_toneOn = true;
+    volatile float g_toneStops = 0.0f;
+    volatile LONG  g_toneDraws = 0;
+    ID3D11PixelShader* g_tonePs = nullptr;
+    ID3D11Buffer*      g_toneCb = nullptr;
+    bool               g_toneFail = false;
+    bool ps_track() { return g_testTools || g_nearMode != 0 || g_rainParts >= 0 || g_rainNoStretch || g_rainFrameFix || g_censusLeft > 0 || g_gameAaOff || g_toneOn || g_hideRain || (g_blurOff & 16); }
     void __stdcall hkPSSetG(ID3D11DeviceContext* c, ID3D11PixelShader* ps, ID3D11ClassInstance* const* ci, UINT n)
     {
         if (ps_track()) if (CtxSh* s = ctx_sh(c, true)) s->ps = ps;
@@ -566,10 +933,236 @@ namespace {
         }
         ReleaseSRWLockExclusive(&g_kindLock);
     }
+    // HDRCURVE: swap the game's clip pass for AKVR's curve pass for one draw
+    bool tone_now(ID3D11DeviceContext* c)
+    {
+        if (!g_toneOn || g_toneFail || !akvr_xr_post_ok()) return false;   // POSTOK: the game's own pass in menus
+        CtxSh* s = ctx_sh(c, false);
+        return s && s->ps && sh_get(s->ps) == kOffTonePs;
+    }
+    struct TonePrev { ID3D11PixelShader* ps; ID3D11Buffer* cb; ID3D11ShaderResourceView* srv; ID3D11SamplerState* smp; ID3D11ShaderResourceView* srv9; };
+    // GAMELOOK: the game's colour table as a texture on the game-side device, and a linear clamp sampler
+    ID3D11Texture2D* g_toneLut = nullptr; ID3D11ShaderResourceView* g_toneLutSrv = nullptr; ID3D11SamplerState* g_toneSmp = nullptr;
+    UINT g_toneLutN = 0; long g_toneLutVer = -1;
+    // GLOWFIRST: the glow chain on the full-range scene (toneglow.hlsl), drawn on the game-side context just before
+    // the final pass; geo-11 replays these draws per eye like any game draw.
+    ID3D11VertexShader* g_tgVs = nullptr; ID3D11PixelShader* g_tgPre = nullptr; ID3D11PixelShader* g_tgDown = nullptr; ID3D11PixelShader* g_tgUp = nullptr;
+    ID3D11BlendState* g_tgAdd = nullptr; bool g_tgFail = false;
+    constexpr int kTgLv = 8;
+    ID3D11Texture2D* g_tgTex[kTgLv] = {}; ID3D11RenderTargetView* g_tgRtv[kTgLv] = {}; ID3D11ShaderResourceView* g_tgSrv[kTgLv] = {};
+    UINT g_tgW[kTgLv] = {}, g_tgH[kTgLv] = {}, g_tgSrcW = 0, g_tgSrcH = 0;
+    DXGI_FORMAT g_toneSceneFmt = DXGI_FORMAT_UNKNOWN;   // what the game hands the final pass (8-bit = highlights already gone)
+    volatile LONG g_tgRuns = 0;
+    bool tg_ready(ID3D11Device* d, UINT w, UINT h)
+    {
+        if (g_tgFail) return false;
+        if (!g_tgVs)
+        {
+            D3D11_BLEND_DESC bl{}; bl.RenderTarget[0].BlendEnable = TRUE;
+            bl.RenderTarget[0].SrcBlend = bl.RenderTarget[0].DestBlend = D3D11_BLEND_ONE; bl.RenderTarget[0].BlendOp = D3D11_BLEND_OP_ADD;
+            bl.RenderTarget[0].SrcBlendAlpha = bl.RenderTarget[0].DestBlendAlpha = D3D11_BLEND_ONE; bl.RenderTarget[0].BlendOpAlpha = D3D11_BLEND_OP_ADD;
+            bl.RenderTarget[0].RenderTargetWriteMask = D3D11_COLOR_WRITE_ENABLE_ALL;
+            const bool ok = SUCCEEDED(d->CreateVertexShader(g_toneglow_vs, sizeof(g_toneglow_vs), nullptr, &g_tgVs))
+                && SUCCEEDED(d->CreatePixelShader(g_toneglow_pre, sizeof(g_toneglow_pre), nullptr, &g_tgPre))
+                && SUCCEEDED(d->CreatePixelShader(g_toneglow_down, sizeof(g_toneglow_down), nullptr, &g_tgDown))
+                && SUCCEEDED(d->CreatePixelShader(g_toneglow_up, sizeof(g_toneglow_up), nullptr, &g_tgUp))
+                && SUCCEEDED(d->CreateBlendState(&bl, &g_tgAdd));
+            if (!ok) { g_tgFail = true; return false; }
+        }
+        if (w == g_tgSrcW && h == g_tgSrcH && g_tgTex[0]) return true;
+        for (int i = 0; i < kTgLv; ++i)
+        {
+            if (g_tgSrv[i]) { g_tgSrv[i]->Release(); g_tgSrv[i] = nullptr; }
+            if (g_tgRtv[i]) { g_tgRtv[i]->Release(); g_tgRtv[i] = nullptr; }
+            if (g_tgTex[i]) { g_tgTex[i]->Release(); g_tgTex[i] = nullptr; }
+        }
+        UINT lw = w, lh = h;
+        for (int i = 0; i < kTgLv; ++i)
+        {
+            lw = (lw + 1) / 2; lh = (lh + 1) / 2; if (lw < 2) lw = 2; if (lh < 1) lh = 1;
+            if (lw == lh) ++lw;   // never square: geo-11 may draw square targets once for both eyes
+            g_tgW[i] = lw; g_tgH[i] = lh;
+            D3D11_TEXTURE2D_DESC td{}; td.Width = lw; td.Height = lh; td.MipLevels = 1; td.ArraySize = 1; td.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
+            td.SampleDesc.Count = 1; td.Usage = D3D11_USAGE_DEFAULT; td.BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
+            if (FAILED(d->CreateTexture2D(&td, nullptr, &g_tgTex[i])) || FAILED(d->CreateRenderTargetView(g_tgTex[i], nullptr, &g_tgRtv[i]))
+                || FAILED(d->CreateShaderResourceView(g_tgTex[i], nullptr, &g_tgSrv[i]))) { g_tgFail = true; return false; }
+        }
+        g_tgSrcW = w; g_tgSrcH = h;
+        return true;
+    }
+    // Draw the chain; every piece of state touched is put back. Leaves the glow in level 0.
+    bool tg_run(ID3D11DeviceContext* c, float* cb)
+    {
+        bool on; float gi, gt, gr; akvr_glow_get(on, gi, gt, gr);
+        if (!on || gi <= 0.001f) return false;
+        ID3D11ShaderResourceView* scene = nullptr; c->PSGetShaderResources(0, 1, &scene);
+        if (!scene) return false;
+        ID3D11Resource* res = nullptr; scene->GetResource(&res);
+        D3D11_TEXTURE2D_DESC sd{}; ID3D11Texture2D* st = nullptr;
+        if (res) { res->QueryInterface(__uuidof(ID3D11Texture2D), (void**)&st); res->Release(); }
+        if (st) { st->GetDesc(&sd); st->Release(); }
+        scene->Release();
+        ID3D11Device* d = nullptr; c->GetDevice(&d);
+        const bool ready = d && sd.Width >= 64 && tg_ready(d, sd.Width, sd.Height);
+        if (d) d->Release();
+        if (!ready) return false;
+        float sum = 0.0f, wgt = 1.0f;
+        for (int i = 0; i < kTgLv; ++i) { sum += wgt; wgt *= gr; }
+        cb[8] = gi * 3.0f / sum; cb[9] = gt; cb[10] = 0.5f; cb[11] = gr;
+        // save
+        ID3D11RenderTargetView* oRtv[8] = {}; ID3D11DepthStencilView* oDsv = nullptr; c->OMGetRenderTargets(8, oRtv, &oDsv);
+        UINT nvp = D3D11_VIEWPORT_AND_SCISSORRECT_OBJECT_COUNT_PER_PIPELINE; D3D11_VIEWPORT ovp[D3D11_VIEWPORT_AND_SCISSORRECT_OBJECT_COUNT_PER_PIPELINE];
+        c->RSGetViewports(&nvp, ovp);
+        ID3D11VertexShader* oVs = nullptr; c->VSGetShader(&oVs, nullptr, nullptr);
+        ID3D11PixelShader* oPs = nullptr; c->PSGetShader(&oPs, nullptr, nullptr);
+        ID3D11ShaderResourceView* oT1 = nullptr; c->PSGetShaderResources(1, 1, &oT1);
+        ID3D11SamplerState* oS7 = nullptr; c->PSGetSamplers(7, 1, &oS7);
+        ID3D11Buffer* oCb = nullptr; c->PSGetConstantBuffers(13, 1, &oCb);
+        ID3D11BlendState* oBs = nullptr; FLOAT oBf[4]; UINT oBm = 0; c->OMGetBlendState(&oBs, oBf, &oBm);
+        ID3D11InputLayout* oIl = nullptr; c->IAGetInputLayout(&oIl);
+        D3D11_PRIMITIVE_TOPOLOGY oTop; c->IAGetPrimitiveTopology(&oTop);
+        ID3D11DepthStencilState* oDs = nullptr; UINT oRef = 0; c->OMGetDepthStencilState(&oDs, &oRef);
+        ID3D11RasterizerState* oRs = nullptr; c->RSGetState(&oRs);
+        // draw
+        c->IASetInputLayout(nullptr); c->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+        c->OMSetDepthStencilState(nullptr, 0); c->RSSetState(nullptr);
+        c->VSSetShader(g_tgVs, nullptr, 0);
+        c->PSSetSamplers(7, 1, &g_toneSmp);
+        c->PSSetConstantBuffers(13, 1, &g_toneCb);
+        ID3D11ShaderResourceView* none = nullptr;
+        auto pass = [&](int dst, ID3D11PixelShader* ps, UINT srcW, UINT srcH, ID3D11ShaderResourceView* src) {
+            cb[12] = 1.0f / srcW; cb[13] = 1.0f / srcH;
+            c->UpdateSubresource(g_toneCb, 0, nullptr, cb, 0, 0);
+            c->PSSetShaderResources(1, 1, &none);
+            c->OMSetRenderTargets(1, &g_tgRtv[dst], nullptr);
+            D3D11_VIEWPORT v{0, 0, (float)g_tgW[dst], (float)g_tgH[dst], 0, 1}; c->RSSetViewports(1, &v);
+            c->PSSetShader(ps, nullptr, 0);
+            if (src) c->PSSetShaderResources(1, 1, &src);
+            c->Draw(3, 0);
+            c->OMSetRenderTargets(0, nullptr, nullptr);
+        };
+        c->OMSetBlendState(nullptr, nullptr, 0xffffffff);
+        pass(0, g_tgPre, sd.Width, sd.Height, nullptr);   // reads the scene at t0, as the game bound it
+        for (int i = 1; i < kTgLv; ++i) pass(i, g_tgDown, g_tgW[i - 1], g_tgH[i - 1], g_tgSrv[i - 1]);
+        c->OMSetBlendState(g_tgAdd, nullptr, 0xffffffff);
+        for (int i = kTgLv - 2; i >= 0; --i) pass(i, g_tgUp, g_tgW[i + 1], g_tgH[i + 1], g_tgSrv[i + 1]);
+        c->PSSetShaderResources(1, 1, &none);
+        // restore
+        c->OMSetRenderTargets(8, oRtv, oDsv);
+        if (nvp) c->RSSetViewports(nvp, ovp);
+        c->VSSetShader(oVs, nullptr, 0); c->PSSetShader(oPs, nullptr, 0);
+        c->PSSetShaderResources(1, 1, &oT1); c->PSSetSamplers(7, 1, &oS7); c->PSSetConstantBuffers(13, 1, &oCb);
+        c->OMSetBlendState(oBs, oBf, oBm); c->IASetInputLayout(oIl); c->IASetPrimitiveTopology(oTop);
+        c->OMSetDepthStencilState(oDs, oRef); c->RSSetState(oRs);
+        for (auto*& r : oRtv) if (r) r->Release();
+        if (oDsv) oDsv->Release(); if (oVs) oVs->Release(); if (oPs) oPs->Release(); if (oT1) oT1->Release(); if (oS7) oS7->Release();
+        if (oCb) oCb->Release(); if (oBs) oBs->Release(); if (oIl) oIl->Release(); if (oDs) oDs->Release(); if (oRs) oRs->Release();
+        InterlockedIncrement(&g_tgRuns);
+        return true;
+    }
+    // GAMELOOK: the game's colour table as a texture on the game-side device (declared with TonePrev, above)
+    void tone_lut_refresh(ID3D11DeviceContext* c)
+    {
+        std::vector<float> v; UINT n = 0;
+        if (!akvr_gamegrade_snapshot(v, n, g_toneLutVer)) return;
+        ID3D11Device* d = nullptr; c->GetDevice(&d);
+        if (!d) return;
+        if (g_toneLutN != n)
+        {
+            if (g_toneLutSrv) { g_toneLutSrv->Release(); g_toneLutSrv = nullptr; }
+            if (g_toneLut) { g_toneLut->Release(); g_toneLut = nullptr; }
+            g_toneLutN = 0;
+            D3D11_TEXTURE2D_DESC td{}; td.Width = n * n; td.Height = n; td.MipLevels = 1; td.ArraySize = 1;
+            td.Format = DXGI_FORMAT_R32G32B32A32_FLOAT; td.SampleDesc.Count = 1; td.Usage = D3D11_USAGE_DEFAULT; td.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+            if (SUCCEEDED(d->CreateTexture2D(&td, nullptr, &g_toneLut)) && SUCCEEDED(d->CreateShaderResourceView(g_toneLut, nullptr, &g_toneLutSrv))) g_toneLutN = n;
+        }
+        if (g_toneLutN == n) c->UpdateSubresource(g_toneLut, 0, nullptr, v.data(), n * n * 16, 0);
+        if (!g_toneSmp)
+        {
+            D3D11_SAMPLER_DESC sd{}; sd.Filter = D3D11_FILTER_MIN_MAG_MIP_LINEAR;
+            sd.AddressU = sd.AddressV = sd.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP; sd.MaxLOD = D3D11_FLOAT32_MAX;
+            d->CreateSamplerState(&sd, &g_toneSmp);
+        }
+        d->Release();
+    }
+    bool tone_pre(ID3D11DeviceContext* c, TonePrev& p)
+    {
+        if (!g_tonePs)
+        {
+            ID3D11Device* d = nullptr; c->GetDevice(&d);
+            D3D11_BUFFER_DESC bd{}; bd.ByteWidth = 64; bd.Usage = D3D11_USAGE_DEFAULT; bd.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
+            const bool ok = d && SUCCEEDED(d->CreatePixelShader(g_tonefix_ps, sizeof(g_tonefix_ps), nullptr, &g_tonePs))
+                            && SUCCEEDED(d->CreateBuffer(&bd, nullptr, &g_toneCb));
+            if (d) d->Release();
+            if (!ok) { g_toneFail = true; return false; }
+        }
+        auto h = [](float x) { return (x * (0.22f * x + 0.03f) + 0.002f) / (x * (0.22f * x + 0.3f) + 0.06f) - 0.0333333f; };
+        tone_lut_refresh(c);   // GAMELOOK
+        {   // SCENEFMT: the picture this pass gets (view format)
+            ID3D11ShaderResourceView* s0 = nullptr; c->PSGetShaderResources(0, 1, &s0);
+            if (s0) { D3D11_SHADER_RESOURCE_VIEW_DESC vd0{}; s0->GetDesc(&vd0); g_toneSceneFmt = vd0.Format; s0->Release(); }
+        }
+        if (!g_toneSmp)   // GLOWFIRST: the glow needs the sampler even with no colour table yet
+        {
+            ID3D11Device* d = nullptr; c->GetDevice(&d);
+            D3D11_SAMPLER_DESC sd{}; sd.Filter = D3D11_FILTER_MIN_MAG_MIP_LINEAR;
+            sd.AddressU = sd.AddressV = sd.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP; sd.MaxLOD = D3D11_FLOAT32_MAX;
+            if (d) { d->CreateSamplerState(&sd, &g_toneSmp); d->Release(); }
+        }
+        const float tw = (g_toneLutSrv && g_toneSmp) ? akvr_gamegrade_weight() : 0.0f;
+        const float base = 2.51f + (1.87f - 2.51f) * (tw < 1.0f ? tw : 1.0f);   // GRADEFIT: lower when the colour table follows (strength above 1 = more table, same exposure)
+        bool co; float cp, cs, ae, ed; akvr_post_get(co, cp, cs, ae, ed);
+        float cb[16] = { base * exp2f(g_toneStops), 1.0f / h(11.2f), 1.0f, tw, ed, (float)g_toneLutN, 0.0f, 0.0f, 0, 0, 0, 0, 0, 0, 0, 0 };
+        const bool glowed = g_toneSmp && tg_run(c, cb);   // GLOWFIRST (cb[8..11] filled when it runs)
+        if (!glowed) cb[8] = 0.0f;
+        c->UpdateSubresource(g_toneCb, 0, nullptr, cb, 0, 0);
+        p.ps = nullptr; p.cb = nullptr; p.srv = nullptr; p.smp = nullptr; p.srv9 = nullptr;
+        c->PSGetShaderResources(9, 1, &p.srv9);
+        if (glowed) c->PSSetShaderResources(9, 1, &g_tgSrv[0]);
+        c->PSGetShader(&p.ps, nullptr, nullptr);
+        c->PSGetConstantBuffers(13, 1, &p.cb);
+        c->PSGetShaderResources(8, 1, &p.srv);
+        c->PSGetSamplers(7, 1, &p.smp);
+        c->PSSetShader(g_tonePs, nullptr, 0);
+        c->PSSetConstantBuffers(13, 1, &g_toneCb);
+        if (g_toneLutSrv) c->PSSetShaderResources(8, 1, &g_toneLutSrv);
+        if (g_toneSmp) c->PSSetSamplers(7, 1, &g_toneSmp);
+        InterlockedIncrement(&g_toneDraws);
+        return true;
+    }
+    void tone_post(ID3D11DeviceContext* c, TonePrev& p)
+    {
+        c->PSSetShader(p.ps, nullptr, 0);
+        c->PSSetConstantBuffers(13, 1, &p.cb);
+        c->PSSetShaderResources(8, 1, &p.srv);
+        c->PSSetSamplers(7, 1, &p.smp);
+        c->PSSetShaderResources(9, 1, &p.srv9);
+        if (p.srv9) p.srv9->Release();
+        if (p.ps) p.ps->Release();
+        if (p.cb) p.cb->Release();
+        if (p.srv) p.srv->Release();
+        if (p.smp) p.smp->Release();
+    }
     volatile bool g_hideEveryDraw = false;   // DRAWPROBE4: every game draw except the world rain and the HUD
     void rw_rain_tick(ID3D11DeviceContext* c);   // RAINWRITER, below
     bool probe_skip(ID3D11DeviceContext* c, UINT count, UINT inst = 1, int extraTag = 0)
     {
+        if (g_gameAaOff)   // GAMEAA
+            if (CtxSh* s0 = ctx_sh(c, false))
+                if (s0->ps && sh_get(s0->ps) == kSmaaEdgePs) { InterlockedIncrement(&g_gameAaSkips); return true; }
+        // NEARSOFT 2026-10-07 - SOFTSWEEP soft_023156: dropping PS d252a8db4903737f (half size 1444x1430, 4 draws a frame,
+        // runs with depth of field on AND off) gave the near floor +10% fine detail (contrast matched, noise +-5%), the
+        // middle distance unchanged. Live switch: SKIP UNNEEDED STEPS bit 16.
+        if (g_blurOff & 16)
+            if (CtxSh* s0 = ctx_sh(c, false))
+                if (s0->ps && sh_get(s0->ps) == 0xd252a8db4903737full) { InterlockedIncrement(&g_blurDropped); return true; }
+        if (g_hideRain)   // NORAIN
+            if (CtxSh* s0 = ctx_sh(c, false))
+                if (s0->ps)
+                {
+                    const uint64_t ph = sh_get(s0->ps);
+                    if (ph == 0x5d787946eda54077ull || ph == 0x37313d9770da1c5eull) { InterlockedIncrement(&g_rainHidden); return true; }
+                }
         if (!g_testTools || !g_probePs) return false;   // CLEANUP: the rain hunt is over
         CtxSh* s = ctx_sh(c, false);
         if (g_hideEveryDraw && g_scopeTid != GetCurrentThreadId() && !(s && s->ps && sh_get(s->ps) == g_probePs))
@@ -964,6 +1557,13 @@ namespace {
         CtxSh* s = ctx_sh(c, true);
         const uint64_t h = s ? sh_get(g_ctxCs[s - g_ctxSh]) : 0;
         if (hashOut) *hashOut = h;
+        // SKIPSTEPS 2026-10-06 - COSTSWEEP cost_184122 (normal 13.92 ms): dropping ed72bff815f35134 saved 0.42 ms (per-tile
+        // maximum motion = motion-blur groundwork; MotionBlur is off in VR), 491bf40c8b149566 0.37 ms (JJ's "B": no
+        // visible change), bd67c92e94ebccd1 0.33 ms (the DoF blur amounts: no visible effect in play, BLURAB 17:57).
+        // ff444aaf (0.28 ms, changes the glow) and 679d7ed1 (1.07 ms, black picture) stay. Bits 2 / 4 / 8.
+        if (g_blurOff && h && ((g_blurOff & 1) && h == kDofApplyCs || (g_blurOff & 2) && h == kDofBlurCs ||
+                               (g_blurOff & 4) && h == 0xed72bff815f35134ull || (g_blurOff & 8) && h == 0xbd67c92e94ebccd1ull))   // BLUROFF / SKIPSTEPS (= kDofCocCs, declared below)
+        { InterlockedIncrement(&g_blurDropped); return true; }
         if (!g_testTools) return false;   // CLEANUP: only the shader name (FARRAIN) outside the rain hunt
         rw_on_dispatch(c, h);   // RAINWRITER
         const long f = g_frameNow();
@@ -1026,13 +1626,47 @@ namespace {
         c->CSSetConstantBuffers(13, 1, &old);
         if (old) old->Release();
     }
+    // DOFBLUR 2026-10-06 - the game's depth-of-field setup CS bd67c92e94ebccd1 (decompiled from DOFDUMP: per pixel,
+    // linear depth -> distance -> blur amount = cb0[6].y * (1 - cb0[6].x / distance), packed with a half-size copy of
+    // the picture for the blur passes). Fix step 1t adds an assembly copy that multiplies that amount by
+    // (1 - cb13[0].x). Around its dispatch cb13.x = 1 - g_blurKeep; nothing bound = the game's blur.
+    constexpr uint64_t kDofCocCs = 0xbd67c92e94ebccd1ull;
+    volatile float g_blurKeep = 1.0f;
+    volatile LONG g_blurBinds = 0;
+    volatile LONG g_dofSeen = 0;   // DOFPANEL: dispatches of the DoF setup shader seen (bound or not)
+    ID3D11Buffer* g_dofCb = nullptr;
+    ID3D11Buffer* dof_cb_pre(ID3D11DeviceContext* c)
+    {
+        if (!g_dofCb)
+        {
+            ID3D11Device* dev = nullptr; c->GetDevice(&dev);
+            if (!dev) return nullptr;
+            D3D11_BUFFER_DESC bd{}; bd.ByteWidth = 16; bd.Usage = D3D11_USAGE_DEFAULT; bd.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
+            ID3D11Buffer* b = nullptr;
+            if (SUCCEEDED(dev->CreateBuffer(&bd, nullptr, &b)) && b)
+                if (InterlockedCompareExchangePointer((void**)&g_dofCb, b, nullptr) != nullptr) b->Release();
+            dev->Release();
+            if (!g_dofCb) return nullptr;
+        }
+        const float row[4] = { 1.0f - g_blurKeep, 0.0f, 0.0f, 0.0f };
+        c->UpdateSubresource(g_dofCb, 0, nullptr, row, 0, 0);
+        ID3D11Buffer* old = nullptr;
+        c->CSGetConstantBuffers(13, 1, &old);
+        c->CSSetConstantBuffers(13, 1, (ID3D11Buffer* const*)&g_dofCb);
+        InterlockedIncrement(&g_blurBinds);
+        return old;
+    }
     typedef void (__stdcall* DispatchFn)(ID3D11DeviceContext*, UINT, UINT, UINT);
     DispatchFn oDispatchG = nullptr;
     void __stdcall hkDispatchG(ID3D11DeviceContext* c, UINT x, UINT y, UINT z)
     {
         uint64_t h = 0;
         if (cs_skip(c, &h)) return;
+        if (g_censusLeft > 0 && g_censusLeft <= 60) census_note(2, h, 0, (int)x, (int)y);   // SHCENSUS
         if (h == kRainCs && g_farOn) { ID3D11Buffer* ob = far_cb_pre(c); oDispatchG(c, x, y, z); far_cb_post(c, ob); return; }   // FARRAIN
+        if (h == kDofCocCs) InterlockedIncrement(&g_dofSeen);   // DOFPANEL
+        if (h == 0x679d7ed1d48858e9ull) akvr_gamegrade_grab(c);   // GAMEGRADE: the game's colour table (t1)
+        if (h == kDofCocCs && g_blurKeep < 0.999f) { ID3D11Buffer* ob = dof_cb_pre(c); oDispatchG(c, x, y, z); far_cb_post(c, ob); return; }   // DOFBLUR
         oDispatchG(c, x, y, z);
     }
     DrawIndFn oDispatchIndG = nullptr;
@@ -1040,7 +1674,11 @@ namespace {
     {
         uint64_t h = 0;
         if (cs_skip(c, &h)) return;
+        if (g_censusLeft > 0 && g_censusLeft <= 60) census_note(2, h, 0, -1, -1);   // SHCENSUS
         if (h == kRainCs && g_farOn) { ID3D11Buffer* ob = far_cb_pre(c); oDispatchIndG(c, b, o); far_cb_post(c, ob); return; }   // FARRAIN
+        if (h == kDofCocCs) InterlockedIncrement(&g_dofSeen);   // DOFPANEL
+        if (h == 0x679d7ed1d48858e9ull) akvr_gamegrade_grab(c);   // GAMEGRADE
+        if (h == kDofCocCs && g_blurKeep < 0.999f) { ID3D11Buffer* ob = dof_cb_pre(c); oDispatchIndG(c, b, o); far_cb_post(c, ob); return; }   // DOFBLUR
         oDispatchIndG(c, b, o);
     }
     typedef HRESULT (__stdcall* CreateCSFn)(ID3D11Device*, const void*, SIZE_T, ID3D11ClassLinkage*, ID3D11ComputeShader**);
@@ -1049,6 +1687,17 @@ namespace {
     int   g_csHooks = 0;
     template <int K> HRESULT __stdcall hkCreateCS(ID3D11Device* d, const void* code, SIZE_T len, ID3D11ClassLinkage* cl, ID3D11ComputeShader** out)
     {
+        if (flare_kind_of(code, len) == 1)
+        {   // FLAREOFF3
+            std::vector<uint8_t> rep;
+            if (flare_code(1, rep))
+            {
+                HRESULT hr2 = oCreateCS[K](d, rep.data(), rep.size(), cl, out);
+                flare_note(1, SUCCEEDED(hr2));
+                if (SUCCEEDED(hr2) && out && *out) { sh_note(code, len, *out); return hr2; }
+            }
+            else flare_note(1, false);
+        }
         HRESULT hr = oCreateCS[K](d, code, len, cl, out);
         if (SUCCEEDED(hr) && out && *out) { sh_note(code, len, *out); if (g_testTools) cs_code_keep(code, len); }   // RAINWRITER: keep the code
         return hr;
@@ -1119,6 +1768,22 @@ namespace {
     void note_draw(ID3D11DeviceContext* c, int layer)
     {
         InterlockedIncrement(&g_cDraw[layer]);
+        if (layer == 0 && g_censusLeft > 0 && g_censusLeft <= 60)   // SHCENSUS (the first frames only fill the bindings)
+        {
+            CtxSh* sh = ctx_sh(c, false);
+            int w = 0, h = 0;
+            ID3D11RenderTargetView* rtv = nullptr;
+            c->OMGetRenderTargets(1, &rtv, nullptr);
+            if (rtv)
+            {
+                ID3D11Resource* r = nullptr; rtv->GetResource(&r);
+                ID3D11Texture2D* t = nullptr;
+                if (r && SUCCEEDED(r->QueryInterface(__uuidof(ID3D11Texture2D), (void**)&t)) && t) { D3D11_TEXTURE2D_DESC d{}; t->GetDesc(&d); w = (int)d.Width; h = (int)d.Height; t->Release(); }
+                if (r) r->Release();
+                rtv->Release();
+            }
+            census_note(1, sh ? sh_get(sh->ps) : 0, sh ? sh_get(sh->vs) : 0, w, h);
+        }
         if (!scope_on()) return;
         AcquireSRWLockExclusive(&g_lock);
         if (Scope* s = cur_scope())
@@ -1191,6 +1856,11 @@ namespace {
                      // the full constants, so two F2s (four compass pieces shown / hidden) show which draws they are.
                      int toH; UINT cnt, inst; uint8_t vsData[1024]; uint8_t psData[256]; };
     MarkRow g_mrCur[96], g_mrRep[96]; int g_mrCurN = 0, g_mrRepN = 0; unsigned g_mrRepFrame = 0;
+    // WORLDCARD 2026-10-06 - JJ: a HUD card (upgrade info) moves opposite to head turns on the room-fixed HUD layer; its
+    // movement is not in the parts' 2D matrices (hudlayers.txt identical across three F2s), so the per-draw constants
+    // are needed. Without test tools F2 now records 2 HUD frames and then writes hudmarks.csv / hudcb.txt.
+    volatile LONG g_mrRecLeft = 0;
+    wchar_t g_mrPath[MAX_PATH] = L"";
     Shadow* sh_find(void* key, bool add)
     {
         for (int i = 0; i < g_shN; ++i) if (g_sh[i].key == key) return &g_sh[i];
@@ -1254,7 +1924,7 @@ namespace {
     int vs_hud_index(void* vs);
     void mark_record(ID3D11DeviceContext* c, bool split, UINT cnt, UINT inst)
     {
-        if (!g_testTools || g_mrCurN >= 96) return;   // CLEANUP: F2's hudmarks.csv only with test tools
+        if ((!g_testTools && g_mrRecLeft <= 0) || g_mrCurN >= 96) return;   // CLEANUP: test tools, or 2 frames after an F2 (WORLDCARD)
         MarkRow& m = g_mrCur[g_mrCurN++];
         m.vs = vs_hud_index(g_curVs); m.split = split ? 1 : 0; m.nHits = 0; m.cbSize = 0;
         m.toH = g_hBound ? 1 : 0; m.cnt = cnt; m.inst = inst;   // CBDUMP
@@ -1305,6 +1975,7 @@ namespace {
         {
             note_draw(c, L);
             if (L == 0 && probe_skip(c, n)) return;   // DRAWPROBE
+            if (L == 0 && tone_now(c)) { TonePrev tp; if (tone_pre(c, tp)) { oDrawIndexed(c, n, s, b); tone_post(c, tp); return; } }   // HDRCURVE
             if (L == 0 && snoop_ctx(c)) mark_record(c, split_now(c), n, 1);   // MARKREC
             if (L == 0 && split_now(c) && hud_wait_skip()) return;   // HUDWAIT: no HUD until its parts are known
             if (L == 0 && split_now(c) && layer_only_now()) { layer_only_pre(c); oDrawIndexed(c, n, s, b); layer_only_post(c); return; }   // PSMARK
@@ -1322,6 +1993,7 @@ namespace {
         {
             note_draw(c, L);
             if (L == 0 && probe_skip(c, n)) return;   // DRAWPROBE
+            if (L == 0 && tone_now(c)) { TonePrev tp; if (tone_pre(c, tp)) { oDraw(c, n, s); tone_post(c, tp); return; } }   // HDRCURVE
             if (L == 0 && snoop_ctx(c)) mark_record(c, split_now(c), n, 1);   // MARKREC
             if (L == 0 && split_now(c) && hud_wait_skip()) return;   // HUDWAIT: no HUD until its parts are known
             if (L == 0 && split_now(c) && layer_only_now()) { layer_only_pre(c); oDraw(c, n, s); layer_only_post(c); return; }   // PSMARK
@@ -1487,6 +2159,7 @@ namespace {
         ID3D11Device* hd = nullptr; g_H->GetDevice(&hd);
         const bool direct = hd && hd == rd;
         if (hd) hd->Release();
+        g_HsrcOff = 0;   // MENUCRASH: 0 = H itself (nothing to follow)
         if (direct) { g_Hsrc = g_H; g_Hreal = 1; strcpy_s(g_Hfound, sizeof(g_Hfound), "H itself"); rd->Release(); return; }
         uintptr_t texVt = 0;
         {
@@ -1527,12 +2200,48 @@ namespace {
                 // First real texture of H's size and byte layout: with the HUD shift at 0 either eye's copy holds the same HUD.
                 if (!g_Hsrc && (int)d.Width == g_Hw && (int)d.Height == g_Hh && d.ArraySize >= 1 && d.SampleDesc.Count == 1 &&
                     copy_group((int)d.Format) == copy_group(g_Hfmt))
-                    g_Hsrc = t;
+                { g_Hsrc = t; g_HsrcOff = off; g_HsrcSub = sub2[i]; g_texVt = texVt; }   // MENUCRASH: keep the path
             }
         }
         if (!k) strcpy_s(g_Hfound, sizeof(g_Hfound), "no real texture inside geo-11's object");
         g_Hreal = g_Hsrc ? 1 : 0;
         rd->Release();
+    }
+    // MENUCRASH: re-read the real texture through the path check_H_real found; false = none valid now.
+    bool hsrc_refresh()
+    {
+        if (!g_H) return false;
+        if (g_Hreal != 1 || !g_Hsrc)
+        {   // lost (xr.cpp fault or an earlier failed refresh): search again at most once a second
+            static ULONGLONG s_last = 0;
+            const ULONGLONG now = GetTickCount64();
+            if (g_Hreal == -1 || now - s_last < 1000) return false;
+            s_last = now;
+            check_H_real();
+            return g_Hreal == 1 && g_Hsrc != nullptr;
+        }
+        if (!g_HsrcOff) return true;                       // H itself, owned by us
+        uintptr_t p = 0, t = 0, vt = 0;
+        bool ok = seh_qword((uintptr_t)g_H + g_HsrcOff, p) && plausible(p);
+        if (ok)
+        {
+            if (g_HsrcSub == (uintptr_t)-1) t = p;
+            else ok = seh_qword(p + g_HsrcSub, t) && plausible(t);
+        }
+        ok = ok && seh_qword(t, vt) && vt == g_texVt;
+        if (ok && t != (uintptr_t)g_Hsrc)
+        {
+            D3D11_TEXTURE2D_DESC d{}; ((ID3D11Texture2D*)t)->GetDesc(&d);
+            ok = (int)d.Width == g_Hw && (int)d.Height == g_Hh && d.SampleDesc.Count == 1 && copy_group((int)d.Format) == copy_group(g_Hfmt);
+            if (ok) { g_Hsrc = (ID3D11Texture2D*)t; ++g_HsrcMoves; }
+        }
+        if (!ok)
+        {   // search H again (once per loss): geo-11 may have put the new texture somewhere else
+            ++g_HsrcLost;
+            check_H_real();
+            ok = g_Hreal == 1 && g_Hsrc != nullptr;
+        }
+        return ok;
     }
     bool ensure_H(ID3D11DeviceContext* c, int w, int h, int fmt)
     {
@@ -1567,7 +2276,14 @@ namespace {
         {
             Bind b; memset(&b, 0, sizeof(b));
             tex_desc(r[0], b);
-            main = b.w >= 1000 && b.h >= 1000 && b.arr == 1 && ensure_H(c, b.w, b.h, b.fmt) && g_Hreal == 1;
+            // MENULIST 2026-10-06 - JJ: the graphics menu flickered and showed only its first four options; earlier
+            // the same menu crashed the game. F2 01:59: every third frame the menu draws its option list into a
+            // 1472x1216 picture (69 draws) and a 1024x64 strip, then puts them on screen. "Any target 1000x1000 or
+            // bigger" took the list picture for the HUD: H was thrown away and made at 1472x1216, the list went into
+            // it instead of its own picture, and H was made again at full size the next frame (flicker, missing
+            // options; xr.cpp then read the freed H = the MENUCRASH crash). A target smaller than H is the game's own.
+            const bool notSmaller = !g_H || (long long)b.w * b.h >= (long long)g_Hw * g_Hh;
+            main = b.w >= 1000 && b.h >= 1000 && b.arr == 1 && notSmaller && ensure_H(c, b.w, b.h, b.fmt) && g_Hreal == 1;
         }
         if (!main)
         {
@@ -1943,7 +2659,7 @@ namespace {
     // HUD-004 proof: how much of H is covered, solid, and partly transparent.
     void coverage_tick()
     {
-        if (!g_Hsrc || !g_ctx || g_Hreal != 1) return;
+        if (!g_Hsrc || !g_ctx || g_Hreal != 1 || !hsrc_refresh()) return;   // MENUCRASH
         if (g_stageState == 1 && g_frame - g_stageFrame >= 2)
         {
             D3D11_MAPPED_SUBRESOURCE m{};
@@ -2042,10 +2758,33 @@ void akvr_hudsplit_note_bind(ID3D11DeviceContext* ctx, ID3D11RenderTargetView* c
     note_bind(ctx, rtvs, n, 1);
 }
 
+static void marks_write(const wchar_t* path);   // WORLDCARD (below)
 void akvr_hudsplit_tick()
 {
     g_presentTid = GetCurrentThreadId();
     ++g_frame;
+    if (g_mrRecLeft > 0 && InterlockedDecrement(&g_mrRecLeft) == 0 && g_mrPath[0]) { marks_write(g_mrPath); g_mrPath[0] = 0; }   // WORLDCARD
+    if (g_censusLeft > 0)   // SHCENSUS
+    {
+        if (g_censusLeft <= 60) ++g_cenFrames;
+        if (InterlockedDecrement(&g_censusLeft) == 0)
+        {
+            FILE* f = nullptr;
+            if (_wfopen_s(&f, g_censusPath, L"w") == 0 && f)
+            {
+                AcquireSRWLockShared(&g_cenLock);
+                fprintf(f, "# SHCENSUS: %ld frames; kind 1 = draw (a = pixel shader, b = vertex shader, w x h = render target 0), 2 = dispatch (a = compute shader, w x h = groups x/y)\n", g_cenFrames);
+                fprintf(f, "kind,a,b,w,h,count,per_frame\n");
+                for (int i = 0; i < g_cenN; ++i)
+                {
+                    const CenEnt& e = g_cen[i];
+                    fprintf(f, "%d,%016llx,%016llx,%d,%d,%ld,%.2f\n", e.kind, (unsigned long long)e.a, (unsigned long long)e.b, e.w, e.h, e.n, g_cenFrames ? (double)e.n / g_cenFrames : 0.0);
+                }
+                ReleaseSRWLockShared(&g_cenLock);
+                fclose(f);
+            }
+        }
+    }
     try_game_side();
     coverage_tick();
     for (int l = 0; l < 3; ++l)
@@ -2079,11 +2818,58 @@ bool akvr_hudsplit_hide() { return g_hide; }
 void akvr_hudsplit_layer_set(bool on) { g_layerWant = on; }
 bool akvr_hudsplit_layer() { return g_layerWant; }
 void akvr_hudsplit_layer_gate(bool gameplay, bool menu) { g_layerGate = gameplay || menu; g_layerMenu = menu && !gameplay; }
-bool akvr_hudsplit_layer_live() { return g_layerWant && g_H && g_Hreal == 1 && g_frame - g_lastSubFrame <= 2; }
+void akvr_hudsplit_census_start(const wchar_t* path)   // SHCENSUS: 2 frames to fill the bindings, then 60 recorded
+{
+    if (!path || g_censusLeft > 0) return;
+    AcquireSRWLockExclusive(&g_cenLock); g_cenN = 0; g_cenFrames = 0; ReleaseSRWLockExclusive(&g_cenLock);
+    wcsncpy_s(g_censusPath, path, _TRUNCATE);
+    InterlockedExchange(&g_censusLeft, 62);
+}
+void akvr_blur_keep_set(float k) { g_blurKeep = k < 0.0f ? 0.0f : (k > 1.0f ? 1.0f : k); }   // DOFBLUR
+float akvr_blur_keep() { return g_blurKeep; }
+long akvr_blur_binds() { return g_blurBinds; }
+long akvr_blur_seen() { return g_dofSeen; }   // DOFPANEL
+void akvr_blur_off_set(int m) { InterlockedExchange(&g_blurOff, m < 0 ? 0 : (m > 15 ? 15 : m)); }   // BLUROFF / SKIPSTEPS (bit 1 not offered: glow)
+int  akvr_blur_off() { return (int)g_blurOff; }
+long akvr_blur_dropped() { return g_blurDropped; }
+void akvr_game_aa_off_set(bool on) { g_gameAaOff = on; }   // GAMEAA
+bool akvr_game_aa_off() { return g_gameAaOff; }
+long akvr_game_aa_skips() { return g_gameAaSkips; }
+void akvr_hdr_curve_set(bool on, float stops) { g_toneOn = on; g_toneStops = stops < -3.0f ? -3.0f : (stops > 3.0f ? 3.0f : stops); }   // HDRCURVE
+void akvr_hdr_curve_get(bool& on, float& stops) { on = g_toneOn; stops = g_toneStops; }
+long akvr_hdr_curve_draws() { return g_toneDraws; }
+long akvr_hdr_glow_runs() { return g_tgRuns; }   // GLOWFIRST
+int  akvr_hdr_scene_format() { return (int)g_toneSceneFmt; }
+void akvr_hudsplit_source_lost() { g_Hsrc = nullptr; g_Hreal = 0; ++g_HsrcLost; }   // MENUCRASH: xr.cpp caught a fault on it
+// AKN M5: engine stereo - the HUD picture comes from AKN (its HUD pass redirected into its own texture)
+bool akvr_xr_akn_fresh();   // xr.cpp: this Present carries a fresh 3D pair
+long g_aknHudHeld = 0;    // HUDHOLD: frames shown with the previous (complete) HUD sheet
+static long g_aknHudSeq = -1; static unsigned g_aknHudFrame = 0; static bool g_aknHudAny = false;
+bool akvr_hudsplit_layer_live()
+{
+    if (akvr_engine_stereo()) return g_aknHudAny && g_frame - g_aknHudFrame <= 2;
+    return g_layerWant && g_H && g_Hreal == 1 && g_frame - g_lastSubFrame <= 2;
+}
 ID3D11Texture2D* akvr_hudsplit_layer_image(unsigned& w, unsigned& h, int& fmt)
 {
+    if (akvr_engine_stereo())
+    {
+        long seq = 0;
+        ID3D11Texture2D* t = akn_get_hud(&seq);
+        // HUDHOLD 2026-10-08 (JJ: HUD elements flicker - not the compass, which is drawn in the 3D picture, not on the sheet):
+        // a frame with a fresh 3D pair but no NEW HUD sheet (the HUD a frame behind) went out with no HUD layer at all.
+        // The sheet still holds the last complete HUD then (it is cleared only when the next one starts): show it.
+        // Flat frames still get none (their HUD is in the flat picture).
+        if (!t) return nullptr;
+        if (seq == g_aknHudSeq) { if (!akvr_xr_akn_fresh()) return nullptr; ++g_aknHudHeld; }
+        g_aknHudSeq = seq; g_aknHudFrame = g_frame; g_aknHudAny = true;
+        D3D11_TEXTURE2D_DESC d; t->GetDesc(&d);
+        w = d.Width; h = d.Height; fmt = (int)d.Format;
+        return t;
+    }
     // Fresh = the HUD went into H for the frame being presented now (tick runs before submit).
-    if (!g_layerWant || !g_H || g_Hreal != 1 || g_frame - g_lastSubFrame > 1) return nullptr;
+    if (!g_layerWant || !g_H || g_frame - g_lastSubFrame > 1) return nullptr;
+    if (!hsrc_refresh()) return nullptr;   // MENUCRASH: may search again after a loss   // MENUCRASH: follow geo-11 if it rebuilt the texture
     w = (unsigned)g_Hw; h = (unsigned)g_Hh; fmt = g_Hfmt;
     return g_Hsrc;
 }
@@ -2099,8 +2885,8 @@ const char* akvr_hudsplit_layer_diag()
                     : (!g_layerGate ? "waiting for gameplay" : (g_Herr ? (g_Herr == 1 ? "could not make the HUD image" : "could not make its view")
                     : (g_frame - g_lastSubFrame > 1 ? "HUD not redirected this frame" : "LIVE")))));
     if (g_covAny < 0)
-        _snprintf_s(d, sizeof(d), _TRUNCATE, "HUD layer: %s; image %dx%d f%d (%s; real: %s); %ld swaps last call, %ld frames, restores %ld, blend copies %d (special %d, fails %d)",
-                    why, g_Hw, g_Hh, g_Hfmt, g_Hmodule, g_Hfound, g_subsRep, g_layerFrames, g_restores, g_bvN, g_bvOther, g_bvFail);
+        _snprintf_s(d, sizeof(d), _TRUNCATE, "HUD layer: %s; image %dx%d f%d (%s; real: %s; geo-11 rebuilt it %ld/%ld); %ld swaps last call, %ld frames, restores %ld, blend copies %d (special %d, fails %d)",
+                    why, g_Hw, g_Hh, g_Hfmt, g_Hmodule, g_Hfound, g_HsrcMoves, g_HsrcLost, g_subsRep, g_layerFrames, g_restores, g_bvN, g_bvOther, g_bvFail);
     else
         _snprintf_s(d, sizeof(d), _TRUNCATE, "HUD layer: %s; image %dx%d f%d (real: %s); %ld swaps last call, %ld frames, restores %ld, blend copies %d (special %d, fails %d); "
                     "covered %.2f%% (solid %.2f%%, see-through %.2f%%)",
@@ -2178,7 +2964,15 @@ void akvr_hudsplit_targets_dump(const wchar_t* path)
     fclose(f);
 }
 
+static void marks_write(const wchar_t* path);
 void akvr_hudsplit_marks_dump(const wchar_t* path)
+{
+    if (!path) return;
+    if (g_testTools) { marks_write(path); return; }
+    wcsncpy_s(g_mrPath, path, _TRUNCATE);   // WORLDCARD: record 2 HUD frames first, write in akvr_hudsplit_tick
+    InterlockedExchange(&g_mrRecLeft, 3);
+}
+static void marks_write(const wchar_t* path)
 {
     FILE* f = nullptr;
     if (!path || _wfopen_s(&f, path, L"w") != 0 || !f) return;
@@ -2402,6 +3196,9 @@ int  akvr_probe_rain_parts() { return (int)g_rainParts; }               // RAINP
 void akvr_probe_rain_parts_set(int v) { InterlockedExchange(&g_rainParts, v < 0 ? -1 : (v > 20480 ? 20480 : v)); }
 bool akvr_probe_every_draw() { return g_hideEveryDraw; }                 // DRAWPROBE4
 void akvr_probe_every_draw_set(bool on) { g_hideEveryDraw = on; }
+bool akvr_hide_rain() { return g_hideRain; }   // NORAIN
+void akvr_hide_rain_set(bool on) { g_hideRain = on; }
+long akvr_rain_hidden() { return g_rainHidden; }
 bool akvr_probe_all_cs() { return g_hideAllCs; }
 void akvr_probe_all_cs_set(bool on) { g_hideAllCs = on; }
 int  akvr_probe_cs_count() { return g_csN; }
@@ -2564,3 +3361,27 @@ void akvr_hudsplit_ui_now(int& movies, int& draws)
     movies = fresh ? g_uiMovies : 0;
     draws = fresh ? (int)g_uiDraws : 0;
 }
+
+// RAINONCE 2026-10-07: AKN names the compute shader bound at a dispatch (the game's shaders are named at creation here)
+extern "C" __declspec(dllexport) unsigned long long akvr_shader_hash(const void* obj) { return sh_get(obj); }
+
+// DLSS D0 2026-10-08: Luma's shader names (CRC-32) for AKN - the SMAA passes Luma swaps for DLSS
+extern "C" __declspec(dllexport) unsigned akvr_shader_crc(const void* obj) { return sh_get_crc(obj); }
+extern "C" __declspec(dllexport) const char* akvr_flare_diag() { return g_flareDiag; }   // FLAREOFF3 (AKN logs it)
+void akvr_flareoff_set(int v) { g_flareOff = v ? 1 : 0; }   // FLAREOFF3: settings flareoff=
+
+// SUITGLOSS3: does this pixel shader take its gloss from the camera's aim?
+extern "C" __declspec(dllexport) int akvr_shader_camdir(const void* obj) { return vr_has(obj) ? 1 : 0; }   // SUITGLOSS3
+extern "C" __declspec(dllexport) int akvr_vs_one_piece(const void* obj) { return v1_has(obj) ? 1 : 0; }   // MKSINGLE
+extern "C" __declspec(dllexport) long akvr_vs_one_piece_count() { return c_v1Found; }
+// MKBATCH / MKTAG: out[32] = x row, y row, rows per piece, rows in cb0, base, w row (-1 = 2D), n piece rows, rows[12],
+// steps[12] - all for piece 0 (position translation = .w of the x / y rows)
+extern "C" __declspec(dllexport) int akvr_vs_batch_layout(const void* obj, int* out) { return out && vb_get(obj, out) ? 1 : 0; }
+extern "C" __declspec(dllexport) long akvr_vs_batch_count() { return c_vbFound; }
+
+// MKGS: the per-vertex 3D placement geometry shader for this HUD vertex shader (built on first use; null = not supported)
+extern "C" __declspec(dllexport) ID3D11GeometryShader* akvr_marker_gs(void* vs) { return mkgs_get(vs); }
+extern "C" __declspec(dllexport) long akvr_marker_gs_counts(long* failed) { if (failed) *failed = c_mkGsFail; return c_mkGsBuilt; }
+// MKGS2: vertex shaders remembered (supported / unsupported signature), marker lookups that found no entry, first build error
+extern "C" __declspec(dllexport) const char* akvr_marker_gs_stats(long* noted, long* unsup, long* miss)
+{ if (noted) *noted = c_mkGsNoted; if (unsup) *unsup = c_mkGsUnsup; if (miss) *miss = c_mkGsMiss; return g_mkGsErr; }

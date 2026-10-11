@@ -32,3 +32,11 @@ diagnostics/**
 
 # Built install packages (made from install/ + the build)
 dist/
+
+# Native stereo (native/): NVIDIA's DLSS SDK stays out of the repository (download it from NVIDIA, see native/README),
+# and so do JJ's capture folders and logs
+native/third_party/
+native/captures_*/
+native/configure.log
+*.bmp
+*.csv

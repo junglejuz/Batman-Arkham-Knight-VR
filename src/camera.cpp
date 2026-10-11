@@ -386,7 +386,6 @@ namespace
     // ZOOMVIG 2026-09-29: the game's OWN FOV this frame (before our lock), read by xr.cpp's zoom
     // vignette - the right-stick-click zoom narrows it, but our lock cancels the magnification.
     volatile float g_gameFov = 0.0f;
-    bool g_testNoRot = false, g_testNoPos = false, g_testKeepFov = false;   // CAMTEST (not saved)
     // CAMRESTORE 2026-10-02 — JJ: getting in/out of the Batmobile the camera "pops"; with head tracking off the game's
     // transition plays. F2 23:06 (eight transitions): on each transition's first frame the game's own camera jumped by
     // EXACTLY the head offset of the frame before (e.g. -8.29/-8.82 deg vs -8.28/-8.84) - the game starts the transition
@@ -570,6 +569,148 @@ namespace
     float g_exHead[3] = {};          // head yaw / pitch / roll as composed (radians, g_htYaw.. signs)
     float g_exQ[4] = {};             // the headset orientation they came from (HUDSTEADY ring)
     volatile bool g_exOn = false;    // rigid mode with the head live
+    // FIRSTPERSON 2026-10-11 (JJ: "Add a first person mode like Arkham City and put it at the top of the overlay,
+    // double-clicking the gamepad sticks should toggle it"). Batman City's method (batman_city/BATMAN_CITY_PLAN.md
+    // FIRSTPERSON + HEADCAM, memory batman-city-first-person): the camera at Batman's head bone, the head's offset from a
+    // steady body point smoothed (a head bone bobs - MELE VR / playbook CAM-013), a little in front of the face so the cowl
+    // stays behind the lens. Applied in smooth_cb on the game's fresh camera position, so the game's own HUD projection,
+    // culling and rain follow it; CAMRESTORE hands the game its own camera back (g_smoothApplied).
+    // Static RE (akvr_native/re/ak.py on BatmanAK.exe Steam 54,632,960 bytes; akvr_native/NOTES.md FIRSTPERSON):
+    //   ULocalPlayer +0x5C = PlayerController (CalcSceneView 0x9F6220 tests it first; AKN exports the player);
+    //   PlayerController vtable +0xA58 = GetViewTarget (execGetViewTarget 0xB41EA0) - Batman on foot, the Batmobile, a
+    //   cutscene camera; USkeletalMeshComponent::GetBoneLocation 0x959020 (this, FVector* out, FName by value, space
+    //   0 = world; zero vector when the bone is missing; via execGetBoneLocation 0x95CBC0); component LocalToWorld at
+    //   +0xB0 (translation row +0xE0 = the steady body point); FName(const TCHAR*, number) 0xF38AE0; "Bip01_Head" is a
+    //   bone name the game uses (0x412BB0); the only skeletal-mesh vtables are 0x1BDCBA0 and 0x1BDD310 (a scan of every
+    //   vtable sharing its 68 own slots - script subclasses reuse the native vtable).
+    bool  g_fpOn = false, g_fpHeadOn = true;
+    float g_fpFwdCm = 25.0f, g_fpUpCm = 0.0f, g_fpSmoothS = 0.08f;
+    volatile bool g_fpActive = false;
+    char  g_fpWhy[192] = "off";
+    LONG  g_fpFrames = 0, g_fpMisses = 0, g_fpScans = 0;
+    bool  g_fpTried = false, g_fpReady = false;
+    uintptr_t g_fpExe = 0;
+    using FpBoneFn = float* (__fastcall*)(void*, float*, uint64_t, int);
+    using FpNameFn = void* (__fastcall*)(uint64_t*, const wchar_t*, int);
+    using FpVtFn   = void* (__fastcall*)(void*);
+    using FpLpFn   = void* (*)();
+    FpBoneFn p_fpBone = nullptr; FpLpFn p_fpLp = nullptr;
+    uint64_t g_fpHead = 0;
+    uintptr_t g_fpTarget = 0, g_fpMesh = 0; int g_fpMeshOff = -1; ULONGLONG g_fpScanAt = 0;
+    float g_fpOff[3] = {}; bool g_fpOffOk = false; LARGE_INTEGER g_fpLast{};
+
+    bool fp_rd(uintptr_t a, uintptr_t& v)
+    {
+        __try { v = *(volatile uintptr_t*)a; return true; }
+        __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
+    }
+    bool fp_in_exe(uintptr_t a) { return a >= g_fpExe && a < g_fpExe + 0x4000000; }
+    bool fp_is_skel(uintptr_t q)
+    {
+        uintptr_t vt = 0;
+        if (q < 0x10000 || q > 0x7FFFFFFFFFFFULL || (q & 7) || !fp_rd(q, vt)) return false;
+        return vt == g_fpExe + 0x1BDCBA0 || vt == g_fpExe + 0x1BDD310;
+    }
+    bool fp_bone(uintptr_t mesh, float out[3])
+    {
+        __try { out[0] = out[1] = out[2] = 0.0f; p_fpBone((void*)mesh, out, g_fpHead, 0); }
+        __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
+        return (out[0] != 0.0f || out[1] != 0.0f || out[2] != 0.0f) && out[0] == out[0] && fabsf(out[0]) < 1e7f && fabsf(out[1]) < 1e7f && fabsf(out[2]) < 1e7f;
+    }
+    bool fp_origin(uintptr_t mesh, float o[3])
+    {
+        __try { const float* m = (const float*)(mesh + 0xE0); o[0] = m[0]; o[1] = m[1]; o[2] = m[2]; }
+        __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
+        return o[0] == o[0] && fabsf(o[0]) < 1e7f && fabsf(o[1]) < 1e7f && fabsf(o[2]) < 1e7f;
+    }
+    void* fp_call_vt(uintptr_t pc, uintptr_t vt)
+    {
+        __try { const uintptr_t fn = *(uintptr_t*)(vt + 0xA58); if (!fp_in_exe(fn)) return nullptr; return ((FpVtFn)fn)((void*)pc); }
+        __except (EXCEPTION_EXECUTE_HANDLER) { return nullptr; }
+    }
+    bool fp_make_name()
+    {
+        __try { ((FpNameFn)(g_fpExe + 0xF38AE0))(&g_fpHead, L"Bip01_Head", 0); }
+        __except (EXCEPTION_EXECUTE_HANDLER) { g_fpHead = 0; }
+        return g_fpHead != 0;
+    }
+    bool fp_init()
+    {
+        if (g_fpTried) return g_fpReady;
+        g_fpTried = true;
+        g_fpExe = (uintptr_t)GetModuleHandleW(nullptr);
+        static const uint8_t kBone[16] = { 0x48,0x89,0x5C,0x24,0x08,0x48,0x89,0x6C,0x24,0x10,0x48,0x89,0x74,0x24,0x18,0x57 };
+        static const uint8_t kName[16] = { 0x40,0x53,0x48,0x83,0xEC,0x30,0x45,0x8B,0xC8,0x45,0x33,0xC0,0x48,0x8B,0xD9,0xC7 };
+        uintptr_t v0 = 0, v1 = 0;
+        if (!g_fpExe || memcmp((void*)(g_fpExe + 0x959020), kBone, 16) || memcmp((void*)(g_fpExe + 0xF38AE0), kName, 16) ||
+            !fp_rd(g_fpExe + 0x1BDCBA0, v0) || !fp_rd(g_fpExe + 0x1BDD310, v1) || v0 != g_fpExe + 0xE2E600 || v1 != g_fpExe + 0xE2E600)
+        { strcpy_s(g_fpWhy, "not available: this game version is not the one the mod was built for"); return false; }
+        p_fpBone = (FpBoneFn)(g_fpExe + 0x959020);
+        if (!fp_make_name()) { strcpy_s(g_fpWhy, "not available: the head bone name was not found"); return false; }
+        g_fpReady = true;
+        return true;
+    }
+    uintptr_t fp_view_target()
+    {
+        if (!p_fpLp) { HMODULE m = GetModuleHandleW(L"XINPUT9_1_0.dll"); if (m) p_fpLp = (FpLpFn)GetProcAddress(m, "akn_local_player"); }
+        if (!p_fpLp) { strcpy_s(g_fpWhy, "needs the engine-stereo part of the mod (XINPUT9_1_0.dll)"); return 0; }
+        uintptr_t lp = (uintptr_t)p_fpLp(), pc = 0, vt = 0;
+        if (!lp || !fp_rd(lp + 0x5C, pc) || !pc || !fp_rd(pc, vt) || !fp_in_exe(vt)) { strcpy_s(g_fpWhy, "waiting for the player"); return 0; }
+        return (uintptr_t)fp_call_vt(pc, vt);
+    }
+    // the eye point for this camera update (world), false = stay third person this frame
+    bool fp_eye(float eye[3])
+    {
+        if (!fp_init()) return false;
+        if (akvr_xr_menu_scene() || akvr_xr_main_menu_detected() || akvr_xr_screen_frozen())
+        { strcpy_s(g_fpWhy, "menus and screens stay third person"); g_fpOffOk = false; return false; }
+        const uintptr_t t = fp_view_target();
+        if (!t) { g_fpOffOk = false; return false; }
+        const ULONGLONG now = GetTickCount64();
+        float head[3] = {}, org[3] = {};
+        bool have = false;
+        if (t == g_fpTarget && g_fpMeshOff >= 0)
+        {
+            uintptr_t q = 0;
+            have = fp_rd(t + g_fpMeshOff, q) && q == g_fpMesh && fp_is_skel(q) && fp_bone(q, head) && fp_origin(q, org);
+        }
+        if (!have && (t != g_fpTarget || now - g_fpScanAt > 500))
+        {   // which of the followed actor's skeletons has Batman's head (the Batmobile, cutscene cameras: none)
+            g_fpTarget = t; g_fpScanAt = now; g_fpMeshOff = -1; g_fpMesh = 0; g_fpOffOk = false; ++g_fpScans;
+            for (int off = 0x40; off < 0x2000 && !have; off += 4)
+            {
+                uintptr_t q = 0;
+                if (!fp_rd(t + off, q) || !fp_is_skel(q)) continue;
+                if (!fp_bone(q, head) || !fp_origin(q, org)) continue;
+                const float dx = head[0] - org[0], dy = head[1] - org[1], dz = head[2] - org[2];
+                if (dx * dx + dy * dy + dz * dz < 400.0f * 400.0f) { have = true; g_fpMesh = q; g_fpMeshOff = off; }
+            }
+            if (have) snprintf(g_fpWhy, sizeof(g_fpWhy), "on: camera at Batman's head (followed actor %llX, skeleton at +0x%X)", (unsigned long long)t, g_fpMeshOff);
+            else snprintf(g_fpWhy, sizeof(g_fpWhy), "third person for now: the game camera is not following Batman on foot (Batmobile, cutscene, gadget) - actor %llX", (unsigned long long)t);
+        }
+        if (!have) { ++g_fpMisses; g_fpOffOk = false; return false; }
+        LARGE_INTEGER qn, qf; QueryPerformanceCounter(&qn); QueryPerformanceFrequency(&qf);
+        const float dt = g_fpLast.QuadPart ? (float)((double)(qn.QuadPart - g_fpLast.QuadPart) / (double)qf.QuadPart) : 0.0f;
+        g_fpLast = qn;
+        float off[3] = { head[0] - org[0], head[1] - org[1], head[2] - org[2] };
+        for (int i = 0; i < 3; ++i) off[i] = off[i] < -250.0f ? -250.0f : (off[i] > 250.0f ? 250.0f : off[i]);
+        if (!g_fpHeadOn) { off[0] = 0.0f; off[1] = 0.0f; }   // steady: straight above the body point, at head height
+        const float tau = g_fpHeadOn ? g_fpSmoothS : 0.5f;
+        if (!g_fpOffOk || dt <= 0.0f || dt > 0.5f) { for (int i = 0; i < 3; ++i) g_fpOff[i] = off[i]; g_fpOffOk = true; }
+        else
+        {
+            const float a = tau > 0.001f ? 1.0f - expf(-dt / tau) : 1.0f;
+            for (int i = 0; i < 3; ++i) g_fpOff[i] += (off[i] - g_fpOff[i]) * a;
+        }
+        const float yaw = (float)(*g_bYaw) * ROT2DEG * DEG2RAD;   // the game camera's own heading (right stick), not the head
+        const float k = g_posScale / 100.0f;                      // world units per cm
+        eye[0] = org[0] + g_fpOff[0] + cosf(yaw) * g_fpFwdCm * k;
+        eye[1] = org[1] + g_fpOff[1] + sinf(yaw) * g_fpFwdCm * k;
+        eye[2] = org[2] + g_fpOff[2] + g_fpUpCm * k;
+        ++g_fpFrames;
+        return true;
+    }
+
     struct ExRec { int32_t y, p, r; float q[4]; };
     ExRec g_exRec = {};              // the last rotation written by exact_head, as (field - saved base)
     volatile LONG g_exRecSeq = 0;
@@ -585,6 +726,17 @@ namespace
             float* P = (float*)(cam + OFF_X);
             const float p[3] = { P[0], P[1], P[2] };
             g_smoothApplied[0] = g_smoothApplied[1] = g_smoothApplied[2] = 0.0f;
+            {   // FIRSTPERSON: the camera at Batman's head (CAMRESTORE takes it off again for the game, like CAMSMOOTH's part)
+                float e[3];
+                const bool fp = g_fpOn && fp_eye(e);
+                g_fpActive = fp;
+                if (fp)
+                {
+                    for (int i = 0; i < 3; ++i) { P[i] = e[i]; g_smoothApplied[i] = e[i] - p[i]; }
+                    g_smHave = false;
+                    return;
+                }
+            }
             if (!g_camSmooth || !(p[0] == p[0])) { g_smHave = false; return; }
             if (!g_smHave)
             {
@@ -1660,6 +1812,12 @@ namespace {
     }
 }
 long akvr_camera_pause_writes() { return g_pauseWrites; }
+// PAUSESTAMP 2026-10-09 (JJ: "when in the pause screen or the weapon wheel screen, looking around causes the world to
+// flicker"): the game camera stops there, so the finalize count - the stamp that pairs each picture with the head pose it
+// was drawn from (POSESTAMP) - stopped too: every paused picture carried the same stamp, the pose matched grew 1, 2 ... 30
+// frames old, then fell back to the fixed geo-11 delay 2 (engine stereo's exact delay is 1). Each pause-look write
+// puts the CURRENT head into the camera exactly as a finalize would, so it counts as one.
+uint64_t akvr_camera_write_count() { return akvr_camera_finalize_count() + (uint64_t)g_pauseWrites; }
 
 void akvr_head_update()
 {
@@ -1874,7 +2032,7 @@ void akvr_head_update()
     g_exHead[0] = gy; g_exHead[1] = gp; g_exHead[2] = gr;
     g_exQ[0] = qx; g_exQ[1] = qy; g_exQ[2] = qz; g_exQ[3] = qw;
     InterlockedIncrement(&g_exSeq);
-    g_exOn = tipped && !g_testNoRot;
+    g_exOn = tipped;
     // The eye separation must ride the GAME'S ACTUAL rendered right — which comes from the
     // rotator we're about to write (fyaw/fpitch/froll), NOT the pre-decompose `right`.
     // decompose_basis isn't a perfect inverse for roll, so `right` and the game's rendered
@@ -1899,6 +2057,14 @@ void akvr_head_update()
     // --- positional lean (world units) ---
     // OpenXR LOCAL delta, meters: +X room-right, +Y up, -Z forward.
     float lx = px - g_refPX, ly = py - g_refPY, lz = pz - g_refPZ;
+    {   // LEANREF 2026-10-10 (JJ, AKN main menu: "when you lean forward ... the camera sort of slides a little bit to the
+        // left"; trace 03:20: raw head yaw + head yaw = -12.5 deg in every row): the rotation strips the recentre heading
+        // (delta = Ry(-refYaw) * cur, above) but the lean was read on the raw room axes - with a recentre heading of
+        // 12.5 deg, a straight-ahead lean came out 22 % sideways. Same Ry(-refYaw) on the lean now.
+        const float th = -g_refYawDeg * DEG2RAD, c = cosf(th), s = sinf(th);
+        const float rx = lx * c + lz * s, rz = -lx * s + lz * c;   // rotation about OpenXR +Y (up)
+        lx = rx; lz = rz;
+    }
     g_htLX = lx; g_htLY = ly; g_htLZ = lz;
     float rightAmt = lx, upAmt = ly, fwdAmt = -lz;
     // ...and screen mode freezes the lean too, so the menu cannot drift as you move.
@@ -1922,6 +2088,28 @@ void akvr_head_update()
     float fwdW   = fwdAmt   * g_posScale;
     float ox = cy * fwdW - sy * rightW;   // forward.x + right.x
     float oy = sy * fwdW + cy * rightW;   // forward.y + right.y
+    float leanZ = upAmt * g_posScale;
+    // LEANTIP 2026-10-10 (JJ, AKN main menu: on the shots looking down at Batman "when you lean forward or you move your
+    // head, the camera moves in the wrong way"): with the rigid composition (TIPPED, pitchunlink 2) the head's ROTATION
+    // hangs off the camera's own pitched frame, but the lean stayed in a level frame - leaning forward slid the camera
+    // horizontally while you looked 60 deg down, so the scene moved against the head. On steep shots the lean now uses
+    // the same frame as the rotation: level up to 40 deg of camera pitch (gameplay bit-identical), the camera's own
+    // forward / right / up from 60 deg, blended between - the YAWAXIS rule.
+    if (tipped)
+    {
+        // LEANTIP2 2026-10-10 (trace 03:20, 30-45 deg shot: lean forward -> camera up 0.54 per 1 = JJ's "shifts up a
+        // little"): the 40-60 deg blend left shallow shots level while the rotation is rigid at every pitch. Rigid too now.
+        const float t = 1.0f;
+        if (t > 0.0f)
+        {
+            V3 bf, br, bu; build_basis(b2yaw, b2pitch, 0.0f, bf, br, bu);
+            const float upW = upAmt * g_posScale;
+            const float tx = bf.x * fwdW + br.x * rightW + bu.x * upW;
+            const float ty = bf.y * fwdW + br.y * rightW + bu.y * upW;
+            const float tz = bf.z * fwdW + br.z * rightW + bu.z * upW;
+            ox = ox + (tx - ox) * t; oy = oy + (ty - oy) * t; leanZ = leanZ + (tz - leanZ) * t;
+        }
+    }
 
     // The AER eye offset is the ONE thing that does belong on the FINAL view's right
     // vector — that's the direction your eyes are actually separated along, so it has
@@ -1962,27 +2150,36 @@ void akvr_head_update()
     // branches are arithmetically identical, so this should make no difference — which
     // is exactly why it is worth being able to prove rather than argue. The OFF branch
     // is the pre-2026-08-05 expression, character for character.
-    const float stickLiftUU = (g_pitchUnlink == 0 && g_basePitchKeep < 0.001f && !screenFrozen)
+    const float stickLiftUU = (g_pitchUnlink == 0 && g_basePitchKeep < 0.001f && !screenFrozen && !g_fpActive)   // FIRSTPERSON: no lift
                             ? -sinf(b2pitch) * g_stickHeightM * g_posScale : 0.0f;   // STICKHEIGHT
-    const float menuSideUU = akvr_xr_main_menu_detected() ? g_menuSideUU : 0.0f;   // MENUSIDE
+    // MENUSIDE5 2026-10-10 (JJ: "when it does open the first menu screen and Batman appears, he's in the center of the
+    // screen. Then he quickly pops over to the right where he belongs"): the slide waited for "MAIN MENU on" (3 s of
+    // the menu scene). Now from the menu scene's first frame (start-up phase, camera live), eased over ~0.3 s.
+    static float s_menuSide = 0.0f;
+    const float menuSideTarget = akvr_xr_menu_scene() ? g_menuSideUU : 0.0f;
+    s_menuSide += (menuSideTarget - s_menuSide) * 0.12f;
+    if (fabsf(menuSideTarget - s_menuSide) < 0.05f) s_menuSide = menuSideTarget;
+    const float menuSideUU = g_fpActive ? 0.0f : s_menuSide;   // MENUSIDE (FIRSTPERSON: none)
     ox += -sy * menuSideUU;   // MENUSIDE2: the base camera's level right (-sin, cos), not the head's
     oy +=  cy * menuSideUU;
+    // FIRSTPERSON: the third-person framing offsets (shoulder, up, forward) are not used at Batman's head
+    const float fpShoulder = g_fpActive ? 0.0f : g_shoulderUU, fpUp = g_fpActive ? 0.0f : g_offUpUU, fpFwd = g_fpActive ? 0.0f : g_offFwdUU;
     if (g_camFixOn)
     {
-        ox += gRight.x * g_shoulderUU + gUp.x * g_offUpUU + gFwd.x * g_offFwdUU;
-        oy += gRight.y * g_shoulderUU + gUp.y * g_offUpUU + gFwd.y * g_offFwdUU;
+        ox += gRight.x * fpShoulder + gUp.x * fpUp + gFwd.x * fpFwd;
+        oy += gRight.y * fpShoulder + gUp.y * fpUp + gFwd.y * fpFwd;
         *g_dPosX = ox;
         *g_dPosY = oy;
-        *g_dPosZ = upAmt * g_posScale + gRight.z * (eyeUU + g_shoulderUU)
-                 + gUp.z * g_offUpUU + gFwd.z * g_offFwdUU + stickLiftUU;
+        *g_dPosZ = leanZ + gRight.z * (eyeUU + fpShoulder)
+                 + gUp.z * fpUp + gFwd.z * fpFwd + stickLiftUU;   // LEANTIP: leanZ (was upAmt * g_posScale)
     }
     else
     {
-        ox += gRight.x * g_shoulderUU;
-        oy += gRight.y * g_shoulderUU;
+        ox += gRight.x * fpShoulder;
+        oy += gRight.y * fpShoulder;
         *g_dPosX = ox;
         *g_dPosY = oy;
-        *g_dPosZ = upAmt * g_posScale + gRight.z * (eyeUU + g_shoulderUU) + stickLiftUU;
+        *g_dPosZ = leanZ + gRight.z * (eyeUU + fpShoulder) + stickLiftUU;   // LEANTIP
     }
 
     // --- Trace ---------------------------------------------------------------
@@ -1999,7 +2196,7 @@ void akvr_head_update()
     // target. If the headset FOV isn't known yet, add nothing (leave game default).
     float target = akvr_head_render_hfov();
     // FOVABS: written by the stub, so a sudden FOV change by the game never shows for a frame.
-    if (target > 10.0f && !g_testKeepFov)
+    if (target > 10.0f)
     {
         g_gameFov = *g_bFov;                   // ZOOMVIG: the game's own FOV, saved by the stub
         *g_aFov = target + g_fovDelta;
@@ -2012,10 +2209,6 @@ void akvr_head_update()
         *g_fovAbs = 0;
         if (*g_bFov > 1.0f) g_gameFov = *g_bFov;
     }
-    // CAMTEST 2026-10-02 (Batmobile enter/exit: the transition plays with head tracking off): switch off one part of the
-    // head's write at a time - rotation, position - to find which one stops it.
-    if (g_testNoRot) { *g_dYaw = *g_dPitch = *g_dRoll = 0; }
-    if (g_testNoPos) { *g_dPosX = *g_dPosY = *g_dPosZ = 0.0f; }
     pause_look_write();   // PAUSELOOK
     akvr_camera_record_rotators();   // NEARRAIN2
     // CAMRESTORE: the frame has been drawn; give the game its own camera back (once per finalize, never in the pause view)
@@ -2311,9 +2504,6 @@ void akvr_camera_shutdown()
         akvr_proj_uninstall();
     } __except (EXCEPTION_EXECUTE_HANDLER) {}
 }
-// CAMTEST: Batmobile transition test switches (panel only, not saved)
-bool akvr_camtest_get(int which) { return which == 0 ? g_testNoRot : (which == 1 ? g_testNoPos : g_testKeepFov); }
-void akvr_camtest_set(int which, bool on) { if (which == 0) g_testNoRot = on; else if (which == 1) g_testNoPos = on; else g_testKeepFov = on; }
 bool akvr_cam_restore() { return g_camRestore; }               // CAMRESTORE
 void akvr_cam_restore_set(bool on) { g_camRestore = on; }
 bool akvr_cam_smooth() { return g_camSmooth; }                 // CAMSMOOTH
@@ -2327,3 +2517,24 @@ long akvr_cam_exact_writes() { return g_exWrites; }            // DIVEFIX: final
 bool akvr_cam_exact_on() { return g_exOn; }
 long akvr_cam_aim_head_frames() { return g_aimFrames; }
 void akvr_cam_aim_head_set(bool on) { g_aimHead = on; }
+
+// FIRSTPERSON (above)
+void  akvr_fp_set(bool on) { g_fpOn = on; if (!on) { g_fpActive = false; g_fpOffOk = false; } }
+bool  akvr_fp() { return g_fpOn; }
+bool  akvr_fp_active() { return g_fpActive; }
+void  akvr_fp_fwd_set(float cm) { g_fpFwdCm = cm < -20.0f ? -20.0f : (cm > 80.0f ? 80.0f : cm); }
+float akvr_fp_fwd() { return g_fpFwdCm; }
+void  akvr_fp_up_set(float cm) { g_fpUpCm = cm < -40.0f ? -40.0f : (cm > 40.0f ? 40.0f : cm); }
+float akvr_fp_up() { return g_fpUpCm; }
+void  akvr_fp_head_set(bool on) { g_fpHeadOn = on; }
+bool  akvr_fp_head() { return g_fpHeadOn; }
+void  akvr_fp_smooth_set(float s) { g_fpSmoothS = s < 0.0f ? 0.0f : (s > 0.5f ? 0.5f : s); }
+float akvr_fp_smooth() { return g_fpSmoothS; }
+const char* akvr_fp_status() { return g_fpOn ? g_fpWhy : "off"; }
+extern "C" __declspec(dllexport) const char* akvr_fp_diag_c()   // AKN logs it every second
+{
+    static char s[384];
+    snprintf(s, sizeof(s), "first person %s, active %d | %s | head frames %ld, not on foot %ld, skeleton searches %ld | smoothed head %.0f %.0f %.0f",
+             g_fpOn ? "on" : "off", g_fpActive ? 1 : 0, akvr_fp_status(), g_fpFrames, g_fpMisses, g_fpScans, g_fpOff[0], g_fpOff[1], g_fpOff[2]);
+    return s;
+}

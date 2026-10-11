@@ -24,6 +24,7 @@ bool akvr_gamepad_menu();
 // — used to open/close menu mode. Works even while the game is being given an empty
 // pad, because it reads the original (un-intercepted) controller state.
 bool akvr_gamepad_menu_chord_pressed();
+bool akvr_gamepad_chord_double_tap();   // FIRSTPERSON: two quick clicks of both sticks (once per double tap)
 
 // Diagnostics: what we are actually doing to the game's view of the pad. If the game
 // stops responding to the controller, this says whether WE are starving it (blanking)

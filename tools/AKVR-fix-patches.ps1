@@ -1207,6 +1207,45 @@ function Patch-FarRain {
     Say "  $rainCs : far rain patched (look-ahead from the game camera via cb13, temp $t)" 'Green'
 }
 
+# ---- 1t. DOFBLUR: the distance blur can be turned down without losing the game's exposure, glow or colours ------
+# JJ 2026-10-06: DepthOfField=False is sharp and ~10 fps faster but also drops the game's exposure adaptation and
+# colour grading (AKVR SHCENSUS). The game's depth-of-field setup compute shader bd67c92e94ebccd1 (the fix's geo-11
+# converted copy in ShaderFixesDM) works out each pixel's blur amount from its distance, four times (one 2x2 block):
+# mul rN.w, r0.z|r0.x, cb0[6].y  (= strength x (1 - focus / distance)). Edit: each amount is multiplied by
+# (1 - cb13[0].x), kept in r29 (free: the file declares 30 temps and uses r0-r9 plus geo-11's r30). AKVR binds cb13
+# around the dispatch from the panel's "distance blur kept"; unbound = 0 = the game's own blur.
+# Tested on a copy: assembles with geo-11 0.6.90 cmd_Decompiler -a and loads in vstest.
+$dofCs = 'bd67c92e94ebccd1'
+$dofMarker = '// AKVR DOFBLUR'
+function Patch-DofBlur {
+    $txt = Join-Path $dm "$dofCs-cs.txt"
+    $bin = Join-Path $dm "$dofCs-cs.bin"
+    if (-not (Test-Path $txt)) { Say "  $dofCs : depth-of-field shader not in the fix - distance blur NOT patched" 'Red'; return }
+    $s = [System.IO.File]::ReadAllText($txt)
+    if ($s.Contains($dofMarker)) { Say "  $dofCs : distance blur already patched"; return }
+    if ($s -match '(?i)\bcb13\b' -or $s -match '\br29\b') { Say "  $dofCs : cb13 or r29 already in use - distance blur NOT patched" 'Red'; return }
+    $temps = [regex]::Match($s, '(?m)^dcl_temps (\d+)\s*$')
+    if (-not $temps.Success -or [int]$temps.Groups[1].Value -lt 30) { Say "  $dofCs : fewer than 30 temps declared - distance blur NOT patched" 'Red'; return }
+    $nl = if ($s.Contains("`r`n")) { "`r`n" } else { "`n" }
+    $ms = [regex]::Matches($s, '(?m)^(?<i>[ \t]*)mul (?<d>r\d+)\.w, r0\.[xz], cb0\[6\]\.y[ \t]*$')
+    if ($ms.Count -ne 4) { Say "  $dofCs : blur amount found $($ms.Count) times (want 4) - distance blur NOT patched" 'Red'; return }
+    # From the end backwards so the indices stay valid; the factor is worked out just before the first use.
+    for ($k = 3; $k -ge 0; $k--) {
+        $m = $ms[$k]
+        $add = $nl + $m.Groups['i'].Value + "mul $($m.Groups['d'].Value).w, $($m.Groups['d'].Value).w, r29.x"
+        $pre = ''
+        if ($k -eq 0) { $pre = $m.Groups['i'].Value + "$dofMarker 2026-10-06: blur amount x (1 - cb13[0].x); AKVR binds cb13, unbound = 0 = the game's" + $nl + $m.Groups['i'].Value + 'add r29.x, l(1.000000), -cb13[0].x' + $nl }
+        $s = $s.Substring(0, $m.Index) + $pre + $m.Value + $add + $s.Substring($m.Index + $m.Length)
+    }
+    $cbDecl = [regex]::Match($s, '(?m)^dcl_constantbuffer [^\r\n]*$')
+    $s = $s.Substring(0, $cbDecl.Index + $cbDecl.Length) + $nl + 'dcl_constantbuffer CB13[1], immediateIndexed' + $s.Substring($cbDecl.Index + $cbDecl.Length)
+    Backup-Once $txt $bakDm
+    Backup-Once $bin $bakDm
+    [System.IO.File]::WriteAllText($txt, $s, $utf8)
+    if (Test-Path $bin) { Remove-Item $bin }
+    Say "  $dofCs : distance blur patched (AKVR's 'distance blur kept' slider via cb13)" 'Green'
+}
+
 # ---- 2. d3dxdm.ini --------------------------------------------------------------------------------
 $stereoKeys = [ordered]@{
     'dm_hud_detection'       = '1'
@@ -1303,6 +1342,9 @@ switch ($Mode) {
         $fp = Join-Path $dm "$rainCs-cs.txt"
         $fs = if (-not (Test-Path $fp)) { 'missing' } elseif ((Get-Content $fp -Raw).Contains($farMarker)) { 'far rain patched' } else { 'original' }
         Say ("  {0} : {1}" -f $rainCs, $fs)
+        $dp = Join-Path $dm "$dofCs-cs.txt"
+        $ds = if (-not (Test-Path $dp)) { 'missing' } elseif ((Get-Content $dp -Raw).Contains($dofMarker)) { 'distance blur patched' } else { 'original' }
+        Say ("  {0} : {1}" -f $dofCs, $ds)
     }
     'apply' {
         Say 'AKVR fix patches' 'Cyan'
@@ -1324,6 +1366,7 @@ switch ($Mode) {
         Patch-RainStretch
         Patch-RainLag
         Patch-FarRain
+        Patch-DofBlur
         Patch-DmIni
         if ($script:failed -gt 0) { Say "$($script:failed) edit(s) could not be applied - see the red lines above." 'Yellow'; exit 2 }
         Say 'Done. Originals are in akvr_fix_backup\.' 'Cyan'

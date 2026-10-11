@@ -1,4 +1,5 @@
 #pragma once
+#include <cstdint>
 // HUDSPLIT 2026-09-28 — step 1 of the HUD on its own headset layer (VR_IMPROVEMENT_BACKLOG item 6).
 struct ID3D11DeviceContext;
 struct ID3D11RenderTargetView;
@@ -15,6 +16,20 @@ struct ID3D11Texture2D;
 void        akvr_hudsplit_layer_set(bool on);                 // panel / settings "hudlayer"
 bool        akvr_hudsplit_layer();
 void        akvr_hudsplit_layer_gate(bool gameplay, bool menu = false);   // xr.cpp: steady gameplay / live main menu (MENUONE: no split)
+void        akvr_hudsplit_census_start(const wchar_t* path);   // SHCENSUS: shaders.csv after 60 frames
+void        akvr_hudsplit_sweep(bool on, uint64_t hash);       // SWEEP: drop draws/dispatches of one shader
+long        akvr_hudsplit_sweep_dropped();
+void        akvr_blur_keep_set(float keep);                 // DOFBLUR: 1 = the game's distance blur, 0 = none
+float       akvr_blur_keep();
+long        akvr_blur_binds();
+long        akvr_blur_seen();                                // DOFPANEL: DoF setup dispatches seen
+void        akvr_blur_off_set(int mode);                     // BLUROFF: 0 game blur, 1/2/3 passes dropped
+int         akvr_blur_off();
+long        akvr_blur_dropped();
+void        akvr_game_aa_off_set(bool on);                    // GAMEAA: drop the game's SMAA edge pass
+bool        akvr_game_aa_off();
+long        akvr_game_aa_skips();
+void        akvr_hudsplit_source_lost();                     // MENUCRASH: the layer's source faulted, search again
 bool        akvr_hudsplit_layer_live();                       // HUD went to the layer in the last frames
 ID3D11Texture2D* akvr_hudsplit_layer_image(unsigned& w, unsigned& h, int& fmt);   // fresh this Present, or null
 const char* akvr_hudsplit_layer_diag();

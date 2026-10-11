@@ -39,6 +39,7 @@
 // still doesn't move, that log names the question the game asked instead, which is
 // the entry point for the static disassembly path.
 // ---------------------------------------------------------------------------
+#include "akn_link.h"
 #include <windows.h>
 #include <stdio.h>
 #include <stdint.h>
@@ -59,6 +60,7 @@ const char* akvr_hud_layer_xf_list();
 // ---------------------------------------------------------------------------
 // state
 // ---------------------------------------------------------------------------
+bool akvr_xr_akn_3d();   // xr.cpp LOADFIT: AKN 3D pairs are flowing (its HUD sheet is in use)
 namespace {
 
     // MEASURED 2026-07-27 (build BIGRES-1, JJ's log): the render size is the game's
@@ -621,6 +623,7 @@ namespace {
     // 0 height = feature off, the game keeps its own size.
     int       g_engineH     = 0;
     int       g_engineShape = 911;         // tan(42.35)/tan(45) — Quest 3 via VDXR
+    int       g_dlssMode = 0;              // DLSS D1: AKN upscales; the game draws engineres x this scale
     int       g_geo11Shape  = 1778;        // GEO11SHAPE: render width/height x1000 under geo-11 (16:9)
     // (g_engW / g_engH are declared up with render_w — the buffer size depends on them.)
     uintptr_t g_engAddr = 0;               // matched signature address
@@ -666,6 +669,11 @@ namespace {
         { "DefaultChromaticAberration=", "False" , false },
         { "FilmGrain=",                "False" , false },
         { "DefaultFilmGrain=",         "False" , false },
+        // LENSFLAREOFF 2026-10-08 - JJ (engine stereo): lens flares to be removed; his capture c194645 shows a large green
+        // flare ring in the LEFT eye only (screen-space flare from the game's own view; VR_ESSENTIALS 7, Batman City did
+        // the same: LensFlares=False).
+        { "LensFlares=",               "False" , false },
+        { "DefaultLensFlares=",        "False" , false },
         // DOFOFF 2026-10-05 - a player (RTX 4090): higher picture sizes left "the city background" no sharper, but "when
         // you back out to the main menu, there's a split second where everything looks crystal clear". The game's
         // depth of field was still on (DepthOfField=True in buckets 2-5 and the top block); the 3D fix's F6 only skips
@@ -694,6 +702,10 @@ namespace {
         { "DefaultMaxFPS=",            "120"   , true },
     };
 
+    // DOFSWITCH 2026-10-06 - JJ after DOFOFF: "the game is brighter all of a sudden ... especially in the menus".
+    // BATMAN_CITY_PLAN 2.3: in Mass Effect, DepthOfField off also killed tonemapping. dofoff=0 stops forcing it.
+    bool g_dofOff = true;
+    int  g_dxgi11 = -1;     // DXGI11: 0 off, 1 game calls only, 2 every call: see hooks.cpp install_creation_hooks. -1 (default) = SVRAUTO
     int g_comfortChanged = -1;      // -1 = not attempted, else lines flipped
 
     // Is geo-11 installed alongside us? `d3dxdm.ini` is its stereo config and
@@ -742,6 +754,7 @@ namespace {
 
         size_t w = 0, i = 0;
         int changed = 0;
+        char section[64] = "";   // DOFON
         while (i < got)
         {
             size_t ls = i;
@@ -754,6 +767,12 @@ namespace {
                 if (i < got && in[i - 1] == '\n') break;   // one ending only
             }
 
+            // DOFON 2026-10-06: the section this line is in (game's own DoF values come back per section)
+            if (lineLen >= 2 && in[ls] == '[')
+            {
+                const size_t n = lineLen < sizeof(section) - 1 ? lineLen : sizeof(section) - 1;
+                memcpy(section, in + ls, n); section[n] = 0;
+            }
             const ConfigForce* force = nullptr;
             for (size_t k = 0; k < sizeof(kComfortKeys) / sizeof(kComfortKeys[0]); ++k)
             {
@@ -790,6 +809,29 @@ namespace {
             // targets". It crashed twice with the test tools on, not since they are off (FIX_CHANGES 6).
             if (force && g_geo11 && windowKey && !g_engH)
                 force = nullptr;
+            // DOFON 2026-10-06 - JJ: choosing "on" again changed nothing: dofoff=0 only stopped forcing False, so the file
+            // kept the False an earlier start had written (his "on" comparison runs were really off). On = the game's own
+            // values back: True in [SystemSettings] and the quality buckets 2-5 (stock; bucket 1, Mobile and Flash are
+            // False / FALSE and are left alone).
+            static const ConfigForce kDofOn = { "DepthOfField=", "True", false };
+            if (force && !g_dofOff && strcmp(force->key, "DefaultDepthOfField=") == 0)
+                force = nullptr;   // DOFSWITCH
+            if (force && !g_dofOff && strcmp(force->key, "DepthOfField=") == 0)
+                force = (strcmp(section, "[SystemSettings]") == 0 || strcmp(section, "[SystemSettingsBucket2]") == 0 ||
+                         strcmp(section, "[SystemSettingsBucket3]") == 0 || strcmp(section, "[SystemSettingsBucket4]") == 0 ||
+                         strcmp(section, "[SystemSettingsBucket5]") == 0) ? &kDofOn : nullptr;   // DOFON
+
+            // ENGINESIZE 2026-10-08 (AKN DLSS D0): engine stereo forces the eye size, but the game's own saved
+            // ResX/ResY were left as an earlier, BIGGER size. Bigger than the screen we claim (sized from the eye),
+            // so the game shrank its window to fit and won (eyes drawn 891x1100 instead of 1552x1916). Save the
+            // forced size as the game's own, so the ini always fits the claim.
+            static char sResX[16], sResY[16];
+            static const ConfigForce kResX = { "ResX=", sResX, false }, kResY = { "ResY=", sResY, false };
+            if (!force && akvr_engine_stereo() && g_engH && strcmp(section, "[SystemSettings]") == 0 && lineLen > 5)
+            {
+                if (memcmp(in + ls, "ResX=", 5) == 0) { _snprintf_s(sResX, sizeof(sResX), _TRUNCATE, "%d", g_engW); force = &kResX; }
+                else if (memcmp(in + ls, "ResY=", 5) == 0) { _snprintf_s(sResY, sizeof(sResY), _TRUNCATE, "%d", g_engH); force = &kResY; }
+            }
 
             // A rescue key whose current value is already sane is left completely
             // alone — copied through as if we had never matched it.
@@ -1412,6 +1454,8 @@ namespace {
     MovieInfo g_movies[64] = {};
     int    g_nMovies = 0;
     int    g_shrinkGen = 0;                 // bumps the live push when a switch changes
+    int    g_hudFull = 1;                   // HUDFULL on / off (HUDTRACE test: JJ - the flicker began with HUDFULL)
+
     char   g_noShrink[1024] = "";           // ";name;name;" of pieces left full size
 
     bool looks_like_url(const char* s)
@@ -1547,18 +1591,25 @@ namespace {
     // Only plainly readable, committed memory: never a guard page (touching a thread's
     // stack guard under __try would break that stack's growth later). One VirtualQuery
     // per node, cached by region.
+    // PERFMARK 2026-10-11 (PERFSWEEP + PERFTIME: "HUD in the eyes" = 1.1 ms, all of it the marker search, growing 0.72 ->
+    // 1.50 ms in a minute): one remembered region per thread meant a VirtualQuery system call on nearly every HUD node
+    // read (the walk crosses many allocations). 64 regions per thread now, each trusted for 1 s (the reads stay inside
+    // __try, so a region freed within that second costs a caught exception, nothing more).
+    struct PgC { uintptr_t lo, hi; DWORD t; };
     bool page_ok(uintptr_t p, size_t n)
     {
-        static thread_local uintptr_t lo = 0, hi = 0;
-        if (p >= lo && p + n <= hi) return true;
+        static thread_local PgC tl_pg[64];
+        const DWORD now = GetTickCount();
+        PgC& e = tl_pg[(p >> 16) & 63];
+        if (p >= e.lo && p + n <= e.hi && now - e.t < 1000) return true;
         MEMORY_BASIC_INFORMATION mbi{};
         if (!VirtualQuery((const void*)p, &mbi, sizeof(mbi))) return false;
         const DWORD pr = mbi.Protect;
         if (mbi.State != MEM_COMMIT || (pr & (PAGE_GUARD | PAGE_NOACCESS)) ||
             !(pr & (PAGE_READONLY | PAGE_READWRITE | PAGE_WRITECOPY | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE)))
             return false;
-        lo = (uintptr_t)mbi.BaseAddress; hi = lo + mbi.RegionSize;
-        return p + n <= hi;
+        e.lo = (uintptr_t)mbi.BaseAddress; e.hi = e.lo + mbi.RegionSize; e.t = now;
+        return p + n <= e.hi;
     }
     volatile LONG g_scanBusy = 0;          // the live push can call in from another thread
     bool deep_scan(uintptr_t root, char* out)
@@ -1702,6 +1753,13 @@ namespace {
     // the same for any box of the screen's shape). Same size as the box method:
     // Scale = stageVisPx / (hudScale x W). Raise = the box moved up by the same pixels.
     bool   g_hudScaleMode = false;
+    // MENUFIT 2026-10-06 - JJ, D-pad pop-ups: the gadget wheel (RadialGadgetSelect) "stretched vertically", the AR
+    // challenges screen (MissionWheel / LeaderboardMini) "clipped". Suspect: their Scaleform scale mode (+0xe8: 0 NoScale,
+    // 1 ShowAll, 2 ExactFit, 3 NoBorder). ExactFit stretches a 16:9 stage onto our near-square screen, NoBorder fills it
+    // and cuts the sides. Such movies are switched to ShowAll (whole stage, own shape); the modes are in the F2 status.
+    bool   g_menuFit = true;
+    long   g_menuFitWrites = 0;
+    int    base_mode(const MovieInfo* m) { return (g_menuFit && (m->origMode == 2 || m->origMode == 3)) ? 1 : m->origMode; }
     int  read_mode(void* view)
     {
         __try { return *(int*)((uint8_t*)view + 0xe8); }
@@ -1730,8 +1788,8 @@ namespace {
     bool restore_mode(void* view, GfxViewport& vp)
     {
         MovieInfo* m = movie_find(view);
-        if (!m || m->origMode < 0 || read_mode(view) == m->origMode) return false;
-        write_mode(view, m->origMode);
+        if (!m || m->origMode < 0 || read_mode(view) == base_mode(m)) return false;
+        write_mode(view, base_mode(m));   // MENUFIT: the fitted mode, not always the original
         vp.scale = 1.0f;
         return true;
     }
@@ -1777,6 +1835,13 @@ namespace {
             if (vp.left == l && vp.top == t && vp.width == w && vp.height == h) return false;
             vp.left = l; vp.top = t; vp.width = w; vp.height = h;
             return true;
+        }
+        // MENUFIT: before anything else, every screen movie (shrinking or not)
+        if (MovieInfo* mf = movie_find(view))
+        {
+            const int mode = read_mode(view);
+            if (mf->origMode < 0 && mode >= 0) mf->origMode = mode;
+            if ((mf->origMode == 2 || mf->origMode == 3) && mode >= 0 && mode != base_mode(mf) && write_mode(view, base_mode(mf))) ++g_menuFitWrites;
         }
         // HUDPIECES: a piece switched off in the panel stays full size; undo our box.
         if (!movie_shrinks(view, W, H))
@@ -2173,6 +2238,7 @@ namespace {
         log_add("tex-draw: render-tree viewport hooked at %p", (void*)target);
     }
 
+    bool hudfull_scale(void* view, GfxViewport& v);   // HUDFULL / LOADFIT, below
     void hkSetViewport(void* view, const GfxViewport* vp)
     {
         SetViewportFn orig = nullptr;
@@ -2195,7 +2261,17 @@ namespace {
         if (vp)
         {
             GfxViewport local = *vp;
-            if (scale_viewport(view, local)) { ++g_scaled; vp_log('V', view, *vp, local); orig(view, &local); apply_root(view, true); return; }
+            bool ch = scale_viewport(view, local);
+            // HUDFULL 2026-10-08 (JJ, DLSS on: "the HUD is now very low resolution ... keep the HUD elements at their
+            // normal resolution without having to mess up their scaling"): the game draws the 3D picture at the DLSS
+            // size, so its screen HUD was laid out at that small size too. A screen-sized movie gets the headset size
+            // (same layout, every coordinate x the DLSS factor); AKN redirects the HUD into a headset-size picture.
+            // Movies drawn into their own textures (map icons etc.) are not screen-sized and stay as they are.
+            // LOADFIT 2026-10-09 (JJ: the loading screen "too big to fit", most of it cropped): only while AKN collects the HUD
+            // on its full-size sheet (3D frames). On a loading screen nothing is collected: the movie drew into the small
+            // window at the headset layout and only its top-left part was there.
+            if (hudfull_scale(view, local)) ch = true;
+            if (ch) { ++g_scaled; vp_log('V', view, *vp, local); orig(view, &local); apply_root(view, true); return; }
             vp_log('V', view, *vp, *vp);
         }
         orig(view, vp);
@@ -2323,6 +2399,52 @@ namespace {
         }
     }
 
+    // HUDFULL / LOADFIT 2026-10-09, one place for both directions. The game's own SetViewport and our re-push both use it
+    // (the re-push used to skip it: after LOADFIT the HUD stayed small, top-left on the sheet, until the game itself
+    // re-set the movie - HF2 run, ~15 s after a load). hudfull_scale: a screen-sized movie (render size) -> the size of
+    // AKN's HUD sheet while that sheet is in use (3D frames); hudfull_unscale: back to render size.
+    bool hudfull_size(int& outW, int& outH)
+    {
+        // HUDSIZE 2026-10-08: the size of AKN's HUD picture itself, not engineres x the LIVE engineshape (that one is
+        // re-measured and saved mid-session: 2640-wide layouts landed on a 2320-wide sheet, stretched + cut)
+        static int s_outW = 0, s_outH = 0;
+        if (!s_outW)
+        {
+            using HudSizeFn = int (*)(int*, int*);
+            HMODULE m = GetModuleHandleW(L"XINPUT9_1_0.dll");
+            HudSizeFn f = m ? (HudSizeFn)GetProcAddress(m, "akn_hud_out_size") : nullptr;
+            int w = 0, h = 0;
+            if (f && f(&w, &h) && w > 0 && h > 0) { s_outW = w; s_outH = h; log_add("HUD layout size = AKN's HUD picture %dx%d", w, h); }
+        }
+        outH = s_outW ? s_outH : g_engineH; outW = s_outW ? s_outW : (int)(((long long)g_engineH * g_engineShape) / 1000) & ~7;
+        return g_dlssMode > 0 && akvr_engine_stereo() && g_engW > 0 && g_engH > 0 && outW > g_engW && outH > g_engH;
+    }
+    void hudfull_map(void* view, GfxViewport& v, float sx, float sy, int bw, int bh, int fromW, int fromH)
+    {
+        auto X = [&](int a) { return (int)lroundf((float)a * sx); };
+        auto Y = [&](int a) { return (int)lroundf((float)a * sy); };
+        v.bufW = bw; v.bufH = bh;
+        v.left = X(v.left); v.top = Y(v.top); v.width = X(v.width); v.height = Y(v.height);
+        v.scLeft = X(v.scLeft); v.scTop = Y(v.scTop); v.scWidth = X(v.scWidth); v.scHeight = Y(v.scHeight);
+        // HUDSIZE: the HUD shrink box (root matrix) goes along into the same pixels
+        if (RootState* r = root_state(view, false); r && r->want && r->W == fromW && r->H == fromH)
+        { r->l = X(r->l); r->t = Y(r->t); r->w = X(r->w); r->h = Y(r->h); r->W = bw; r->H = bh; r->haveLast = false; }
+    }
+    bool hudfull_scale(void* view, GfxViewport& v)
+    {
+        int outW = 0, outH = 0;
+        if (!g_hudFull || !akvr_xr_akn_3d() || !hudfull_size(outW, outH) || v.bufW != g_engW || v.bufH != g_engH) return false;
+        hudfull_map(view, v, (float)outW / (float)g_engW, (float)outH / (float)g_engH, outW, outH, g_engW, g_engH);
+        return true;
+    }
+    bool hudfull_unscale(void* view, GfxViewport& v)
+    {
+        int outW = 0, outH = 0;
+        if (!hudfull_size(outW, outH) || v.bufW != outW || v.bufH != outH) return false;
+        hudfull_map(view, v, (float)g_engW / (float)outW, (float)g_engH / (float)outH, g_engW, g_engH, outW, outH);
+        return true;
+    }
+
     bool repush_one(void* view, SetViewportFn setFn, GetViewportFn getFn)
     {
         __try
@@ -2331,8 +2453,10 @@ namespace {
             memset(&vp, 0, sizeof(vp));
             getFn(view, &vp);
             GfxViewport want = vp;
-            if (!scale_viewport(view, want)) { apply_root(view, false); return true; }   // viewport fine; root may differ
-            if (want.left == vp.left && want.top == vp.top &&
+            hudfull_unscale(view, want);   // LOADFIT: the box logic works in render pixels
+            scale_viewport(view, want);
+            hudfull_scale(view, want);     // ...and the sheet's size again while it is in use
+            if (want.bufW == vp.bufW && want.bufH == vp.bufH && want.left == vp.left && want.top == vp.top &&
                 want.width == vp.width && want.height == vp.height && want.aspect == vp.aspect &&
                 want.scale == vp.scale)
             { apply_root(view, false); return true; }        // already correct — do NOT re-set
@@ -2429,6 +2553,103 @@ namespace {
         0x48,0x8B,0xC4, 0x55, 0x41,0x54, 0x41,0x55,
         0x48,0x8D,0x68,0xA1, 0x48,0x81,0xEC,0xA0,0x00,0x00,0x00 };
 
+    // MENUFIT2 2026-10-07 - JJ: the gadget wheel is still "stretched vertically". MENUFIT (scale mode) changed nothing:
+    // F2 status shows RadialGadgetSelect already in ShowAll (fit mode 1). The cause is the movie's own script
+    // (diagnostics/hud-scripts-20260926, RadialGadgetSelect.as): on first open it asks XI_GetScreenSize and, when
+    // ResolutionX / ResolutionY < 16:9, stretches GrandRightParent (the wheel and its vignette) by
+    // stageHeight / VignetteStartHeight - a 4:3-monitor branch. Our picture is ~1:1, so it always takes it.
+    // The answer reaches the movie through UGFxMoviePlayer::SetVariableNumber / SetVariableInt (virtual slots 0x318 /
+    // 0x320, called by the UnrealScript natives execSetVariableNumber RVA 0x61aa90 / execSetVariableInt RVA 0x61ac90,
+    // found from the native table "UGFxMoviePlayerexecSetVariable..."). When a movie player is given ResolutionX then
+    // ResolutionY narrower than 16:9, ResolutionY becomes ResolutionX * 9 / 16 (only with "keep pop-up menus in their
+    // own shape" on). Every movie that asks gets a 16:9 screen, so their narrow-screen layouts stay off.
+    struct UeStr { const wchar_t* data; int num; int max; };
+    typedef void (*ExecFn)(void* self, void* stack, void* result);
+    typedef void (*SetNumFn)(void* self, UeStr* path, float v);
+    typedef void (*SetIntFn)(void* self, UeStr* path, int v);
+    ExecFn   g_oExecNum = nullptr, g_oExecInt = nullptr;
+    SetNumFn g_oSetNum = nullptr;
+    SetIntFn g_oSetInt = nullptr;
+    void*    g_resSelf = nullptr; float g_resX = 0.0f; ULONGLONG g_resAt = 0;
+    volatile long g_resFixes = 0, g_resSeen = 0;
+    bool str_ends(const UeStr* p, const wchar_t* tail)
+    {
+        __try
+        {
+            if (!p || !p->data || p->num < 2) return false;
+            const int n = (int)wcslen(tail), len = p->num - 1;   // num counts the terminator
+            return len >= n && wcsncmp(p->data + len - n, tail, n) == 0;
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
+    }
+    float res_fix(void* self, UeStr* p, float v)
+    {
+        if (str_ends(p, L"ResolutionX")) { g_resSelf = self; g_resX = v; g_resAt = GetTickCount64(); InterlockedIncrement(&g_resSeen); return v; }
+        if (g_menuFit && str_ends(p, L"ResolutionY") && self == g_resSelf && GetTickCount64() - g_resAt < 2000
+            && g_resX > 0.0f && v > 0.0f && g_resX / v < 1.76f)
+        {
+            InterlockedIncrement(&g_resFixes);
+            // WHEELROUND 2026-10-09 (JJ: the gadget wheel still an oval): rounded UP, 1528 x 9/16 = 859.5 -> 860 gave
+            // 1528/860 = 1.7767, a hair under the script's SIXTEEN_NINE_ASPECT_RATIO, so it still took the stretch branch
+            // (RadialGadgetSelect.as ResizeComponents). Rounded down the answer is never narrower than 16:9.
+            return floorf(g_resX * 9.0f / 16.0f);
+        }
+        return v;
+    }
+    void hkSetNum(void* self, UeStr* p, float v) { g_oSetNum(self, p, res_fix(self, p, v)); }
+    void hkSetInt(void* self, UeStr* p, int v) { g_oSetInt(self, p, (int)res_fix(self, p, (float)v)); }
+    void hook_set_virtuals(void* self)
+    {
+        static volatile long s_done = 0;
+        if (!self || InterlockedExchange(&s_done, 1)) return;
+        __try
+        {
+            void** vt = *(void***)self;
+            void* fNum = vt[0x318 / 8];
+            void* fInt = vt[0x320 / 8];
+            const bool a = in_exe_image(fNum) && MH_CreateHook(fNum, (void*)&hkSetNum, (void**)&g_oSetNum) == MH_OK && MH_EnableHook(fNum) == MH_OK;
+            const bool b = in_exe_image(fInt) && MH_CreateHook(fInt, (void*)&hkSetInt, (void**)&g_oSetInt) == MH_OK && MH_EnableHook(fInt) == MH_OK;
+            log_add("menufit2: SetVariableNumber %s, SetVariableInt %s", a ? "hooked" : "NOT hooked", b ? "hooked" : "NOT hooked");
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER) { log_add("menufit2: could not read the movie player's table"); }
+    }
+    void hkExecNum(void* self, void* stack, void* result) { hook_set_virtuals(self); g_oExecNum(self, stack, result); }
+    void hkExecInt(void* self, void* stack, void* result) { hook_set_virtuals(self); g_oExecInt(self, stack, result); }
+    void install_res_fix()
+    {
+        static bool s_tried = false;
+        if (s_tried) return;
+        s_tried = true;
+        // MENUFIT2b: JJ's run logged "not where expected" for the fixed addresses. Take them from the game's own
+        // native table instead: {name, function} pairs at RVA 0x3039a50 (SetVariableInt) / 0x3039a60 (Number), each name
+        // checked; the first bytes found are logged either way.
+        uint8_t* base = (uint8_t*)GetModuleHandleW(nullptr);
+        uint8_t* eNum = nullptr; uint8_t* eInt = nullptr;
+        __try
+        {
+            struct NatPair { const char* name; void* fn; };
+            const NatPair* pi = (const NatPair*)(base + 0x3039a50);
+            const NatPair* pn = (const NatPair*)(base + 0x3039a60);
+            if (in_exe_image((void*)pi->name) && strcmp(pi->name, "UGFxMoviePlayerexecSetVariableInt") == 0) eInt = (uint8_t*)pi->fn;
+            if (in_exe_image((void*)pn->name) && strcmp(pn->name, "UGFxMoviePlayerexecSetVariableNumber") == 0) eNum = (uint8_t*)pn->fn;
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER) {}
+        {
+            uint8_t* fNum = base + 0x61aa90; uint8_t* fInt = base + 0x61ac90;
+            log_add("menufit2: table gives Number %p, Int %p (fixed %p / %p); bytes at fixed Number %02X %02X %02X %02X %02X %02X",
+                    eNum, eInt, fNum, fInt, fNum[0], fNum[1], fNum[2], fNum[3], fNum[4], fNum[5]);
+        }
+        if (!eNum || !eInt || !in_exe_image(eNum) || !in_exe_image(eInt))
+        {
+            log_add("menufit2: the set-variable natives were not found in the game's table - not hooked");
+            return;
+        }
+        MH_Initialize();
+        const bool a = MH_CreateHook(eNum, (void*)&hkExecNum, (void**)&g_oExecNum) == MH_OK && MH_EnableHook(eNum) == MH_OK;
+        const bool b = MH_CreateHook(eInt, (void*)&hkExecInt, (void**)&g_oExecInt) == MH_OK && MH_EnableHook(eInt) == MH_OK;
+        log_add("menufit2: set-variable natives %s / %s", a ? "hooked" : "NOT hooked", b ? "hooked" : "NOT hooked");
+    }
+
     void install_movie_hook()
     {
         static bool tried = false;
@@ -2467,6 +2688,7 @@ namespace {
         }
 
         MH_Initialize();     // idempotent — kiero/hooks.cpp has already done this
+        install_res_fix();   // MENUFIT2
         if (MH_CreateHook(fn, (void*)&hkMovieLoop, (void**)&oMovieLoop) == MH_OK &&
             MH_EnableHook(fn) == MH_OK)
         {
@@ -2530,7 +2752,15 @@ namespace {
         HANDLE h = CreateFileW(path, GENERIC_READ, FILE_SHARE_READ, nullptr,
                                OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
         if (h == INVALID_HANDLE_VALUE) return;
+        // DOFSWITCH note: only the first 4 KB are read here (the file is ~6.3 KB). rendersquare, bigreschrome, hudraise
+        // and hudaspect sit past it in JJ's file and have never been read at start-up; reading them now would change
+        // behaviour, so the size stays and dofoff is read from the whole file separately below.
         char buf[4096]; DWORD got = 0;
+        {
+            static char all[65536]; DWORD n = 0;
+            if (ReadFile(h, all, sizeof(all) - 1, &n, nullptr) && n) { all[n] = 0; g_dofOff = read_int(all, "dofoff", 1) != 0; g_dxgi11 = read_int(all, "dxgi11", -1); g_dlssMode = read_int(all, "dlss", 0); }   // DLSS D1: the whole file (buf below is only 4 KB)
+            SetFilePointer(h, 0, nullptr, FILE_BEGIN);
+        }
         if (ReadFile(h, buf, sizeof(buf) - 1, &got, nullptr) && got)
         {
             buf[got] = 0;
@@ -2632,6 +2862,23 @@ void akvr_early_init(HINSTANCE self)
 
     // Must run before force_comfort_settings() — it decides one of the keys.
     detect_geo11(self);
+    // AKN 2026-10-07 (M5): ENGINE STEREO (-akn). The game draws both eyes itself (akvr_native's XINPUT9_1_0.dll),
+    // so geo-11 stays out even if it is installed, and the window is ONE eye at the headset's near-square shape
+    // (engineres x engineshape; 2448 x 0.911 when unset = Quest 3 via Virtual Desktop at default quality).
+    if (akvr_engine_stereo())
+    {
+        g_geo11 = false;
+        if (g_engineH < 720) g_engineH = 2448;
+        // DLSS D1 (akvr_native/DLSS_PLAN.md): the game draws each eye at the DLSS render size; AKN upscales it to
+        // engineres x engineshape (the headset size). Same scales as AKN's dlss.cpp.
+        static const float kDlssScale[6] = { 1.0f, 1.0f, 0.77f, 0.667f, 0.58f, 0.5f };
+        const float ds = g_dlssMode >= 0 && g_dlssMode <= 5 ? kDlssScale[g_dlssMode] : 1.0f;
+        const int renderEyeH = (int)((float)g_engineH * ds + 0.5f) & ~7;
+        g_renderH = renderEyeH;
+        g_engH = renderEyeH;
+        g_engW = (int)(((long long)renderEyeH * g_engineShape) / 1000) & ~7;
+        log_add("engine stereo (-akn): geo-11 not loaded; one eye renders %dx%d%s", g_engW, g_engH, g_dlssMode > 0 ? " (DLSS render size, AKN upscales)" : "");
+    }
 
     // ⛔ MEASURED 2026-08-06: a SQUARE render destroys geo-11's depth on Arkham.
     // At 2688x2688 a foreground car read as a flat card in front of everything and
@@ -2687,10 +2934,14 @@ void akvr_early_init(HINSTANCE self)
     // resolution. So claim a work area with generous headroom on BOTH axes and let
     // the ini value through untouched. Width also allows for the game deriving a
     // 16:9 default from our claim, so the claim never becomes the binding limit.
-    int wideW   = (g_renderH * 16) / 9;          // the 16:9 the game may derive from our claim
+    // DLSSSCREEN 2026-10-08: size the claim from the FULL headset eye (engineres) even when DLSS makes the game draw
+    // smaller. With a claim sized from the small render, the game's other saved size (NVIDIA store, 2888x2860) did not
+    // fit, the game fell back to a 1080-tall mode and drew 998x1080 inside the 1760x1904 window (D1 run 2).
+    const int claimH = (akvr_engine_stereo() && g_engineH > g_renderH) ? g_engineH : g_renderH;
+    int wideW   = (claimH * 16) / 9;             // the 16:9 the game may derive from our claim
     int wantW   = render_w();
     g_fakeWorkW = (wantW > wideW ? wantW : wideW) + 128;
-    g_fakeWorkH = g_renderH + g_chrome + 128;
+    g_fakeWorkH = claimH + g_chrome + 128;
     g_fakeScrW  = g_fakeWorkW;
     g_fakeScrH  = g_fakeWorkH + g_taskbar;
 
@@ -2757,6 +3008,36 @@ bool        akvr_early_enabled()    { return g_enabled; }
 int         akvr_early_width()      { return render_w(); }
 int         akvr_early_height()     { return render_h(); }
 bool        akvr_early_geo11()      { return g_geo11; }
+// SVRAUTO 2026-10-09 - JJ: get the NATIVE mod (engine stereo, -akn) working in SteamVR. SteamVR needs the game's device
+// from a DXGI 1.1 factory (DXGI11 notes in hooks.cpp); only geo-11 objected to that, and engine stereo never loads it.
+// So with no dxgi11 key: on (game calls) in engine stereo when this process is headed for SteamVR, off otherwise, which
+// leaves the Virtual Desktop route exactly as it was. First asked from install_dxgi11_hook, after xrhkcu has set
+// XR_RUNTIME_JSON; the OpenXR loader takes that variable first, then HKLM's ActiveRuntime.
+static bool runtime_is_steamvr()
+{
+    wchar_t p[MAX_PATH] = {};
+    DWORD n = GetEnvironmentVariableW(L"XR_RUNTIME_JSON", p, MAX_PATH);
+    if (!n || n >= MAX_PATH)
+    {
+        p[0] = 0; DWORD cb = sizeof(p);
+        if (RegGetValueW(HKEY_LOCAL_MACHINE, L"SOFTWARE\\Khronos\\OpenXR\\1", L"ActiveRuntime", RRF_RT_REG_SZ | RRF_RT_REG_EXPAND_SZ | RRF_SUBKEY_WOW6464KEY, nullptr, p, &cb) != ERROR_SUCCESS) p[0] = 0;
+    }
+    _wcslwr_s(p);
+    return wcsstr(p, L"steamxr") || wcsstr(p, L"steamvr");
+}
+int         akvr_early_dxgi11_mode()
+{
+    if (g_dxgi11 >= 0) return g_dxgi11;
+    static int s_auto = -1;
+    if (s_auto < 0)
+    {
+        s_auto = (akvr_engine_stereo() && runtime_is_steamvr()) ? 1 : 0;
+        log_add("dxgi11 auto: %s", s_auto ? "on (engine stereo headed for SteamVR)" : "off (not engine stereo + SteamVR)");
+    }
+    return s_auto;
+}
+bool        akvr_early_dxgi11()     { return akvr_early_dxgi11_mode() != 0; }
+bool        akvr_early_dxgi11_auto(){ return g_dxgi11 < 0; }
 bool        akvr_early_square()     { return g_square; }
 int         akvr_early_chrome()     { return g_chrome; }
 int         akvr_early_patched()    { return g_patched; }
@@ -2895,9 +3176,11 @@ void akvr_hud_tick()
     const ULONGLONG now = GetTickCount64();
     // UIGATES: height scale and the menu full-height mode are part of the key too.
     const float pushKey = hud_eff() + 7.0f * hud_eff_v() + 3.0f * g_hudRaise + (g_menuUiFill ? 50.0f : 0.0f)
-                        + (g_hudGameplay ? 100.0f : 0.0f) + 1000.0f * (float)g_shrinkGen;
+                        + (g_hudGameplay ? 100.0f : 0.0f) + 1000.0f * (float)g_shrinkGen + (akvr_xr_akn_3d() ? 0.5f : 0.0f);   // LOADFIT
+    // LOADFIT2: a 3D <-> flat change re-lays the movies out at once (the 200 ms gate let a new loading screen show big first)
+    static bool s_was3d = false; const bool is3d = akvr_xr_akn_3d(); const bool flip3d = is3d != s_was3d; s_was3d = is3d;
     if (g_nViews > 0 && (g_pushedScale != pushKey
-        || std::fabs(g_pushedAspect - g_hudAspectApplied) > 0.0001f) && now - lastPush >= 200)
+        || std::fabs(g_pushedAspect - g_hudAspectApplied) > 0.0001f) && (now - lastPush >= 200 || flip3d))
     {
         repush_views();
         g_pushedScale = pushKey;
@@ -3038,6 +3321,11 @@ void  akvr_hud_piece_xf_list_set(const char* list)
 }
 int   akvr_hud_id_depth() { return g_idDepth; }
 bool  akvr_hud_piece_shrink(int i) { return i >= 0 && i < g_nMovies ? g_movies[i].shrink : true; }
+int   akvr_hud_piece_mode(int i, int& now) { now = i >= 0 && i < g_nMovies ? read_mode(g_movies[i].view) : -1; return i >= 0 && i < g_nMovies ? g_movies[i].origMode : -1; }   // MENUFIT
+bool  akvr_menu_fit() { return g_menuFit; }
+void  akvr_menu_fit_set(bool on) { g_menuFit = on; ++g_shrinkGen; }
+long  akvr_menu_fit_writes() { return g_menuFitWrites + g_resFixes; }
+long  akvr_menu_fit_res_seen() { return g_resSeen; }   // MENUFIT2
 void  akvr_hud_piece_shrink_set(int i, bool on)
 {
     if (i < 0 || i >= g_nMovies) return;
@@ -3570,6 +3858,11 @@ namespace
     TreeWritableFn g_treeWritable = nullptr;
     constexpr float kPartTag = -1.0f / 512.0f;   // add blue: below one 8-bit step; shaders look for -0.003..-0.001
     long g_tagSets = 0;
+    // MKTAG 2026-10-09 (JJ: the distance marker split apart, the grapple reticle off its point - "do you need to rethink your
+    // strategy?"): marker parts ("stays on its target") carry their OWN mark, so AKN recognises their pieces by what they
+    // are, not by where they sit on screen. Two 8-bit half-steps (invisible); AKN looks for -0.0039 in the draw constants.
+    constexpr float kMkTag = -2.0f / 512.0f;
+    volatile LONG g_mkTagOn = 1; long g_mkTagSets = 0;
     // PARTTAG2 2026-09-30 — JJ: ticking "hang in the room" changed nothing and "marks set" kept rising: the game
     // rewrote the part's colour every frame after our mark. DisplayObjectBase::SetCxform 0x1411eedf0 (obj, cx)
     // copies the object's own colour transform (all 8 floats) onto its render node [obj+0x48]; the alpha setter
@@ -3578,6 +3871,7 @@ namespace
     typedef void (*ObjSetCxformFn)(void* obj, const float* cx);
     ObjSetCxformFn g_origObjCx = nullptr;
     uintptr_t volatile g_tagNodes[1024] = {};   // ROOMALL: many branches
+    float volatile g_tagVals[1024] = {};        // MKTAG: which mark each guarded node carries
     volatile LONG g_tagNodeN = 0;
     long g_tagRewrites = 0, g_tagReadOk = 0, g_tagReadBad = 0;
     bool tag_node(uintptr_t node)
@@ -3597,7 +3891,7 @@ namespace
         {
             bool keep = false;
             for (int i = 0; i < g_nLayers && !keep; ++i) keep = g_layers[i].node == g_tagNodes[k] && g_layers[i].taggedByUs;
-            if (keep) g_tagNodes[kept++] = g_tagNodes[k];
+            if (keep) { g_tagVals[kept] = g_tagVals[k]; g_tagNodes[kept++] = g_tagNodes[k]; }
         }
         InterlockedExchange(&g_tagNodeN, kept);
     }
@@ -3610,7 +3904,7 @@ namespace
     void mark_rgb(uint8_t* data, float v)
     {
         float* add = (float*)(data + 0x60);
-        if (v == 0.0f) { for (int c = 0; c < 4; ++c) if (add[c] == kPartTag) add[c] = 0.0f; return; }
+        if (v == 0.0f) { for (int c = 0; c < 4; ++c) if (add[c] == kPartTag || add[c] == kMkTag) add[c] = 0.0f; return; }
         // KEEPGLOW3 — JJ: with KEEPGLOW/KEEPGLOW2 the launch objective stayed on the head; it hung in the room when the
         // mark overwrote all four adds (WORLDKIDS). Back to that; the glow is kept instead by never marking a part
         // under an already marked one (apply_layers), which is where the two compass pieces lost it.
@@ -3621,6 +3915,7 @@ namespace
         const float* add = (const float*)(data + 0x60);
         return add[0] == kPartTag || add[1] == kPartTag || add[2] == kPartTag || add[3] == kPartTag;
     }
+    bool has_value(uintptr_t data, float v) { const float* add = (const float*)(data + 0x60); return add[0] == v && add[3] == v; }   // MKTAG
     void hkObjSetCxform(void* obj, const float* cx)
     {
         g_origObjCx(obj, cx);
@@ -3628,7 +3923,11 @@ namespace
         {
             const uintptr_t node = *(const uintptr_t*)((const uint8_t*)obj + 0x48);
             if (node && g_treeWritable && tag_node(node))
-                if (uint8_t* w = (uint8_t*)g_treeWritable((void*)node, 2)) { mark_rgb(w, kPartTag); ++g_tagRewrites; }
+            {
+                float v = kPartTag; const LONG n = g_tagNodeN;
+                for (LONG i = 0; i < n; ++i) if (g_tagNodes[i] == node) { if (g_tagVals[i] != 0.0f) v = g_tagVals[i]; break; }   // MKTAG
+                if (uint8_t* w = (uint8_t*)g_treeWritable((void*)node, 2)) { mark_rgb(w, v); ++g_tagRewrites; }
+            }
         }
         __except (EXCEPTION_EXECUTE_HANDLER) {}
     }
@@ -3738,7 +4037,10 @@ namespace
             // ZOOMHIDE 2026-09-30 — JJ: the game's own 2D zoom vignette is the same part as the gameplay tips, so a
             // plain hide took the tips too. "hide while zoomed" hides it only while our zoom vignette is on.
             const bool hideNow = L.hide || (L.zoomHide && akvr_xr_vig_active());
-            const bool roomNow = roomWanted && !above;
+            const bool roomNow0 = roomWanted && !above;
+            const bool mkNow = g_mkTagOn && L.world && !roomNow0;   // MKTAG: the marker part itself (its pieces inherit it)
+            const bool roomNow = roomNow0 || mkNow;                 // (name kept: "carries a mark now")
+            const float tagV = mkNow ? kMkTag : kPartTag;
             if (!moved && !hideNow && !L.haveLast && !L.hidByUs && !roomNow && !L.taggedByUs) continue;
             __try
             {
@@ -3754,13 +4056,13 @@ namespace
                     uintptr_t d = 0;
                     if (node_data(L.node, d))
                     {
-                        const bool b = has_mark(d);   // KEEPGLOW: any channel (the mark avoids the game's own adds)
+                        const bool b = mkNow ? has_value(d, kMkTag) : has_mark(d);   // KEEPGLOW: any channel (the mark avoids the game's own adds)
                         if (roomNow && b) ++g_tagReadOk; else if (roomNow) ++g_tagReadBad;   // PARTTAG2 diag
                         if (roomNow && !tag_node(L.node) && g_tagNodeN < 1024)
-                        { g_tagNodes[g_tagNodeN] = L.node; InterlockedIncrement(&g_tagNodeN); }
+                        { g_tagVals[g_tagNodeN] = tagV; g_tagNodes[g_tagNodeN] = L.node; InterlockedIncrement(&g_tagNodeN); }
                         if (roomNow && !b)
                         {
-                            if (uint8_t* w = (uint8_t*)g_treeWritable((void*)L.node, 2)) { mark_rgb(w, kPartTag); ++g_tagSets; }
+                            if (uint8_t* w = (uint8_t*)g_treeWritable((void*)L.node, 2)) { mark_rgb(w, tagV); ++g_tagSets; if (mkNow) ++g_mkTagSets; }
                         }
                         else if (!roomNow && b)
                         {
@@ -3769,7 +4071,7 @@ namespace
                         L.taggedByUs = roomNow;
                         if (!roomNow)   // PARTTAG2: off the guard's list, so the game's own colour stays
                             for (LONG k = 0; k < g_tagNodeN; ++k)
-                                if (g_tagNodes[k] == L.node) { g_tagNodes[k] = g_tagNodes[g_tagNodeN - 1]; InterlockedDecrement(&g_tagNodeN); break; }
+                                if (g_tagNodes[k] == L.node) { g_tagVals[k] = g_tagVals[g_tagNodeN - 1]; g_tagNodes[k] = g_tagNodes[g_tagNodeN - 1]; InterlockedDecrement(&g_tagNodeN); break; }
                     }
                 }
                 // --- hide / show through the node's own visible bit
@@ -3938,8 +4240,26 @@ void  akvr_hud_room_all_set(bool on) { g_roomAll = on; g_autoDirty = true; }
 // subtree moves (down to the node that does); two or more moving children = their parent (the reticle's pulsing pieces).
 // Remembered per part while nothing moves; before anything has moved, the old one-child walk.
 namespace {
-    struct MoveRec { uintptr_t node; float tx, ty; DWORD moved; };
-    MoveRec g_mvRec[256]; int g_mvN = 0, g_mvNext = 0;
+    struct MoveRec { uintptr_t node; float tx, ty; DWORD moved, seen; };
+    // PERFMARK: hashed, 1024 slots, 8-slot probe, the least recently seen record in the probe is replaced (was a linear
+    // scan of up to 256 records per call - called per HUD child and per anchor node, every frame)
+    MoveRec g_mvTab[1024];
+    MoveRec* mv_find(uintptr_t node, DWORD now, bool create)
+    {
+        static MoveRec s_null{};
+        if (!node) { s_null = MoveRec{}; return create ? &s_null : nullptr; }   // never let 0 match an empty slot
+        const size_t h = (size_t)(((unsigned long long)(node >> 3) * 0x9E3779B97F4A7C15ull) >> 54);   // 10 bits
+        MoveRec* victim = nullptr;
+        for (int i = 0; i < 8; ++i)
+        {
+            MoveRec& r = g_mvTab[(h + i) & 1023];
+            if (r.node == node) { r.seen = now; return &r; }
+            if (!victim || !r.node || (victim->node && now - r.seen > now - victim->seen)) victim = &r;
+        }
+        if (!create) return nullptr;
+        victim->node = node; victim->tx = 0.0f; victim->ty = 0.0f; victim->moved = 0; victim->seen = now;
+        return victim;
+    }
     // TARGETANCHOR2 2026-10-02 — JJ: in the Batmobile the distance marker still turns and is "flying off to different
     // positions". F2 18:51: the widget holds TWO moving children there (.1.0 and .1.1, two objectives; one off screen),
     // and "2+ moving children = their parent" picked the still part again (point (0.000, 0.080) in every capture). Each
@@ -3950,25 +4270,23 @@ namespace {
     // true when this node's local translation changed by more than 20 units within the last 30 s (TARGETANCHOR2: 3 s let a still reticle hand over to its pulsing pieces)
     bool node_moved_recently(uintptr_t node, const float* m, DWORD now)
     {
-        for (int i = 0; i < g_mvN; ++i)
+        if (MoveRec* rp = mv_find(node, now, false))
         {
-            MoveRec& r = g_mvRec[i];
-            if (r.node != node) continue;
+            MoveRec& r = *rp;
             // HUDWAIT: 5 units (a quarter pixel of the stage), so a marker is known as moving within a frame or two of
             // gameplay starting - the head never holds that still; still UI keeps exactly the same value.
             if (fabsf(m[3] - r.tx) > 5.0f || fabsf(m[7] - r.ty) > 5.0f) { r.tx = m[3]; r.ty = m[7]; r.moved = now; }
             return r.moved != 0 && now - r.moved < 30000;
         }
-        MoveRec& r = g_mvN < 256 ? g_mvRec[g_mvN++] : g_mvRec[g_mvNext++ & 255];
-        r.node = node; r.tx = m[3]; r.ty = m[7]; r.moved = 0;
+        MoveRec& r = *mv_find(node, now, true);
+        r.tx = m[3]; r.ty = m[7]; r.moved = 0;
         return false;
     }
     // ANCHORLOST: true when this node's translation last changed within `ms` (a record must exist)
     bool node_moved_within(uintptr_t node, DWORD now, DWORD ms)
     {
-        for (int i = 0; i < g_mvN; ++i)
-            if (g_mvRec[i].node == node) return g_mvRec[i].moved != 0 && now - g_mvRec[i].moved < ms;
-        return false;
+        const MoveRec* r = mv_find(node, now, false);
+        return r && r->moved != 0 && now - r->moved < ms;
     }
     // the moving nodes under `node` (inclusive; a moving node ends its branch), into out[] (max 4)
     void moving_anchors(uintptr_t node, int depth, DWORD now, int& budget, uintptr_t* out, int& n)
@@ -4159,6 +4477,10 @@ namespace {
         return out;
     }
 }
+// MKTAG: AKN reads the mark value and switches it (command "mktag 0|1")
+extern "C" __declspec(dllexport) float akvr_marker_tag_value() { return kMkTag; }
+extern "C" __declspec(dllexport) void akvr_marker_tag_set(int on) { InterlockedExchange(&g_mkTagOn, on ? 1 : 0); }
+extern "C" __declspec(dllexport) long akvr_marker_tag_sets() { return g_mkTagSets; }
 bool akvr_marker_dist() { return g_distOn; }
 void akvr_marker_dist_set(bool on) { g_distOn = on; }
 const char* akvr_marker_dist_diag() { return g_distDiag; }
@@ -4397,6 +4719,9 @@ bool  akvr_hud_tex_fix()        { return g_hudTexFix; }
 void  akvr_hud_tex_fix_set(bool on) { g_hudTexFix = on; }
 bool  akvr_hud_root_mode()      { return g_hudRootMode; }
 void  akvr_hud_root_mode_set(bool on) { g_hudRootMode = on; ++g_shrinkGen; }
+extern "C" __declspec(dllexport) void akvr_set_hudfull(int v) { g_hudFull = v ? 1 : 0; ++g_shrinkGen; }   // HUDTRACE test switch (AKN command hudfull)
+extern "C" __declspec(dllexport) void akvr_set_menufit(int v) { g_menuFit = v != 0; ++g_shrinkGen; }   // MENUFIT2 test switch (AKN command menufit)
+extern "C" __declspec(dllexport) long akvr_menufit_counts(long* seen) { if (seen) *seen = g_resSeen; return g_resFixes; }   // MENUFIT2 counters
 bool  akvr_hud_scale_mode()     { return g_hudScaleMode; }
 void  akvr_hud_scale_mode_set(bool on) { g_hudScaleMode = on; ++g_shrinkGen; }
 bool  akvr_hud_dual()           { return g_hudDual; }
@@ -4416,6 +4741,8 @@ const char* akvr_hud_diag()     { return g_hudFound ? g_hudDiag : "hud: signatur
 
 // ---- engine render size (the RE lever) — all "next launch", it patches at startup
 int   akvr_engine_res()            { return g_engineH; }
+int   akvr_dlss_mode()             { return g_dlssMode; }   // DLSSPANEL: read at load, the panel choice applies next launch
+void  akvr_dlss_mode_set(int m)    { g_dlssMode = m < 0 ? 0 : (m > 5 ? 5 : m); }
 int   akvr_geo11_shape()           { return g_geo11Shape; }   // GEO11SHAPE, persisted by hooks.cpp
 void  akvr_geo11_shape_set(int s)  { g_geo11Shape = s < 700 ? 700 : (s > 2400 ? 2400 : s); }   // next launch
 void  akvr_engine_res_set(int h)   { g_engineH = (h && h < 720) ? 720 : (h > kMaxEyeH ? kMaxEyeH : h); }
@@ -4541,3 +4868,43 @@ const char* akvr_engine_res_diag()
     else                 snprintf(s, sizeof(s), "engine render: FORCED %d x %d", g_engW, g_engH);
     return s;
 }
+bool akvr_dof_off() { return g_dofOff; }   // DOFSWITCH: as applied at this start
+// DOFQUICK 2026-10-06: the panel switch changes the NEXT start only (the game reads DepthOfField while starting)
+static int g_dofOffNext = -1;
+bool akvr_dof_off_next() { return g_dofOffNext < 0 ? g_dofOff : g_dofOffNext != 0; }
+void akvr_dof_off_next_set(bool on) { g_dofOffNext = on ? 1 : 0; }
+
+// DOFLIVE 2026-10-06 - JJ: "dropping the depth of field without killing the map". DepthOfField=False at start also
+// loses the map (and the colours / exposure). The game's settings table (STATIC: BatmanAK.exe RVA 0x30AFC3C, entries of
+// name / value pointer / ... / description; "DepthOfField" -> "Whether to allow depth of field") points at the live
+// UBOOL (4 bytes; the neighbours MotionBlur, Bloom ... sit 4 bytes apart). The game starts with it on; xr.cpp turns it
+// off during play and on again for the map, pause and menus. Checked by name at run time, so a game update that moves
+// the table just switches this off.
+static volatile int* g_dofLive = nullptr;
+static int g_dofLiveTried = 0;
+static bool dof_live_find()
+{
+    if (g_dofLive) return true;
+    if (g_dofLiveTried++) return false;
+    const uintptr_t base = (uintptr_t)GetModuleHandleW(nullptr);
+    __try
+    {
+        const wchar_t* name = *(const wchar_t* const*)(base + 0x30AFC3C);
+        volatile int* val = *(volatile int* const*)(base + 0x30AFC44);
+        if (name && val && wcscmp(name, L"DepthOfField") == 0 && (*val == 0 || *val == 1)) g_dofLive = val;
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) { g_dofLive = nullptr; }
+    return g_dofLive != nullptr;
+}
+void akvr_dof_live_apply(bool on)
+{
+    if (!dof_live_find()) return;
+    __try { const int want = on ? 1 : 0; if (*g_dofLive != want) *g_dofLive = want; }
+    __except (EXCEPTION_EXECUTE_HANDLER) {}
+}
+int akvr_dof_live_state()   // 1 on, 0 off, -1 not found
+{
+    if (!dof_live_find()) return -1;
+    __try { return *g_dofLive ? 1 : 0; } __except (EXCEPTION_EXECUTE_HANDLER) { return -1; }
+}
+

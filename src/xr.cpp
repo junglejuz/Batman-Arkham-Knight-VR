@@ -26,6 +26,7 @@
 #include "xr.h"
 #include "frameid.h"  // FRAMEID: engine frame identity for pose pairing
 #include "hudsplit.h" // HUDLAYER: the HUD image
+#include "akn_link.h" // AKN M5: engine stereo (the game draws both eyes)
 #include "geo11conv.h" // HUDLAYER: HUD distance
 #include "camera.h" // akvr_camera_finalize_count() — the per-rendered-frame clock for AER eye sync
 
@@ -33,12 +34,15 @@
 // DllMain. True in BOTH of geo-11's install modes, which is why the native-stereo
 // default keys on this and not on who owns d3d11.dll (see akvr_xr_set_device).
 bool akvr_early_geo11();
+float akvr_head_pos_scale();   // camera.cpp: game units per metre (world scale)
 #include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <d3d11.h>
+#include <d3d11_1.h>   // DLSSPAIR: SwapDeviceContextState
 #include <d3dcompiler.h>   // HUDLAYER4: ID3DBlob (D3DCompile loaded at run time)
 #include <dxgi.h>
+#include <dxgi1_2.h>   // SHAREPROBE: IDXGIFactory2
 #include <openxr/openxr.h>
 #include <openxr/openxr_platform.h>
 #include <mmsystem.h>
@@ -46,6 +50,13 @@ bool akvr_early_geo11();
 #include <vector>
 #include <windows.h>
 
+bool akvr_dof_off();   // earlyres.cpp: DOFSWITCH (as applied at this start)
+void akvr_dof_live_apply(bool on);   // earlyres.cpp: DOFLIVE
+int  akvr_dof_live_state();
+bool akvr_eyeaa_apply(ID3D11Device *d, ID3D11DeviceContext *c, ID3D11Texture2D *src, const D3D11_BOX &box, ID3D11Texture2D *dst);   // eyeaa.cpp: EYEAA
+void akvr_eyeaa_eye(int e);   // eyeaa.cpp: POSTFX (auto exposure measured on eye 0 only)
+void akvr_eyeaa_forget_images();
+int akvr_hud_target_points(float* xy, int max, int rtW, int rtH, float* off, float* xf);   // earlyres.cpp: TARGETANCHOR (MARKERCUT)
 namespace {
 XrInstance g_inst = XR_NULL_HANDLE;
 XrSystemId g_sys = XR_NULL_SYSTEM_ID;
@@ -59,8 +70,35 @@ ID3D11DeviceContext *g_ctx =
 
 // session/pose (now owned by the Present thread)
 XrSession g_session = XR_NULL_HANDLE;
+// SCLOG 2026-10-10 (two game crashes in Virtual Desktop right after "xrCreateSwapchain: ovrResult failure [-7000]" in
+// its OpenXR.log, at the first main menu; AKVR never said which of its headset images that was): every swapchain request
+// is written to akvr_captures\akvr_swapchains.txt before and after, flushed at once (VD fail-fasts the process).
+XrResult sc_create(const char *what, const XrSwapchainCreateInfo *sci, XrSwapchain *out) {
+  static FILE *f = nullptr; static bool tried = false;
+  if (!tried) {
+    tried = true;
+    wchar_t p[MAX_PATH]; GetModuleFileNameW(nullptr, p, MAX_PATH);
+    if (wchar_t *sl = wcsrchr(p, L'\\')) { sl[1] = 0; wcscat_s(p, L"akvr_captures\\akvr_swapchains.txt"); _wfopen_s(&f, p, L"a"); }
+    if (f) { SYSTEMTIME t; GetLocalTime(&t); fprintf(f, "--- %04d-%02d-%02d %02d:%02d:%02d game start\n", t.wYear, t.wMonth, t.wDay, t.wHour, t.wMinute, t.wSecond); fflush(f); }
+  }
+  SYSTEMTIME t; GetLocalTime(&t);
+  if (f) { fprintf(f, "%02d:%02d:%02d.%03d %s %ux%u format %lld: asking\n", t.wHour, t.wMinute, t.wSecond, t.wMilliseconds, what, sci->width, sci->height, (long long)sci->format); fflush(f); }
+  const XrResult r = xrCreateSwapchain(g_session, sci, out);
+  if (f) { fprintf(f, "    -> %s (%d)\n", XR_SUCCEEDED(r) ? "ok" : "FAILED", (int)r); fflush(f); }
+  return r;
+}
 XrSpace g_localSpace = XR_NULL_HANDLE;
 XrSpace g_viewSpace = XR_NULL_HANDLE;
+// SVRSPACE 2026-10-09 - JJ in SteamVR: title screens "behind me ... upside down", the 3D menu upside down and
+// unfusable. SteamVR's xrclient log: "xrLocateViews: Switching to TrackingUniverseSeated because
+// XR_REFERENCE_SPACE_TYPE_LOCAL continued to be requested for more than 3 seconds" - LOCAL changes under us with NO
+// reference-space-change event, after the first screen was hung and the head zero taken. Both spaces are made;
+// g_localSpace (every locate + every layer) points at the chosen one. xrspace: 0 auto (STAGE under SteamVR, LOCAL
+// otherwise), 1 LOCAL, 2 STAGE; live via AKN command "xrspace N" (re-zeroes like a runtime recenter).
+XrSpace g_spaceLocal = XR_NULL_HANDLE, g_spaceStage = XR_NULL_HANDLE;
+int g_xrSpaceMode = 0;
+bool g_spaceIsStage = false;
+long g_poseJumps = 0;   // POSEJUMP: re-zeroes after a one-frame pose jump
 XrSessionState g_state = XR_SESSION_STATE_UNKNOWN;
 bool g_running = false;  // session in begun state
 bool g_posValid = false; // has 6DOF position tracking ever been valid?
@@ -276,6 +314,38 @@ float g_loadFovScale = 0.6f;
 // LOADUP 2026-09-30 — JJ: "a slider to move the loading screen up and down". Degrees, + = up; an off-axis shift of
 // the loading screen's frustum (tangent space), so the picture moves without changing shape.
 float g_loadUpDeg = 0.0f;
+// SCREENNEAR 2026-10-11 - JJ: "move the title screens and the loading screens a bit closer to the camera" (then: "not
+// parallax, just a bit closer"). Both eyes showed the same picture through the same window = the screen read as infinitely
+// far. Each eye's window is now turned inward by atan(half eye distance / D), so the screen reads D metres away at the same
+// angular size; the HUD on those screens (loading tips) hangs at the same D. Start-up / title and loading screens only.
+float g_nearScreenM = 0.0f;     // setting screendist (metres); 0 = far (at infinity, smooth). JJ 2026-10-11: far until the
+                                // game draws these screens at full rate (it drops to ~30/s there; near screens judder)
+bool g_nearScreenNow = false;   // this frame shows a start-up / title or loading screen
+// SCREENROOM 2026-10-11 - JJ after SCREENNEAR: "they appear closer but when I move left and right they seem to shift with
+// me, making it feel more like they are still at infinity". The inward turn gave stereo depth only; the layer itself was
+// still a picture at infinity, so head moves dragged it along. Now (engine stereo) the screen is a panel fixed in the
+// room, D metres in front of the screen pose: we draw it ourselves into each eye's full view from that eye's own
+// position (runtime lens, no turn) and declare exactly those views (SKVR SCREENPAD / Batman City SCREENROOM: never a
+// narrow projection layer or a lone quad under Virtual Desktop).
+bool g_roomScrNow = false;      // the eye images hold a room screen (the views loop declares the eyes it was drawn for)
+XrPosef g_roomScrHead{};        // the head pose it was drawn from
+float g_roomScrT[4] = {};       // the screen window's tangents l r u d (last frame's screen fov)
+bool g_roomScrTOk = false;
+// SCREENQUAD 2026-10-11 - JJ after SCREENROOM2: "they are locked to 30 frames per second and jitter really badly when I
+// move my head". The game presents ~30 pictures/s on these screens and the panel was drawn into the eye pictures only per
+// game picture; a picture at infinity hid that (rotation-only reprojection is exact there), a panel at 3 m cannot. Now the
+// screen picture goes into its own headset image (created once with the eye images - never mid-session, VD crash lesson)
+// and is submitted as a room-fixed quad pair (the HUD's per-eye pair = depth under VD): the runtime composites it from the
+// current head pose every refresh. The eye pictures are black under it.
+XrSwapchain g_scrSwap = XR_NULL_HANDLE;
+std::vector<ID3D11Texture2D *> g_scrImages;
+std::vector<ID3D11RenderTargetView *> g_scrRTV;
+int64_t g_scrFmt = 0; bool g_scrSrgb = false; int g_scrErr = 0;
+constexpr uint32_t kScrPx = 2048;
+bool g_scrQuadNow = false;      // this frame's screen is the quad (eye pictures black)
+XrCompositionLayerQuad g_scrQuad{XR_TYPE_COMPOSITION_LAYER_QUAD};
+XrCompositionLayerQuad g_scrQuadL{XR_TYPE_COMPOSITION_LAYER_QUAD}, g_scrQuadR{XR_TYPE_COMPOSITION_LAYER_QUAD};
+ID3D11PixelShader *g_scrPSdec = nullptr;   // display values -> linear, for an sRGB headset image (it encodes them back)
 // The main menu runs a live 3D camera exactly like gameplay, so the detector calls it
 // GAMEPLAY. But its place in the sequence is fixed: boot/splash (screen) -> main
 // menu (camera live) -> loading screen -> game. So the FIRST camera-live stretch after
@@ -283,6 +353,12 @@ float g_loadUpDeg = 0.0f;
 // screen) ends it. 0 = before the menu, 1 = in the main menu, 2 = past it.
 bool g_autoMainMenu = true;
 bool g_menuFlat = true;   // MENUFLAT: floating screens show one eye to both eyes
+// MENU3D 2026-10-08 (JJ: in the main menu "Batman looks great for about a second then it switches and the depth and scale
+// look noticeably worse"): the first second is true eye separation, then MENUCLOSE detects the main menu and renders
+// both eyes from one spot. With the turned lens and pose stamp the close Batman now fuses - real 3D is the default;
+// the one-spot view stays as an option (setting menuonespot).
+bool g_menuOneSpot = false;
+static bool menu_one_spot() { return g_menuOneSpot && akvr_xr_main_menu_detected(); }
 // EYEVIEW 2026-09-27 (port of SKVR "NOSEWASTE", skvr/HANDOVER.md) — each Quest 3 eye sees
 // ~49.3 deg outward but only ~35.4 inward, and FULLVIEW renders the OUTER edge on both sides,
 // so ~20% of every row is never shown. geo-11 adds x += S(w - C) per eye: an off-axis term
@@ -309,7 +385,7 @@ bool  g_eyeFlip = false;       // which way is "outward" relative to geo-11's ey
 float g_eyeTanOut = 0.0f, g_eyeTanIn = 0.0f, g_eyeTanUp = 0.0f, g_eyeTanDown = 0.0f;
 // Effective eye routing: a negative convergence flips geo-11's eye translation, so the
 // SBS halves swap relative to normal while the eye view is applied (SKVR: swap off).
-static bool swap_eff() { return g_nativeSwapEyes != g_eyeApplied; }
+static bool swap_eff() { return akvr_engine_stereo() ? false : (g_nativeSwapEyes != g_eyeApplied); }   // GEO11OFF: engine stereo never swaps (swapeyes=1 sent each eye the other's picture)
 // MENU3D (experimental, off by default): the main menu stays a live head-tracked 3D
 // view and earlyres.cpp slides the menu movies against the head so they read as
 // pinned in the world. g_menu3dRef* = the applied head angles when it started.
@@ -345,7 +421,7 @@ bool g_camOk = false;
 float g_camPos[3] = {0, 0, 0};
 float g_menuCam[16][3];
 int g_menuCamN = 0;
-char g_modeLog[1024] = "";
+char g_modeLog[8192] = "";   // SCR30: room for the per-screen frame rates
 ULONGLONG g_modeLogStart = 0;
 void mode_log(const char *what) {
   const ULONGLONG now = GetTickCount64();
@@ -354,6 +430,18 @@ void mode_log(const char *what) {
   snprintf(line, sizeof(line), "%.1fs %s; ", (now - g_modeLogStart) / 1000.0, what);
   if (strlen(g_modeLog) + strlen(line) < sizeof(g_modeLog) - 1)
     strcat_s(g_modeLog, line);
+}
+
+// SVRSPACE: point g_localSpace at the chosen space; a live change re-zeroes (head heading, floating screens, HUD)
+void space_choose(bool live) {
+  if (g_spaceLocal == XR_NULL_HANDLE) return;
+  const bool svr = std::strstr(g_runtime, "SteamVR") != nullptr;
+  const bool stage = (g_xrSpaceMode == 2 || (g_xrSpaceMode == 0 && svr)) && g_spaceStage != XR_NULL_HANDLE;
+  const XrSpace want = stage ? g_spaceStage : g_spaceLocal;
+  if (want == g_localSpace) return;
+  g_localSpace = want; g_spaceIsStage = stage;
+  if (live) { g_recenterPending = true; g_recenterAt = 0; }
+  mode_log(stage ? "space STAGE" : "space LOCAL");
 }
 
 // Published head euler + position. Written and read on the Present thread now,
@@ -519,6 +607,59 @@ DXGI_FORMAT copy_family(DXGI_FORMAT f) {
   }
 }
 
+// SHAREPROBE 2026-10-07 - SteamVR still "Failed to create sync texture" after DXGI11, which answered 0 calls (the game
+// never uses CreateDXGIFactory). vrclient makes a keyed-mutex shared texture on OUR device (the game's, with geo-11 on
+// it). Discriminate: can the game's device make one at all, what made the device, is CreateTexture2D detoured, and can
+// a fresh device on the same GPU make one. Reported in the F2 / startup status.
+char g_shareProbe[480] = "not run";
+static const char *mod_of(void *fn, char *buf, size_t n) {
+  HMODULE m = nullptr; buf[0] = 0;
+  if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, (LPCSTR)fn, &m) && m) {
+    char path[MAX_PATH]; GetModuleFileNameA(m, path, MAX_PATH);
+    const char *sl = strrchr(path, '\\'); strncpy_s(buf, n, sl ? sl + 1 : path, _TRUNCATE);
+  } else strncpy_s(buf, n, "?", _TRUNCATE);
+  return buf;
+}
+static HRESULT keyed_try(ID3D11Device *d, UINT misc) {
+  D3D11_TEXTURE2D_DESC td{}; td.Width = td.Height = 16; td.MipLevels = 1; td.ArraySize = 1; td.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+  td.SampleDesc.Count = 1; td.Usage = D3D11_USAGE_DEFAULT; td.BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
+  td.MiscFlags = misc;
+  ID3D11Texture2D *t = nullptr;
+  HRESULT hr = E_FAIL;
+  __try { hr = d->CreateTexture2D(&td, nullptr, &t); } __except (EXCEPTION_EXECUTE_HANDLER) { hr = (HRESULT)0xC0000005; }
+  if (t) t->Release();
+  return hr;
+}
+static void share_probe(ID3D11Device *d) {
+  if (!d) return;
+  void **vt = *(void ***)d;
+  char m1[64], m2[64];
+  const unsigned char *code = (const unsigned char *)vt[5];   // ID3D11Device::CreateTexture2D
+  const bool detour = code && (code[0] == 0xE9 || (code[0] == 0xFF && code[1] == 0x25) || (code[0] == 0x48 && code[1] == 0xB8));
+  bool f1 = false, f2 = false;
+  IDXGIDevice *dd = nullptr; IDXGIAdapter *ad = nullptr;
+  if (SUCCEEDED(d->QueryInterface(__uuidof(IDXGIDevice), (void **)&dd)) && dd && SUCCEEDED(dd->GetAdapter(&ad)) && ad) {
+    IDXGIFactory1 *fa1 = nullptr; IDXGIFactory2 *fa2 = nullptr;
+    f1 = SUCCEEDED(ad->GetParent(__uuidof(IDXGIFactory1), (void **)&fa1)) && fa1; if (fa1) fa1->Release();
+    f2 = SUCCEEDED(ad->GetParent(__uuidof(IDXGIFactory2), (void **)&fa2)) && fa2; if (fa2) fa2->Release();
+  }
+  const HRESULT kG = keyed_try(d, D3D11_RESOURCE_MISC_SHARED_KEYEDMUTEX);
+  const HRESULT kN = keyed_try(d, D3D11_RESOURCE_MISC_SHARED_KEYEDMUTEX | D3D11_RESOURCE_MISC_SHARED_NTHANDLE);
+  const HRESULT sh = keyed_try(d, D3D11_RESOURCE_MISC_SHARED);
+  // SHAREPROBE2 2026-10-07: the fresh-device test is GONE. geo-11 attached to that throw-away device (its
+  // CreateTexture2D came back "other") instead of the game's: no katanga surface, and the eyes were the flat frame cut
+  // in half (JJ: "way too close to my face, and the eyes were too separated"). Never create a D3D11 device in a
+  // geo-11 process.
+  if (ad) ad->Release();
+  if (dd) dd->Release();
+  snprintf(g_shareProbe, sizeof(g_shareProbe),
+           "game device: flags 0x%X, level 0x%X, factory1 %s, factory2 %s, CreateTexture2D in %s%s | keyed-mutex texture 0x%08lX, "
+           "keyed+NT 0x%08lX, plain shared 0x%08lX",
+           d->GetCreationFlags(), (unsigned)d->GetFeatureLevel(), f1 ? "yes" : "NO", f2 ? "yes" : "NO", mod_of(vt[5], m1, sizeof(m1)),
+           detour ? " (DETOURED)" : "", (unsigned long)kG, (unsigned long)kN, (unsigned long)sh);
+  (void)m2;
+}
+
 bool create_session() {
   // Graphics requirements MUST be queried before session creation.
   PFN_xrGetD3D11GraphicsRequirementsKHR pfn = nullptr;
@@ -556,6 +697,7 @@ bool create_session() {
     if (ad) ad->Release();
     if (dd) dd->Release();
   }
+  share_probe(g_device);   // SHAREPROBE
   XrResult r = xrCreateSession(g_inst, &sci, &g_session);
   if (XR_FAILED(r)) {
     snprintf(g_sessStatus, sizeof(g_sessStatus),
@@ -566,7 +708,11 @@ bool create_session() {
   XrReferenceSpaceCreateInfo rci{XR_TYPE_REFERENCE_SPACE_CREATE_INFO};
   rci.poseInReferenceSpace.orientation.w = 1.0f; // identity
   rci.referenceSpaceType = XR_REFERENCE_SPACE_TYPE_LOCAL;
-  xrCreateReferenceSpace(g_session, &rci, &g_localSpace);
+  xrCreateReferenceSpace(g_session, &rci, &g_spaceLocal);
+  rci.referenceSpaceType = XR_REFERENCE_SPACE_TYPE_STAGE;   // SVRSPACE
+  if (XR_FAILED(xrCreateReferenceSpace(g_session, &rci, &g_spaceStage))) g_spaceStage = XR_NULL_HANDLE;
+  g_localSpace = g_spaceLocal; g_spaceIsStage = false;
+  space_choose(false);
   rci.referenceSpaceType = XR_REFERENCE_SPACE_TYPE_VIEW;
   xrCreateReferenceSpace(g_session, &rci, &g_viewSpace);
 
@@ -652,7 +798,7 @@ bool create_swapchain(uint32_t w, uint32_t h, DXGI_FORMAT bbFormat) {
     sci.faceCount = 1;
     sci.arraySize = 1;
     sci.mipCount = 1;
-    if (XR_FAILED(xrCreateSwapchain(g_session, &sci, &g_swap[e]))) {
+    if (XR_FAILED(sc_create("eye image", &sci, &g_swap[e]))) {
       g_swap[e] = XR_NULL_HANDLE;
       return false;
     }
@@ -667,6 +813,23 @@ bool create_swapchain(uint32_t w, uint32_t h, DXGI_FORMAT bbFormat) {
     for (auto &i : imgs)
       g_swapImages[e].push_back(i.texture);
   }
+  if (g_scrSwap == XR_NULL_HANDLE && !g_scrErr) {   // SCREENQUAD: once, beside the first eye images
+    XrSwapchainCreateInfo sci{XR_TYPE_SWAPCHAIN_CREATE_INFO};
+    sci.usageFlags = XR_SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT | XR_SWAPCHAIN_USAGE_TRANSFER_DST_BIT;
+    sci.format = chosen; sci.sampleCount = 1; sci.width = kScrPx; sci.height = kScrPx;
+    sci.faceCount = 1; sci.arraySize = 1; sci.mipCount = 1;
+    if (XR_FAILED(sc_create("screen panel", &sci, &g_scrSwap))) { g_scrSwap = XR_NULL_HANDLE; g_scrErr = 1; }
+    else {
+      uint32_t n = 0;
+      xrEnumerateSwapchainImages(g_scrSwap, 0, &n, nullptr);
+      std::vector<XrSwapchainImageD3D11KHR> si(n, {XR_TYPE_SWAPCHAIN_IMAGE_D3D11_KHR});
+      xrEnumerateSwapchainImages(g_scrSwap, n, &n, (XrSwapchainImageBaseHeader *)si.data());
+      for (auto &i : si) g_scrImages.push_back(i.texture);
+      g_scrRTV.assign(g_scrImages.size(), nullptr);
+      g_scrFmt = chosen;
+      g_scrSrgb = chosen == DXGI_FORMAT_R8G8B8A8_UNORM_SRGB || chosen == DXGI_FORMAT_B8G8R8A8_UNORM_SRGB;
+    }
+  }
   g_swW = w;
   g_swH = h;
   g_eyeW = eyeW;
@@ -680,7 +843,7 @@ bool create_swapchain(uint32_t w, uint32_t h, DXGI_FORMAT bbFormat) {
 void destroy_swapchains() {
   for (int e = 0; e < 2; ++e) {
     if (g_swap[e] != XR_NULL_HANDLE) {
-      xrDestroySwapchain(g_swap[e]);
+      akvr_eyeaa_forget_images(); xrDestroySwapchain(g_swap[e]);
       g_swap[e] = XR_NULL_HANDLE;
     }
     g_swapImages[e].clear();
@@ -730,7 +893,7 @@ bool create_overlay_swapchain() {
   sci.faceCount = 1;
   sci.arraySize = 1;
   sci.mipCount = 1;
-  if (XR_FAILED(xrCreateSwapchain(g_session, &sci, &g_ovSwap))) {
+  if (XR_FAILED(sc_create("overlay panel", &sci, &g_ovSwap))) {
     g_ovSwap = XR_NULL_HANDLE;
     return false;
   }
@@ -816,6 +979,359 @@ void probe_backbuffer(ID3D11Texture2D *bb, const D3D11_TEXTURE2D_DESC &bd) {
              d < 40 ? "SBS stereo pair" : "MONO - no SBS", d);
   }
 }
+
+extern float g_eyeLocDistMm;   // HUDEYES (below): the measured eye distance
+int g_aknLensMode = 2;   // TURNEDEYE (JJ's 5th Quest test): AK's light culling needs a centred lens; 1 = the old off-centre lens
+                         // (2026-10-08 "way too costly"), option only
+// MAPFLAT 2026-10-08 (JJ: "on the map, the HUD appears to be completely out of alignment and the incorrect size for the
+// actual map beneath it"; captures c223528/c224357: the left eye's map drawn through the headset's turned 85x90 deg eye
+// lens, the map's icons laid out by the game for its own 75 deg lens). A floating screen (map, plain pause) shows ONE
+// picture to both eyes: AKN draws it the flat game's way - the game's own lens, both eyes at the head - so the game's
+// HUD lies on it exactly; the HUD sheet gets the screen's crop too (g_scrVFrac / g_scrCropW).
+bool g_aknFlatScreen = false; int g_mapFlat = 1;   // setting-free switch: command / export akvr_set_map_flat
+float g_scrVFrac = 1.0f, g_scrCropW = 1.0f;
+bool g_hudOnScreen = false;   // engine mode: this frame's HUD layer belongs on the floating screen (g_fixedPose)
+// AKN M5: the measured eye distance (metres), 64 mm until the runtime has given one.
+float akn_ipd_m() { return (g_eyeLocDistMm > 40.0f && g_eyeLocDistMm < 90.0f) ? g_eyeLocDistMm * 0.001f : 0.064f; }
+// AKN M5: our side-by-side source. A fresh AKN pair (both eyes drawn by the game this frame) is copied in whole;
+// without one (logos, loading, anything with no 3D) the window picture goes into both halves, like a flat screen.
+ID3D11Texture2D *g_aknSbs = nullptr;
+long g_aknSeq = -1;
+bool g_aknFresh = false;
+long g_aknNoFresh = 1000;   // LOADFIT: Presents since the last fresh AKN pair
+long g_aknPairs = 0, g_aknFlat = 0;
+char g_aknDiag[200] = "";
+// DLSSPAIR 2026-10-08 (AKN DLSS D1): with DLSS the game draws each eye SMALLER and AKN's pair is the full headset size,
+// bigger than the window. The side-by-side source takes the pair's size; flat frames (menus, loading) are stretched
+// into it (a linear-filtered copy, drawn in a private context state so the game's state is untouched).
+typedef HRESULT(WINAPI *StrCompileFn)(LPCVOID, SIZE_T, LPCSTR, const void *, void *, LPCSTR, LPCSTR, UINT, UINT, ID3DBlob **, ID3DBlob **);
+ID3D11Texture2D *g_flatIn = nullptr; ID3D11ShaderResourceView *g_flatSRV = nullptr; ID3D11RenderTargetView *g_sbsRTV = nullptr;
+ID3D11VertexShader *g_strVS = nullptr; ID3D11PixelShader *g_strPS = nullptr; ID3D11SamplerState *g_strSamp = nullptr;
+ID3DDeviceContextState *g_strState = nullptr; int g_strOk = 0;
+ID3D11PixelShader *g_strPSL = nullptr;   // DLSSMIRROR: left half only
+ID3D11ShaderResourceView *g_sbsSRV = nullptr; ID3D11RenderTargetView *g_bbRTV = nullptr; ID3D11Texture2D *g_bbRTVTex = nullptr;
+bool stretch_build() {
+  if (g_strOk) return g_strOk == 1;
+  g_strOk = -1;
+  HMODULE m = LoadLibraryW(L"d3dcompiler_47.dll");
+  StrCompileFn compile = m ? (StrCompileFn)GetProcAddress(m, "D3DCompile") : nullptr;
+  if (!compile) return false;
+  static const char vs[] =
+      "void main(uint id : SV_VertexID, out float4 p : SV_Position, out float2 uv : TEXCOORD0) {"
+      " uv = float2((id << 1) & 2, id & 2); p = float4(uv * float2(2, -2) + float2(-1, 1), 0, 1); }";
+  static const char ps[] =
+      "Texture2D t : register(t0); SamplerState s : register(s0);"
+      "float4 main(float4 p : SV_Position, float2 uv : TEXCOORD0) : SV_Target { return t.Sample(s, uv); }";
+  ID3DBlob *vb = nullptr, *pb = nullptr, *err = nullptr;
+  bool ok = SUCCEEDED(compile(vs, sizeof(vs) - 1, "strvs", nullptr, nullptr, "main", "vs_5_0", 0, 0, &vb, &err));
+  if (err) { err->Release(); err = nullptr; }
+  ok = ok && SUCCEEDED(compile(ps, sizeof(ps) - 1, "strps", nullptr, nullptr, "main", "ps_5_0", 0, 0, &pb, &err));
+  if (err) err->Release();
+  ok = ok && SUCCEEDED(g_device->CreateVertexShader(vb->GetBufferPointer(), vb->GetBufferSize(), nullptr, &g_strVS));
+  ok = ok && SUCCEEDED(g_device->CreatePixelShader(pb->GetBufferPointer(), pb->GetBufferSize(), nullptr, &g_strPS));
+  if (vb) vb->Release();
+  if (pb) pb->Release();
+  static const char psl[] =
+      "Texture2D t : register(t0); SamplerState s : register(s0);"
+      "float4 main(float4 p : SV_Position, float2 uv : TEXCOORD0) : SV_Target { return t.Sample(s, uv * float2(0.5, 1)); }";
+  ID3DBlob *plb = nullptr; err = nullptr;
+  if (ok && SUCCEEDED(compile(psl, sizeof(psl) - 1, "strpsl", nullptr, nullptr, "main", "ps_5_0", 0, 0, &plb, &err)) && plb)
+    g_device->CreatePixelShader(plb->GetBufferPointer(), plb->GetBufferSize(), nullptr, &g_strPSL);
+  if (err) err->Release();
+  if (plb) plb->Release();
+  D3D11_SAMPLER_DESC sd{}; sd.Filter = D3D11_FILTER_MIN_MAG_MIP_LINEAR; sd.AddressU = sd.AddressV = sd.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP; sd.MaxLOD = D3D11_FLOAT32_MAX;
+  ok = ok && SUCCEEDED(g_device->CreateSamplerState(&sd, &g_strSamp));
+  ID3D11Device1 *d1 = nullptr;
+  if (ok && SUCCEEDED(g_device->QueryInterface(__uuidof(ID3D11Device1), (void **)&d1)) && d1) {
+    const D3D_FEATURE_LEVEL fl = g_device->GetFeatureLevel();
+    ok = SUCCEEDED(d1->CreateDeviceContextState(0, &fl, 1, D3D11_SDK_VERSION, __uuidof(ID3D11Device1), nullptr, &g_strState));
+    d1->Release();
+  } else ok = false;
+  g_strOk = ok ? 1 : -1;
+  return ok;
+}
+// stretch the window picture into both halves of the side-by-side source
+bool flat_stretch(ID3D11Texture2D *bb, const D3D11_TEXTURE2D_DESC &d, UINT halfW, UINT h) {
+  if (!stretch_build()) return false;
+  if (g_flatIn) { D3D11_TEXTURE2D_DESC fd{}; g_flatIn->GetDesc(&fd); if (fd.Width != d.Width || fd.Height != d.Height || fd.Format != d.Format) { if (g_flatSRV) g_flatSRV->Release(); g_flatSRV = nullptr; g_flatIn->Release(); g_flatIn = nullptr; } }
+  if (!g_flatIn) {
+    D3D11_TEXTURE2D_DESC fd = d; fd.MipLevels = 1; fd.ArraySize = 1; fd.SampleDesc = {1, 0}; fd.Usage = D3D11_USAGE_DEFAULT;
+    fd.BindFlags = D3D11_BIND_SHADER_RESOURCE; fd.CPUAccessFlags = 0; fd.MiscFlags = 0;
+    if (FAILED(g_device->CreateTexture2D(&fd, nullptr, &g_flatIn)) || FAILED(g_device->CreateShaderResourceView(g_flatIn, nullptr, &g_flatSRV))) return false;
+  }
+  if (!g_sbsRTV && FAILED(g_device->CreateRenderTargetView(g_aknSbs, nullptr, &g_sbsRTV))) return false;
+  g_ctx->CopyResource(g_flatIn, bb);
+  ID3D11DeviceContext1 *c1 = nullptr; ID3DDeviceContextState *prev = nullptr;
+  if (FAILED(g_ctx->QueryInterface(__uuidof(ID3D11DeviceContext1), (void **)&c1)) || !c1) return false;
+  c1->SwapDeviceContextState(g_strState, &prev);
+  // STRBLEND 2026-10-09: g_strState is shared and KEEPS what was set in it - MIRRORHUD leaves the HUD blend
+  // (ONE / INV_SRC_ALPHA) set, so every later draw in this state blended onto the old picture: the SVRSTRAIGHT output
+  // piled up frame on frame (JJ: "blown out to white ... blurring when moving your head"). Opaque, no depth, default raster.
+  { const FLOAT bf0[4] = {0, 0, 0, 0}; c1->OMSetBlendState(nullptr, bf0, 0xffffffff); c1->OMSetDepthStencilState(nullptr, 0); c1->RSSetState(nullptr); }
+  c1->OMSetRenderTargets(1, &g_sbsRTV, nullptr);
+  c1->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+  c1->VSSetShader(g_strVS, nullptr, 0); c1->PSSetShader(g_strPS, nullptr, 0);
+  c1->PSSetShaderResources(0, 1, &g_flatSRV); c1->PSSetSamplers(0, 1, &g_strSamp);
+  for (int e = 0; e < 2; ++e) {
+    D3D11_VIEWPORT vp{ (float)(e * halfW), 0.0f, (float)halfW, (float)h, 0.0f, 1.0f };
+    c1->RSSetViewports(1, &vp);
+    c1->Draw(3, 0);
+  }
+  ID3D11ShaderResourceView *none = nullptr; c1->PSSetShaderResources(0, 1, &none);
+  ID3D11RenderTargetView *nrt = nullptr; c1->OMSetRenderTargets(1, &nrt, nullptr);
+  if (prev) { c1->SwapDeviceContextState(prev, nullptr); prev->Release(); }
+  c1->Release();
+  return true;
+}
+// DLSSMIRROR 2026-10-08 (JJ: "Am i supposed to be seeing anything in the desktop window? AA looks bad still"): with
+// DLSS the window holds the game's own small picture WITHOUT anti-aliasing (SMAA is replaced). Show the DLSS left eye
+// there instead (scaled down to the window), after the headset took its copy.
+void mirror_hud(ID3D11DeviceContext *c, ID3D11RenderTargetView *rtv, UINT w, UINT h);   // MIRRORHUD (below hud_in_eyes)
+// MIRRORLATE 2026-10-09 (JJ in SteamVR: "a 2D flat copy of all 3D elements overlaid ... moves in the opposite direction"
+// - his capture c184453: the HUD sheet held the whole left-eye picture): AKN takes every window-buffer bind outside the
+// eye renders as HUD until akn_present, so this mirror draw landed on the HUD sheet (since STRBLEND opaque; before, the
+// leftover HUD blend hid it). It now runs after akn_send_present, when the frame's HUD is complete.
+bool g_mirrorPending = false;
+bool g_mirrorHasHud = false;   // MIRRORHUD2: the eye picture being mirrored already holds the HUD
+void dlss_mirror(ID3D11Texture2D *bb, const D3D11_TEXTURE2D_DESC &d) {
+  if (!g_strPSL || !stretch_build()) return;
+  if (!g_sbsSRV && FAILED(g_device->CreateShaderResourceView(g_aknSbs, nullptr, &g_sbsSRV))) return;
+  // the window's buffer is borrowed for this one draw only (a kept view would block the game's ResizeBuffers)
+  if (FAILED(g_device->CreateRenderTargetView(bb, nullptr, &g_bbRTV)) || !g_bbRTV) { g_bbRTV = nullptr; return; }
+  ID3D11DeviceContext1 *c1 = nullptr; ID3DDeviceContextState *prev = nullptr;
+  if (FAILED(g_ctx->QueryInterface(__uuidof(ID3D11DeviceContext1), (void **)&c1)) || !c1) return;
+  c1->SwapDeviceContextState(g_strState, &prev);
+  // STRBLEND 2026-10-09: g_strState is shared and KEEPS what was set in it - MIRRORHUD leaves the HUD blend
+  // (ONE / INV_SRC_ALPHA) set, so every later draw in this state blended onto the old picture: the SVRSTRAIGHT output
+  // piled up frame on frame (JJ: "blown out to white ... blurring when moving your head"). Opaque, no depth, default raster.
+  { const FLOAT bf0[4] = {0, 0, 0, 0}; c1->OMSetBlendState(nullptr, bf0, 0xffffffff); c1->OMSetDepthStencilState(nullptr, 0); c1->RSSetState(nullptr); }
+  c1->OMSetRenderTargets(1, &g_bbRTV, nullptr);
+  c1->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+  c1->VSSetShader(g_strVS, nullptr, 0); c1->PSSetShader(g_strPSL, nullptr, 0);
+  c1->PSSetShaderResources(0, 1, &g_sbsSRV); c1->PSSetSamplers(0, 1, &g_strSamp);
+  D3D11_VIEWPORT vp{ 0.0f, 0.0f, (float)d.Width, (float)d.Height, 0.0f, 1.0f };
+  c1->RSSetViewports(1, &vp);
+  c1->Draw(3, 0);
+  // MIRRORHUD2 2026-10-09 (JJ: "doubled-up HUD elements ... on the desktop mirror"): since MIRRORLATE the left eye is copied
+  // AFTER HUDINEYE drew the HUD into it - draw the sheet again only when the eyes went without it this frame
+  if (!g_mirrorHasHud) mirror_hud(c1, g_bbRTV, d.Width, d.Height);   // MIRRORHUD: the HUD on the desktop window too
+  ID3D11ShaderResourceView *none = nullptr; c1->PSSetShaderResources(0, 1, &none);
+  ID3D11RenderTargetView *nrt = nullptr; c1->OMSetRenderTargets(1, &nrt, nullptr);
+  if (prev) { c1->SwapDeviceContextState(prev, nullptr); prev->Release(); }
+  c1->Release();
+  g_bbRTV->Release(); g_bbRTV = nullptr;
+}
+// BLACKGAP 2026-10-10 (JJ: "when entering gameplay it starts off in 2D flat for a split second before it corrects into 3D
+// stereo"): after a load AKN waits for 30 steady frames before it draws both eyes (its M5c crash gate), and those frames
+// showed the flat game picture in both eyes. In gameplay, up to 2 s without a pair are now BLACK (a fade-in into 3D);
+// after that the flat picture again, so a real stall still shows something.
+long g_aknBlack = 0;
+// SCREENROOM: the window picture as a panel fixed in the room (g_fixedPose, g_nearScreenM ahead, the screen's own window),
+// drawn into each half of the side-by-side image from that eye's own place at the latest head pose, black around it
+bool hie_build();
+extern ID3D11VertexShader *g_mcVS; extern ID3D11Buffer *g_mcVCB; extern ID3D11RasterizerState *g_hieRS; extern ID3D11DepthStencilState *g_hieDS;
+extern XrFovf g_rawFov[2]; extern bool g_rawFovOk;
+long g_roomScrFrames = 0;
+bool room_screen_draw(ID3D11Texture2D *bb, const D3D11_TEXTURE2D_DESC &d, UINT halfW, UINT h) {
+  if (!g_roomScrTOk || !g_rawFovOk || !stretch_build() || !hie_build() || !g_mcVS || !g_mcVCB) return false;
+  if (g_flatIn) { D3D11_TEXTURE2D_DESC fd{}; g_flatIn->GetDesc(&fd); if (fd.Width != d.Width || fd.Height != d.Height || fd.Format != d.Format) { if (g_flatSRV) g_flatSRV->Release(); g_flatSRV = nullptr; g_flatIn->Release(); g_flatIn = nullptr; } }
+  if (!g_flatIn) {
+    D3D11_TEXTURE2D_DESC fd = d; fd.MipLevels = 1; fd.ArraySize = 1; fd.SampleDesc = {1, 0}; fd.Usage = D3D11_USAGE_DEFAULT;
+    fd.BindFlags = D3D11_BIND_SHADER_RESOURCE; fd.CPUAccessFlags = 0; fd.MiscFlags = 0;
+    if (FAILED(g_device->CreateTexture2D(&fd, nullptr, &g_flatIn)) || FAILED(g_device->CreateShaderResourceView(g_flatIn, nullptr, &g_flatSRV))) return false;
+  }
+  if (!g_sbsRTV && FAILED(g_device->CreateRenderTargetView(g_aknSbs, nullptr, &g_sbsRTV))) return false;
+  // the panel's corners in the room: top-left, top-right, bottom-left, bottom-right (the vertex order of g_mcVS)
+  const float D = g_nearScreenM, *T = g_roomScrT;
+  const XrVector3f loc[4] = {{D * T[0], D * T[2], -D}, {D * T[1], D * T[2], -D}, {D * T[0], D * T[3], -D}, {D * T[1], D * T[3], -D}};
+  XrVector3f corner[4];
+  for (int k = 0; k < 4; ++k) {
+    const XrVector3f o = quat_rotate(g_fixedPose.orientation, loc[k]);
+    corner[k] = {g_fixedPose.position.x + o.x, g_fixedPose.position.y + o.y, g_fixedPose.position.z + o.z};
+  }
+  const XrPosef head = g_curPose;
+  float q[2][20]; bool front[2] = {true, true};
+  for (int e = 0; e < 2; ++e) {
+    const XrFovf &f = g_rawFov[e];   // the runtime's own lens, straight: right for every runtime (SteamVR too)
+    const float tl = tanf(f.angleLeft), tr = tanf(f.angleRight), tu = tanf(f.angleUp), td = tanf(f.angleDown);
+    const XrVector3f r = quat_rotate(head.orientation, XrVector3f{(e == 0 ? -0.5f : 0.5f) * akn_ipd_m(), 0.0f, 0.0f});
+    const XrVector3f ep{head.position.x + r.x, head.position.y + r.y, head.position.z + r.z};
+    const XrQuaternionf inv{-head.orientation.x, -head.orientation.y, -head.orientation.z, head.orientation.w};
+    for (int k = 0; k < 4; ++k) {
+      const XrVector3f v = quat_rotate(inv, XrVector3f{corner[k].x - ep.x, corner[k].y - ep.y, corner[k].z - ep.z});
+      const float w = -v.z;
+      if (w < 0.05f) front[e] = false;
+      q[e][k * 4 + 0] = (2.0f * v.x + (tr + tl) * v.z) / (tr - tl);
+      q[e][k * 4 + 1] = (2.0f * v.y + (tu + td) * v.z) / (tu - td);
+      q[e][k * 4 + 2] = 0.5f * w; q[e][k * 4 + 3] = w;
+    }
+    // the picture's shown part: the middle slice the old floating screen showed (SCREENWIDE / PAUSE169 crop)
+    const float cw = g_scrCropW, vf = g_scrVFrac;
+    q[e][16] = 0.5f * (1.0f - cw); q[e][17] = 0.5f * (1.0f - vf); q[e][18] = cw; q[e][19] = vf;
+  }
+  // SCREENQUAD: the picture into the screen panel's own headset image (sRGB image: decoded first, the view encodes back)
+  static int s_decOk = 0;
+  if (!s_decOk) {
+    s_decOk = -1;
+    HMODULE m = LoadLibraryW(L"d3dcompiler_47.dll");
+    StrCompileFn compile = m ? (StrCompileFn)GetProcAddress(m, "D3DCompile") : nullptr;
+    static const char ps[] =
+        "Texture2D t : register(t0); SamplerState s : register(s0);"
+        "float4 main(float4 p : SV_Position, float2 uv : TEXCOORD0) : SV_Target { float3 c = t.Sample(s, uv).rgb;"
+        " c = c <= 0.04045 ? c / 12.92 : pow((c + 0.055) / 1.055, 2.4); return float4(c, 1); }";
+    ID3DBlob *pb = nullptr, *err = nullptr;
+    if (compile && SUCCEEDED(compile(ps, sizeof(ps) - 1, "scrdec", nullptr, nullptr, "main", "ps_5_0", 0, 0, &pb, &err)) && pb &&
+        SUCCEEDED(g_device->CreatePixelShader(pb->GetBufferPointer(), pb->GetBufferSize(), nullptr, &g_scrPSdec)))
+      s_decOk = 1;
+    if (pb) pb->Release();
+    if (err) err->Release();
+  }
+  const bool quadPath = g_scrSwap != XR_NULL_HANDLE && (!g_scrSrgb || s_decOk == 1);
+  uint32_t sidx = 0; bool sAcq = false;
+  if (quadPath) {
+    XrSwapchainImageAcquireInfo ai{XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO};
+    if (XR_SUCCEEDED(xrAcquireSwapchainImage(g_scrSwap, &ai, &sidx))) {
+      sAcq = true;
+      XrSwapchainImageWaitInfo wi{XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO}; wi.timeout = XR_INFINITE_DURATION;
+      if (XR_FAILED(xrWaitSwapchainImage(g_scrSwap, &wi)) || sidx >= g_scrImages.size()) sidx = 0xffffffffu;
+      else if (!g_scrRTV[sidx]) {
+        D3D11_RENDER_TARGET_VIEW_DESC rd{}; rd.Format = (DXGI_FORMAT)g_scrFmt; rd.ViewDimension = D3D11_RTV_DIMENSION_TEXTURE2D;
+        if (FAILED(g_device->CreateRenderTargetView(g_scrImages[sidx], &rd, &g_scrRTV[sidx]))) { g_scrRTV[sidx] = nullptr; sidx = 0xffffffffu; }
+      }
+    }
+  }
+  const bool toQuad = sAcq && sidx != 0xffffffffu;
+  g_ctx->CopyResource(g_flatIn, bb);
+  ID3D11DeviceContext1 *c1 = nullptr; ID3DDeviceContextState *prev = nullptr;
+  if (FAILED(g_ctx->QueryInterface(__uuidof(ID3D11DeviceContext1), (void **)&c1)) || !c1) {
+    if (sAcq) { XrSwapchainImageReleaseInfo ri{XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO}; xrReleaseSwapchainImage(g_scrSwap, &ri); }
+    return false;
+  }
+  c1->SwapDeviceContextState(g_strState, &prev);
+  { const FLOAT bf0[4] = {0, 0, 0, 0}; c1->OMSetBlendState(nullptr, bf0, 0xffffffff); }   // STRBLEND: opaque
+  c1->OMSetDepthStencilState(g_hieDS, 0); c1->RSSetState(g_hieRS);
+  const FLOAT black[4] = {0.0f, 0.0f, 0.0f, 1.0f};
+  c1->ClearRenderTargetView(g_sbsRTV, black);
+  c1->IASetInputLayout(nullptr); c1->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
+  c1->VSSetShader(g_mcVS, nullptr, 0); c1->VSSetConstantBuffers(0, 1, &g_mcVCB);
+  c1->PSSetShaderResources(0, 1, &g_flatSRV); c1->PSSetSamplers(0, 1, &g_strSamp);
+  if (toQuad) {
+    // the whole panel image = the screen's shown part of the picture
+    float fq[20] = {-1, 1, 0.5f, 1,  1, 1, 0.5f, 1,  -1, -1, 0.5f, 1,  1, -1, 0.5f, 1,  q[0][16], q[0][17], q[0][18], q[0][19]};
+    c1->PSSetShader(g_scrSrgb ? g_scrPSdec : g_strPS, nullptr, 0);
+    c1->OMSetRenderTargets(1, &g_scrRTV[sidx], nullptr);
+    c1->UpdateSubresource(g_mcVCB, 0, nullptr, fq, 0, 0);
+    const D3D11_VIEWPORT vp{0.0f, 0.0f, (float)kScrPx, (float)kScrPx, 0.0f, 1.0f};
+    c1->RSSetViewports(1, &vp);
+    c1->Draw(4, 0);
+  } else {
+    c1->PSSetShader(g_strPS, nullptr, 0);
+    c1->OMSetRenderTargets(1, &g_sbsRTV, nullptr);
+    for (int e = 0; e < 2; ++e) {
+      if (!front[e]) continue;   // the panel behind this eye: black
+      c1->UpdateSubresource(g_mcVCB, 0, nullptr, q[e], 0, 0);
+      D3D11_VIEWPORT vp{(float)(e * halfW), 0.0f, (float)halfW, (float)h, 0.0f, 1.0f};
+      c1->RSSetViewports(1, &vp);
+      c1->Draw(4, 0);
+    }
+  }
+  ID3D11ShaderResourceView *none = nullptr; c1->PSSetShaderResources(0, 1, &none);
+  ID3D11RenderTargetView *nrt = nullptr; c1->OMSetRenderTargets(1, &nrt, nullptr);
+  if (prev) { c1->SwapDeviceContextState(prev, nullptr); prev->Release(); }
+  c1->Release();
+  if (sAcq) { XrSwapchainImageReleaseInfo ri{XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO}; xrReleaseSwapchainImage(g_scrSwap, &ri); }
+  if (toQuad) {   // the room-fixed quad: the screen pose, D ahead, the screen's own window
+    XrCompositionLayerQuad &sq = g_scrQuad;
+    sq = XrCompositionLayerQuad{XR_TYPE_COMPOSITION_LAYER_QUAD};
+    sq.layerFlags = 0;   // opaque
+    sq.space = g_localSpace;
+    sq.eyeVisibility = XR_EYE_VISIBILITY_BOTH;
+    sq.subImage.swapchain = g_scrSwap;
+    sq.subImage.imageRect.offset = {0, 0};
+    sq.subImage.imageRect.extent = {(int32_t)kScrPx, (int32_t)kScrPx};
+    sq.pose.orientation = g_fixedPose.orientation;
+    const XrVector3f c = quat_rotate(g_fixedPose.orientation, XrVector3f{0.5f * D * (T[0] + T[1]), 0.5f * D * (T[2] + T[3]), -D});
+    sq.pose.position = {g_fixedPose.position.x + c.x, g_fixedPose.position.y + c.y, g_fixedPose.position.z + c.z};
+    sq.size = {D * (T[1] - T[0]), D * (T[2] - T[3])};
+  }
+  g_scrQuadNow = toQuad;
+  g_roomScrHead = head;
+  if (!g_roomScrFrames++) mode_log(toQuad ? "SCREENQUAD: start-up / loading screen as a room-fixed headset panel" : "SCREENROOM: start-up / loading screen drawn as a room panel");
+  return true;
+}
+bool aknSbsUpdate(IDXGISwapChain *sc, bool blackGap) {
+  const bool roomWant = g_nearScreenNow;   // SCREENROOM (this frame's screen kind is decided later: last frame's)
+  g_roomScrNow = false; g_scrQuadNow = false;
+  ID3D11Texture2D *bb = nullptr;
+  if (!sc || !g_ctx || FAILED(sc->GetBuffer(0, __uuidof(ID3D11Texture2D), (void **)&bb)) || !bb) return false;
+  D3D11_TEXTURE2D_DESC d{}; bb->GetDesc(&d);
+  long seq = 0;
+  ID3D11Texture2D *pair = akn_get_pair(&seq);
+  // DLSSPAIR: the side-by-side size = the pair's when AKN upscales (pair taller than the window), else the window x2
+  UINT sbsW = d.Width * 2, sbsH = d.Height;
+  if (pair) { D3D11_TEXTURE2D_DESC pd{}; pair->GetDesc(&pd); if (pd.Height > d.Height && pd.Format == d.Format) { sbsW = pd.Width; sbsH = pd.Height; } }
+  if (g_aknSbs) {
+    D3D11_TEXTURE2D_DESC sd{}; g_aknSbs->GetDesc(&sd);
+    if (sd.Width != sbsW || sd.Height != sbsH || sd.Format != d.Format) { if (g_sbsRTV) { g_sbsRTV->Release(); g_sbsRTV = nullptr; } if (g_sbsSRV) { g_sbsSRV->Release(); g_sbsSRV = nullptr; } g_aknSbs->Release(); g_aknSbs = nullptr; }
+  }
+  if (!g_aknSbs) {
+    D3D11_TEXTURE2D_DESC sd = d;
+    sd.Width = sbsW; sd.Height = sbsH; sd.MipLevels = 1; sd.ArraySize = 1; sd.SampleDesc = {1, 0};
+    sd.Usage = D3D11_USAGE_DEFAULT; sd.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET; sd.CPUAccessFlags = 0; sd.MiscFlags = 0;
+    if (FAILED(g_device->CreateTexture2D(&sd, nullptr, &g_aknSbs))) { g_aknSbs = nullptr; bb->Release(); return false; }
+  }
+  bool fresh = false;
+  if (pair && seq != g_aknSeq && !roomWant) {   // SCREENQUAD2: on a start-up / loading screen the window picture wins
+    D3D11_TEXTURE2D_DESC pd{}; pair->GetDesc(&pd);
+    if (pd.Width == sbsW && pd.Height == sbsH && pd.Format == d.Format) fresh = true;
+  }
+  if (fresh) { g_ctx->CopyResource(g_aknSbs, pair); g_aknSeq = seq; ++g_aknPairs; if (sbsH != d.Height) g_mirrorPending = true; }   // MIRRORLATE
+  else if (blackGap && (g_sbsRTV || SUCCEEDED(g_device->CreateRenderTargetView(g_aknSbs, nullptr, &g_sbsRTV)))) {   // BLACKGAP
+    const FLOAT black[4] = {0.0f, 0.0f, 0.0f, 1.0f};
+    g_ctx->ClearRenderTargetView(g_sbsRTV, black);
+    ++g_aknBlack;
+  }
+  else if (roomWant && room_screen_draw(bb, d, sbsW / 2, sbsH)) {   // SCREENROOM
+    g_roomScrNow = true;
+    ++g_aknFlat;
+  }
+  else if (sbsH != d.Height) {
+    flat_stretch(bb, d, sbsW / 2, sbsH);   // DLSSPAIR: menus / loading at the small render size, stretched
+    ++g_aknFlat;
+  }
+  else {
+    g_ctx->CopySubresourceRegion(g_aknSbs, 0, 0, 0, 0, bb, 0, nullptr);
+    g_ctx->CopySubresourceRegion(g_aknSbs, 0, d.Width, 0, 0, bb, 0, nullptr);
+    ++g_aknFlat;
+  }
+  g_aknFresh = fresh;
+  {   // SCREENQUAD2: which way a start-up / loading screen reached the headset - logged on every change
+    const int path = !roomWant ? 0 : g_scrQuadNow ? 1 : g_roomScrNow ? 2 : blackGap ? 3 : 4;
+    static int s_path = -1; static bool s_pairSeen = false;
+    if (roomWant && pair && seq != g_aknSeq && !s_pairSeen) { s_pairSeen = true; mode_log("screen: 3D pairs arrive (window picture used)"); }
+    if (!roomWant) s_pairSeen = false;
+    if (path != s_path) {
+      static const char *nm[5] = {"screen path: none", "screen path: headset panel", "screen path: in the eyes", "screen path: black gap", "screen path: FLAT (not placed)"};
+      s_path = path; mode_log(nm[path]);
+    }
+  }
+  g_aknNoFresh = fresh ? 0 : (g_aknNoFresh < 1000 ? g_aknNoFresh + 1 : 1000);   // LOADFIT
+  akn_send_report(g_aknPairs, g_aknFlat);   // AKN logs it every second (judge T8: stereo share in gameplay)
+  if (pair && !fresh && seq != g_aknSeq && !roomWant) {   // a pair exists but does not fit this window: say why, once per change
+    D3D11_TEXTURE2D_DESC pd{}; pair->GetDesc(&pd);
+    static UINT s_w = 0, s_h = 0; static int s_f = 0;
+    if (pd.Width != s_w || pd.Height != s_h || (int)pd.Format != s_f) {
+      s_w = pd.Width; s_h = pd.Height; s_f = (int)pd.Format;
+      char m[160]; snprintf(m, sizeof(m), "AKN pair %ux%u f%d does not fit the side-by-side %ux%u f%d - flat", pd.Width, pd.Height, (int)pd.Format, sbsW, sbsH, (int)d.Format);
+      mode_log(m);
+    }
+  }
+  snprintf(g_aknDiag, sizeof(g_aknDiag), "%s | eye %ux%u | stereo frames %ld, flat frames %ld, black (waiting for 3D) %ld | eyes %.1f mm, world scale %.1f",
+           akn_link_diag(), d.Width, d.Height, g_aknPairs, g_aknFlat, g_aknBlack, akn_ipd_m() * 1000.0f, akvr_head_pos_scale());
+  bb->Release();
+  return true;
+}
+const char *akvr_xr_akn_diag() { return g_aknDiag; }
 
 // Open (or refresh) geo-11's shared stereo texture from the Katanga IPC
 // mapping. The mapping holds the shared handle at offset 0; when it changes
@@ -934,7 +1450,7 @@ void pump_events() {
       // (camera.cpp's recenter reference, and a floating screen's fixed pose) stayed
       // in the old space. Re-zero both once the change has taken effect.
       auto *r = reinterpret_cast<XrEventDataReferenceSpaceChangePending *>(&ev);
-      if (r->referenceSpaceType == XR_REFERENCE_SPACE_TYPE_LOCAL) {
+      if (r->referenceSpaceType == (g_spaceIsStage ? XR_REFERENCE_SPACE_TYPE_STAGE : XR_REFERENCE_SPACE_TYPE_LOCAL)) {   // SVRSPACE
         g_recenterAt = r->changeTime;
         g_recenterPending = true;
         mode_log("runtime recenter");
@@ -1007,7 +1523,7 @@ bool hud_swapchain(uint32_t w, uint32_t h, int srcFmt) {
   sci.faceCount = 1;
   sci.arraySize = 1;
   sci.mipCount = 1;
-  if (XR_FAILED(xrCreateSwapchain(g_session, &sci, &g_hudSwap))) {
+  if (XR_FAILED(sc_create("HUD layer", &sci, &g_hudSwap))) {
     g_hudSwap = XR_NULL_HANDLE;
     g_hudErr = 2;
     return false;
@@ -1054,6 +1570,7 @@ bool g_hudMenuNow = false;   // MENUSIZE: the layer carries the live main menu (
 bool g_pauseLook = true;     // PAUSELOOK setting: the pause in full view (off: the old floating window)
 bool g_pauseLive = false;    // PAUSELOOK: live now
 bool g_pauseCand = false;    // PAUSEEDGE: a pause could start now (the pause look fits, gameplay within 1 s)
+bool g_pauseWaiting = false;   // MAPFLY: the pause test holds but has not held 250 ms yet
 int  g_stillPresents = 0;    // PAUSEEDGE: Presents in a row without a camera finalize
 float g_pauseDim = 0.5f;     // PAUSEDIM: 0 = no darkening, 1 = black (JJ: "just darker")
 float g_pauseMenuScale = 0.5f;   // PAUSESIZE: the pause menu on the room layer
@@ -1180,6 +1697,7 @@ void hud_eye_pair(const XrCompositionLayerQuad &q, XrCompositionLayerQuad &l, Xr
 // Colour conversion pass (real context, our own state saved and restored).
 ID3D11VertexShader *g_hcVS = nullptr;
 ID3D11PixelShader *g_hcPS = nullptr;
+ID3D11PixelShader *g_hcPSold = nullptr;   // HUDGLOW: the pre-2026-10-08 clipping conversion (hud colour mode 2)
 ID3D11PixelShader *g_hcPS2 = nullptr;    // PAUSENOBACK: the same, dropping dark see-through pixels
 ID3D11PixelShader *g_hcPS3 = nullptr;    // MENUBACK: the same, dark pixels faded by cb0.x
 ID3D11Buffer *g_hcCB = nullptr;          // MENUBACK: cb0 = (opacity of the dark backing, 0, 0, 0)
@@ -1208,7 +1726,23 @@ bool hud_conv_build() {
       "float4 main(uint id : SV_VertexID) : SV_Position {"
       " float2 uv = float2((id << 1) & 2, id & 2);"
       " return float4(uv * float2(2, -2) + float2(-1, 1), 0, 1); }";
+  // HUDGLOW 2026-10-08 — JJ: weapon wheels look "posterised", "in the wrong blending mode" - in the geo-11 version too,
+  // so not AKN's route: THIS conversion is shared. saturate(rgb / a) clips every pixel whose colour is above its own
+  // coverage, i.e. light ADDED on top of a see-through backing (glows, additive strokes): rgb / a > 1 -> all such
+  // pixels become one flat top value = bands. Now each pixel is split: the part its coverage carries (min(rgb, a))
+  // is converted as before, the light above it (rgb - a) is added on in linear light, nothing is clipped.
+  // The old shader stays for an A/B (hud colour mode 2).
   static const char ps[] =
+      "Texture2DArray<float4> t : register(t0);"
+      "float3 lin(float3 c) { return c <= 0.04045 ? c / 12.92 : pow((c + 0.055) / 1.055, 2.4); }"
+      "float4 main(float4 pos : SV_Position) : SV_Target {"
+      " float4 p = t.Load(int4(pos.xy, 0, 0));"
+      " float a = saturate(p.a);"
+      " float3 b = min(p.rgb, a);"
+      " float3 e = max(p.rgb - a, 0);"
+      " float3 o = (a > 0.004 ? lin(b / a) * a : 0) + lin(saturate(e));"
+      " return float4(o, a); }";
+  static const char psOld[] =
       "Texture2DArray<float4> t : register(t0);"
       "float3 lin(float3 c) { return c <= 0.04045 ? c / 12.92 : pow((c + 0.055) / 1.055, 2.4); }"
       "float4 main(float4 pos : SV_Position) : SV_Target {"
@@ -1223,6 +1757,13 @@ bool hud_conv_build() {
   if (err) err->Release();
   ok = ok && SUCCEEDED(g_device->CreateVertexShader(vb->GetBufferPointer(), vb->GetBufferSize(), nullptr, &g_hcVS));
   ok = ok && SUCCEEDED(g_device->CreatePixelShader(pb->GetBufferPointer(), pb->GetBufferSize(), nullptr, &g_hcPS));
+  {   // HUDGLOW: the old clipping conversion, for the A/B
+    ID3DBlob *pbo = nullptr, *erro = nullptr;
+    if (ok && SUCCEEDED(compile(psOld, sizeof(psOld) - 1, "hudpsold", nullptr, nullptr, "main", "ps_5_0", 0, 0, &pbo, &erro)) && pbo)
+      if (FAILED(g_device->CreatePixelShader(pbo->GetBufferPointer(), pbo->GetBufferSize(), nullptr, &g_hcPSold))) g_hcPSold = nullptr;
+    if (erro) erro->Release();
+    if (pbo) pbo->Release();
+  }
   if (vb) vb->Release();
   if (pb) pb->Release();
   // PAUSENOBACK 2026-10-01 — JJ: "for the pause screen, remove the gradient dark HUD layer and darken the actual world
@@ -1239,11 +1780,12 @@ bool hud_conv_build() {
       "float4 main(float4 pos : SV_Position) : SV_Target {"
       " float4 p = t.Load(int4(pos.xy, 0, 0));"
       " float a = saturate(p.a);"
-      " float3 c = a > 0.004 ? saturate(p.rgb / a) : saturate(p.rgb);"
+      " float3 e = a > 0.004 ? max(p.rgb - a, 0) : 0;"
+      " float3 c = a > 0.004 ? min(p.rgb, a) / a : saturate(p.rgb);"
       " float m = max(c.r, max(c.g, c.b));"
-      " if (m < 0.12) return float4(0, 0, 0, 0);"
-      " if (m < 0.6) c *= 0.6 / m;"
-      " float3 o = a > 0.004 ? lin(c) * a : lin(c);"
+      " if (m < 0.12 && max(e.r, max(e.g, e.b)) < 0.02) return float4(0, 0, 0, 0);"
+      " if (m < 0.6 && m > 0.0001) c *= 0.6 / m;"
+      " float3 o = a > 0.004 ? lin(saturate(c)) * a + lin(saturate(e)) : lin(c);"
       " return float4(o, a); }";
   ID3DBlob *pb2 = nullptr, *err2 = nullptr;
   if (ok && SUCCEEDED(compile(ps2, sizeof(ps2) - 1, "hudps2", nullptr, nullptr, "main", "ps_5_0", 0, 0, &pb2, &err2)) && pb2)
@@ -1266,9 +1808,10 @@ bool hud_conv_build() {
       "float4 main(float4 pos : SV_Position) : SV_Target {"
       " float4 p = t.Load(int4(pos.xy, 0, 0));"
       " float a = saturate(p.a);"
-      " float3 c = a > 0.004 ? saturate(p.rgb / a) : saturate(p.rgb);"
+      " float3 e = a > 0.004 ? max(p.rgb - a, 0) : 0;"
+      " float3 c = a > 0.004 ? min(p.rgb, a) / a : saturate(p.rgb);"
       " float m = max(c.r, max(c.g, c.b));"
-      " float3 o = a > 0.004 ? lin(c) * a : lin(c);"
+      " float3 o = a > 0.004 ? lin(c) * a + lin(saturate(e)) : lin(c);"
       " float dark = saturate(k.x);"
       " if (k.y > 0.5 && m < 0.16 && a > 0.004) {"
       "  uint w, h, e; t.GetDimensions(w, h, e);"
@@ -1375,6 +1918,18 @@ float startup_bright_impl() {
   return (g_startBrightAt && GetTickCount64() - g_startBrightAt < 300) ? g_startBright : -1.0f;
 }
 
+// MENUCRASH 2026-10-06: the graphics menu crashed the game in CreateShaderResourceView on the HUD layer's source (a
+// texture that lives inside geo-11; it was rebuilt under us). hudsplit now follows it every frame; this is the
+// second line: a fault here drops the HUD layer for the frame and has hudsplit search for the texture again.
+volatile long g_hudSrcFaults = 0;
+static bool hud_srv_guarded(ID3D11Texture2D *src, const D3D11_SHADER_RESOURCE_VIEW_DESC *vd, ID3D11ShaderResourceView **out) {
+  __try { return SUCCEEDED(g_device->CreateShaderResourceView(src, vd, out)); }
+  __except (EXCEPTION_EXECUTE_HANDLER) { *out = nullptr; ++g_hudSrcFaults; akvr_hudsplit_source_lost(); return false; }
+}
+static bool hud_copy_guarded(ID3D11Texture2D *dst, ID3D11Texture2D *src) {
+  __try { g_ctx->CopySubresourceRegion(dst, 0, 0, 0, 0, src, 0, nullptr); return true; }
+  __except (EXCEPTION_EXECUTE_HANDLER) { ++g_hudSrcFaults; akvr_hudsplit_source_lost(); return false; }
+}
 // Draw src slice 0 into swapchain image idx through the conversion shader. False = use a raw copy.
 bool hud_conv_draw(ID3D11Texture2D *src, uint32_t idx) {
   if (!hud_conv_build()) return false;
@@ -1392,7 +1947,7 @@ bool hud_conv_draw(ID3D11Texture2D *src, uint32_t idx) {
     vd.Texture2DArray.MipLevels = 1;
     vd.Texture2DArray.FirstArraySlice = 0;
     vd.Texture2DArray.ArraySize = 1;
-    if (!(sd.BindFlags & D3D11_BIND_SHADER_RESOURCE) || FAILED(g_device->CreateShaderResourceView(src, &vd, &g_hcSRV))) {
+    if (!(sd.BindFlags & D3D11_BIND_SHADER_RESOURCE) || !hud_srv_guarded(src, &vd, &g_hcSRV)) {
       g_hcSRV = nullptr;
       snprintf(g_hudConvDiag, sizeof(g_hudConvDiag), "HUD image cannot be read by a shader (bind 0x%x)", sd.BindFlags);
     }
@@ -1446,7 +2001,7 @@ bool hud_conv_draw(ID3D11Texture2D *src, uint32_t idx) {
     g_ctx->UpdateSubresource(g_hcCB, 0, nullptr, kk, 0, 0);
     g_ctx->PSSetConstantBuffers(0, 1, &g_hcCB);
   }
-  g_ctx->PSSetShader(menuBack ? g_hcPS3 : (noBack && g_hcPS2 ? g_hcPS2 : g_hcPS), nullptr, 0);   // PAUSENOBACK / MENUBACK
+  g_ctx->PSSetShader(menuBack ? g_hcPS3 : (noBack && g_hcPS2 ? g_hcPS2 : (g_hudColour == 2 && g_hcPSold ? g_hcPSold : g_hcPS)), nullptr, 0);   // HUDGLOW: mode 2 = old   // PAUSENOBACK / MENUBACK
   g_ctx->PSSetShaderResources(0, 1, &g_hcSRV);
   g_ctx->OMSetBlendState(nullptr, nullptr, 0xffffffff);
   g_ctx->OMSetDepthStencilState(nullptr, 0);
@@ -1482,6 +2037,7 @@ bool hud_conv_draw(ID3D11Texture2D *src, uint32_t idx) {
 // HUDLAYER: copy this frame's HUD image into the HUD swapchain and describe the quad, at the HUD
 // distance, covering exactly the angles the game frame covers, turned down by the same TILTFILL
 // pitch the frame was drawn with, so every HUD piece sits where it sat in the picture.
+extern XrCompositionLayerQuad g_hudLastQ; extern bool g_hudLastQOk;   // HUDINEYE (below)
 bool hud_layer_build(XrCompositionLayerQuad &q, const XrFovf &fov) {
   unsigned w = 0, h = 0;
   int fmt = 0;
@@ -1495,14 +2051,16 @@ bool hud_layer_build(XrCompositionLayerQuad &q, const XrFovf &fov) {
   wi.timeout = XR_INFINITE_DURATION;
   const bool ok = XR_SUCCEEDED(xrWaitSwapchainImage(g_hudSwap, &wi)) && idx < g_hudImages.size();
   // Subresource 0 = mip 0 of slice 0: geo-11's real copy may be a per-eye array (HUDLAYER3).
-  if (ok && !(g_hudColour == 1 && hud_conv_draw(src, idx)))
-    g_ctx->CopySubresourceRegion(g_hudImages[idx], 0, 0, 0, 0, src, 0, nullptr);
+  const long faults0 = g_hudSrcFaults;
+  if (ok && !(g_hudColour == 1 && hud_conv_draw(src, idx)) && g_hudSrcFaults == faults0)
+    hud_copy_guarded(g_hudImages[idx], src);   // MENUCRASH: not again on a source that just faulted
   XrSwapchainImageReleaseInfo ri{XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};
   xrReleaseSwapchainImage(g_hudSwap, &ri);
   if (!ok) return false;
 
   float D = akvr_geo11_hud_dist();
   if (D < 0.3f) D = 10.0f;                       // "far away"
+  if (g_hudOnScreen && g_roomScrNow) D = g_nearScreenM;   // SCREENROOM: the HUD on the screen, at the screen's distance
   const float tl = tanf(fov.angleLeft), tr = tanf(fov.angleRight);
   const float tu = tanf(fov.angleUp), td = tanf(fov.angleDown);
   const XrQuaternionf ident{0.0f, 0.0f, 0.0f, 1.0f};
@@ -1521,10 +2079,974 @@ bool hud_layer_build(XrCompositionLayerQuad &q, const XrFovf &fov) {
   q.subImage.imageArrayIndex = 0;
   q.subImage.imageRect.offset = {0, 0};
   q.subImage.imageRect.extent = {(int32_t)w, (int32_t)h};
+  if (!g_hudMenuNow && (g_scrVFrac < 0.999f || g_scrCropW < 0.999f)) {
+    // MAPFLAT: a floating screen shows only the middle slice of its picture (PAUSE169 / SCREENWIDE) - the HUD sheet is
+    // laid out over the whole picture, so it shows the same slice (it was squeezed whole into the slice: map icons off)
+    const int32_t cw = (int32_t)(w * g_scrCropW), ch = (int32_t)(h * g_scrVFrac);
+    q.subImage.imageRect.offset = {((int32_t)w - cw) / 2, ((int32_t)h - ch) / 2};
+    q.subImage.imageRect.extent = {cw, ch};
+  }
   q.size = {ms * D * (tr - tl), ms * D * (tu - td)};
-  if (!hud_place(q, g_predicted)) return false;
+  if (g_hudOnScreen && !g_hudMenuNow) {
+    // MAPFLAT: on a floating screen the HUD hangs ON that screen (the screen's own room pose), not at the gameplay HUD's
+    // room anchor - opened while looking elsewhere, the map's icons sat off to one side of the map
+    q.space = g_localSpace;
+    q.pose.orientation = hud_qmul(g_fixedPose.orientation, g_hudViewPose.orientation);
+    const XrVector3f o = quat_rotate(g_fixedPose.orientation, g_hudViewPose.position);
+    q.pose.position = {g_fixedPose.position.x + o.x, g_fixedPose.position.y + o.y, g_fixedPose.position.z + o.z};
+  } else if (!hud_place(q, g_predicted)) return false;
+  g_hudLastQ = q; g_hudLastQOk = true;   // HUDINEYE: where the HUD hangs, for drawing it into the eye pictures
   g_hudDistUsed = D; g_hudSizeW = q.size.width; g_hudSizeH = q.size.height;
   ++g_hudSubmits;
+  return true;
+}
+
+// HUDINEYE 2026-10-08 - JJ (engine stereo): the weapon wheels "in a weird blending mode that looks posterized" - also
+// under geo-11. His captures (akvr_native/captures_jj_20261008, c194443 / c195922): the HUD sheet itself is right (the
+// wheel composited the game's way looks exactly like the flat game), but the headset blends the HUD QUAD in LINEAR
+// light while the game blends in display (gamma) values: the wheel's dark see-through backing comes out milky, the
+// world shows through it far too much, and the dark gradient bands in Virtual Desktop's stream. Fix: in gameplay
+// the HUD is no longer a layer; it is drawn into each eye picture (our side-by-side copy, 8-bit display values) with
+// the game's own blend (premultiplied ONE / INV_SRC_ALPHA) - at exactly the quad's place in the room, through each
+// eye's own pose and lens, so it keeps its distance and depth. Menus / pause / flat frames keep the layer.
+int g_hudInEye = 1;           // setting hudineye: 1 = HUD drawn into the eyes in gameplay, 0 = the old quad layer
+XrCompositionLayerQuad g_hudLastQ{XR_TYPE_COMPOSITION_LAYER_QUAD};
+bool g_hudLastQOk = false;
+bool g_hieThisFrame = false;  // the eyes carry the HUD this frame: no HUD layer
+long g_hieDraws = 0, g_hieSkips = 0;
+int g_hieState = 0;           // 0 not built, 1 ready, -1 failed
+ID3D11VertexShader *g_hieVS = nullptr; ID3D11PixelShader *g_hiePS = nullptr;
+// MARKERCUT: VS with a uv rectangle, PS with up to 8 marker circles (cut out of the sheet / kept on the cards)
+ID3D11VertexShader *g_mcVS = nullptr; ID3D11PixelShader *g_mcPS = nullptr; ID3D11Buffer *g_mcVCB = nullptr, *g_mcPCB = nullptr;
+int g_markerCut = 1;          // setting markercut: markers drawn into each eye at their object
+float g_mcRadius = 0.08f;   // MKREACH 2026-10-09: 0.06 lost the bracket corners (MARKERRING still guards nearby HUD) -     // NDC (0.12 = the geo-11 / Arkham City reach took big holes out of nearby HUD - JJ 2026-10-09)
+long g_mcCards = 0, g_mcNoWorld = 0;
+// MARKSHEET 2026-10-09 (JJ: "do that one instead" - the structural fix for the HUD holes): AKN draws the marker pieces
+// into their own sheet (routed by the marker centres exported here, last frame's); the HUD sheet is then drawn whole and
+// the marker sheet as per-eye cards (radius g_mkCardR, no ring test). Falls back to MARKERCUT + MARKERRING when AKN routed
+// nothing last frame. Test switch akvr_set_marksheet.
+int g_markSheetOn = 1; float g_mkCardR = 0.22f; long g_mkSheetFrames = 0;   // MKREACH 2026-10-09: card 0.15 clipped the bracket corners / distance text
+// MARKERWORLD 2026-10-09 (JJ: the distance marker "a little bit too small" and "rotating when my head rolls" - it should
+// turn only with the camera): each card is a panel in the world at the marker's point, sides along the head-free game
+// camera's right / up (akvr_camera_axes_ago base axes), its size the card's on-screen size x g_mkScale, projected per eye.
+float g_mkScale = 1.25f;   // setting markersize
+volatile LONG g_mkWorldOn = 1;   // EYESHOT A/B: 0 = the old flat per-eye square (AKN command "mkworld 0|1")
+extern "C" __declspec(dllexport) void akvr_marker_world_set(int on) { InterlockedExchange(&g_mkWorldOn, on ? 1 : 0); }
+float g_mkExp[16] = {}; volatile long g_mkExpN = 0;
+ID3D11ShaderResourceView *g_mkSRV = nullptr; ID3D11Texture2D *g_mkSrc = nullptr;
+using AknMarkerHudFn = ID3D11Texture2D *(*)(long *);
+AknMarkerHudFn p_aknMarkerHud = nullptr; bool p_aknMarkerHudTried = false;
+extern "C" __declspec(dllexport) int akvr_marker_centres(float *xy, int max) {   // MARKSHEET (AKN): last frame's cut centres, sheet NDC
+  const int n = (int)g_mkExpN < max ? (int)g_mkExpN : max;
+  for (int i = 0; i < n * 2; ++i) xy[i] = g_mkExp[i];
+  return g_markSheetOn ? n : 0;
+}
+extern "C" __declspec(dllexport) void akvr_set_marksheet(int v) { g_markSheetOn = v ? 1 : 0; }   // MARKSHEET test switch
+using AknMarkersFn = int (*)(float *, int); using AknPairVpFn = int (*)(float *);
+AknMarkersFn p_aknMarkers = nullptr; AknPairVpFn p_aknPairVp = nullptr;
+ID3D11Buffer *g_hieCB = nullptr; ID3D11BlendState *g_hieBS = nullptr; ID3D11SamplerState *g_hieSS = nullptr;
+ID3D11RasterizerState *g_hieRS = nullptr; ID3D11DepthStencilState *g_hieDS = nullptr;
+ID3D11ShaderResourceView *g_hieSRV = nullptr; ID3D11Texture2D *g_hieSrc = nullptr;
+ID3D11RenderTargetView *g_hieRTV = nullptr; ID3D11Texture2D *g_hieDst = nullptr;
+char g_hieDiag[512] = "HUD in the eyes: not used yet";   // 512: MKSAMEFRAME / MKCARRY counters
+char g_mkCardDiag[2048] = "marker cards: none yet";   // EYESHOT: the first card's numbers, written into each capture (cards.txt)
+int g_hieNPts = 0; float g_hiePts[16] = {}, g_hieXf[4] = {};   // MARKERCUT
+bool g_mkSameFrame = true; unsigned g_mkSfUsed = 0, g_mkSfLearn = 0, g_mkSfNew = 0;   // MKSAMEFRAME (below)
+bool g_mkCarryOn = true; unsigned g_mkCarry = 0;   // MKCARRY (below)
+// MKEYE 2026-10-11 (akvr_native/NOTES.md RETHINK MARKERS 2): AKN draws each marker piece into a left- and a right-eye
+// layer at its world point (inside the game's own draw); here each layer goes over its eye picture 1:1 and no cards are cut
+bool g_hieEyeMode = false; float g_hieXfLast[4] = {}; bool g_hieXfOk = false; unsigned g_hieEyeDraws = 0;
+extern "C" __declspec(dllexport) int akvr_hud_layout_map(float *xf)   // AKN: HUD-sheet clip -> the movie's own layout
+{
+  if (!g_hieXfOk || !xf) return 0;
+  for (int i = 0; i < 4; ++i) xf[i] = g_hieXfLast[i];
+  return 1;
+}
+// WHEELEYE: the darkening (pause / depth-of-field-off exposure) drawn into the eyes UNDER the HUD when the HUD is in
+// the eyes (the dim layer would sit over the in-eye HUD); dim_layer then sends no layer that frame
+ID3D11PixelShader *g_hieDimPS = nullptr; ID3D11Buffer *g_hieDimCB = nullptr; bool g_hieDimDone = false;
+// BACKEXT 2026-10-09 (JJ: the weapon wheel / pause "sitting in a dark window"; capture c000911: the game's backdrop =
+// 50 % black over the whole sheet + a darker 16:9 band, made for a flat screen, so it ends at the sheet's edges): on the
+// pause look the sheet's border is carried on outward over the whole view (clamped edge texels), so the backdrop covers
+// the view as it covers the flat screen. Setting-free switch: g_backExt / export akvr_set_backext.
+ID3D11PixelShader *g_hieExtPS = nullptr; int g_backExt = 0;   // off since BLACKKEY (it carried the black edges outward)
+// BLACKKEY 2026-10-09 (JJ: every screen that pauses the game - pause, weapon wheel, the other wheels, mission dialogs -
+// "still have the black background with hard straight edges at the top and bottom, and the sides ... we need to remove
+// those black backgrounds"): their backdrops are PURE black with coverage (c000911: rgb 0, alpha 127-222), made for a
+// flat screen; every real menu piece has colour (the wheels' insides are dark blue). On the pause look the sheet is drawn
+// with pure-black see-through texels removed; AKVR's own pause darkening covers the whole view evenly instead.
+// Command / export akvr_set_blackkey.
+ID3D11PixelShader *g_hieKeyPS = nullptr; int g_blackKey = 1;
+// FULLCUT 2026-10-10 (JJ: "when finishing a training section where it goes to a black screen, and then back to the start.
+// The black screen is sixteen by nine. Window ... make it cover the entire field of view ... just black in the headset.
+// This should happen anytime one of these full screen cuts happens"). The game fades to black by covering its HUD sheet
+// (made for a flat screen), so the headset showed a black panel with the world around it. Each new HUD frame, 64 texels
+// along the sheet's border are copied out (read back a few frames later, never waiting): an EVEN dark cover on all four
+// edges = a full-screen fade, and its alpha darkens the WHOLE view in both eyes (and the dim layer when the HUD is not in
+// the eyes), so fades in and out keep their own pace. On the pause look only a near-full cover counts (its 50 % backdrop
+// is already AKVR's own pause darkening). Switch: export akvr_set_fullcut / AKN command "fullcut 0|1".
+// FULLCUT5: the cut measured on the graphics card each frame (1x1 float, read by the darkening and the sheet shaders)
+ID3D11PixelShader *g_cutPS = nullptr; ID3D11Texture2D *g_cutTex = nullptr; ID3D11RenderTargetView *g_cutRTV = nullptr;
+ID3D11ShaderResourceView *g_cutSRV = nullptr; ID3D11Buffer *g_cutCB = nullptr;
+int g_cutLog = 0;   // PERF1: the CPU border readback is telemetry only since FULLCUT5 - off unless asked ("cutlog 1")
+int g_fullCut = 1; float g_cutA = 0.0f; long g_cutSeq = -1, g_cutFrames = 0; char g_cutDiag[256] = "full-screen cut probe: no reading yet";
+ID3D11Texture2D *g_cutStage[3] = {}; bool g_cutPend[3] = {}; int g_cutI = 0; DXGI_FORMAT g_cutFmt = DXGI_FORMAT_UNKNOWN;
+void cut_probe() {
+  // FULLCUT4 2026-10-10 (the 02:32 log of a training transition: sheet edges a T 0 B 0 L .37 R .37, 16:9 band T .67 B 0
+  // L .62 R .62 = a FULL-WIDTH dark box covering only the middle part of the sheet's height). Ring 0 (64 texels) = the
+  // sheet's border; then 3 columns (1.5 %, 50 %, 98.5 % across) x 32 rows. A row counts when all three texels are dark
+  // with the same coverage; a cut needs the middle row covered (cutscene letterbox bars never are) and >= 8 such rows
+  // that agree; its alpha darkens the whole view.
+  if (!g_fullCut || !akvr_engine_stereo() || !g_ctx || !g_device || akvr_xr_main_menu_detected()) { g_cutA = 0.0f; return; }
+  constexpr int kRing = 64, kRows = 32, kN = kRing + 3 * kRows;
+  for (int k = 0; k < 3; ++k) {   // the oldest copies first
+    const int i = (g_cutI + k) % 3;
+    if (!g_cutPend[i] || !g_cutStage[i]) continue;
+    D3D11_MAPPED_SUBRESOURCE ms{};
+    if (g_ctx->Map(g_cutStage[i], 0, D3D11_MAP_READ, D3D11_MAP_FLAG_DO_NOT_WAIT, &ms) != S_OK) continue;
+    const uint8_t *px = (const uint8_t *)ms.pData;
+    auto A = [&](int n) { return px[n * 4 + 3] / 255.0f; };
+    auto C = [&](int n) { return (float)max(px[n * 4], max(px[n * 4 + 1], px[n * 4 + 2])) / 255.0f; };
+    // ring 0: the whole sheet covered evenly
+    float aMin = 1.0f, aMax = 0.0f, aSum = 0.0f, rgbMax = 0.0f, edgeA[4] = {};
+    for (int n = 0; n < kRing; ++n) { const float a = A(n); aMin = min(aMin, a); aMax = max(aMax, a); aSum += a; rgbMax = max(rgbMax, C(n)); edgeA[n / 16] += a / 16.0f; }
+    const float ringCut = (aMin > 0.02f && aMax - aMin < 0.08f && rgbMax < 0.10f) ? aSum / kRing : 0.0f;
+    // columns: rows covered evenly across the full width
+    int covered = 0, first = -1, last = -1; float rowMin = 1.0f, rowMax = 0.0f, rowSum = 0.0f; bool mid = false;
+    for (int r = 0; r < kRows; ++r) {
+      const int n0 = kRing + r, n1 = kRing + kRows + r, n2 = kRing + 2 * kRows + r;
+      const float a0 = A(n0), a1 = A(n1), a2 = A(n2);
+      const float lo = min(a0, min(a1, a2)), hi = max(a0, max(a1, a2));
+      const bool dark = max(C(n0), max(C(n1), C(n2))) < 0.10f;
+      if (lo > 0.02f && hi - lo < 0.08f && dark) {
+        ++covered; if (first < 0) first = r; last = r;
+        const float m = (a0 + a1 + a2) / 3.0f; rowMin = min(rowMin, m); rowMax = max(rowMax, m); rowSum += m;
+        if (r == kRows / 2 || r == kRows / 2 - 1) mid = true;
+      }
+    }
+    const float boxCut = (mid && covered >= 8 && rowMax - rowMin < 0.10f) ? rowSum / covered : 0.0f;
+    g_ctx->Unmap(g_cutStage[i], 0);
+    g_cutPend[i] = false;
+    float cut = max(ringCut, boxCut);
+    if (g_pauseLive && cut < 0.9f) cut = 0.0f;
+    {   // the strongest reading of the last second, for AKN's log
+      const float strength = max(max(edgeA[2], edgeA[3]), covered / (float)kRows);
+      static ULONGLONG s_t = 0; static float s_best = -1.0f; const ULONGLONG now = GetTickCount64();
+      if (now - s_t > 1000) { s_t = now; s_best = -1.0f; }
+      if (strength > s_best) {
+        s_best = strength;
+        snprintf(g_cutDiag, sizeof(g_cutDiag), "sheet edges a %.2f %.2f %.2f %.2f rgb %.2f | full-width rows covered %d of %d (rows %d-%d, middle %s, alpha %.2f-%.2f) | cut %.2f%s",
+                 edgeA[0], edgeA[1], edgeA[2], edgeA[3], rgbMax, covered, kRows, first, last, mid ? "yes" : "no", covered ? rowMin : 0.0f, covered ? rowMax : 0.0f, cut, g_pauseLive ? " (pause look)" : "");
+      }
+    }
+    if (cut > 0.0f && g_cutA <= 0.0f) mode_log("full-screen cut");
+    if (cut > 0.0f) ++g_cutFrames;
+    g_cutA = cut;
+  }
+  long seq = 0;
+  ID3D11Texture2D *hud = akn_get_hud(&seq);
+  if (!hud) { g_cutA = 0.0f; return; }
+  if (seq == g_cutSeq) return;   // one probe per HUD frame
+  g_cutSeq = seq;
+  D3D11_TEXTURE2D_DESC hd{}; hud->GetDesc(&hd);
+  const DXGI_FORMAT f = hd.Format;
+  const bool fourByte = f == DXGI_FORMAT_R8G8B8A8_UNORM || f == DXGI_FORMAT_R8G8B8A8_UNORM_SRGB || f == DXGI_FORMAT_R8G8B8A8_TYPELESS ||
+                        f == DXGI_FORMAT_B8G8R8A8_UNORM || f == DXGI_FORMAT_B8G8R8A8_UNORM_SRGB || f == DXGI_FORMAT_B8G8R8A8_TYPELESS;
+  if (!fourByte || hd.Width < 64 || hd.Height < 64 || hd.SampleDesc.Count != 1) { g_cutA = 0.0f; return; }
+  if (g_cutFmt != f) {
+    for (auto &t : g_cutStage) { if (t) t->Release(); t = nullptr; }
+    for (bool &b : g_cutPend) b = false;
+    D3D11_TEXTURE2D_DESC d{}; d.Width = kN; d.Height = 1; d.MipLevels = 1; d.ArraySize = 1; d.Format = f; d.SampleDesc.Count = 1;
+    d.Usage = D3D11_USAGE_STAGING; d.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+    for (auto &t : g_cutStage) if (FAILED(g_device->CreateTexture2D(&d, nullptr, &t))) t = nullptr;
+    g_cutFmt = f;
+  }
+  const int i = g_cutI;
+  if (g_cutPend[i] || !g_cutStage[i]) return;   // still waiting for the graphics card
+  const float inX = hd.Width * 0.015f, inY = hd.Height * 0.015f;
+  for (int n = 0; n < kN; ++n) {
+    float fx, fy;
+    if (n < kRing) {   // ring 0: 16 texels along each edge, 1.5 % in from it
+      const int e = n / 16, k = n % 16;
+      fx = (e < 2) ? (k + 0.5f) / 16.0f * hd.Width : (e == 2 ? inX : hd.Width - 1 - inX);
+      fy = (e < 2) ? (e == 0 ? inY : hd.Height - 1 - inY) : (k + 0.5f) / 16.0f * hd.Height;
+    } else {           // columns: left edge, centre, right edge; 32 rows top to bottom
+      const int c = (n - kRing) / kRows, r = (n - kRing) % kRows;
+      fx = c == 0 ? inX : c == 1 ? 0.5f * hd.Width : hd.Width - 1 - inX;
+      fy = (r + 0.5f) / kRows * hd.Height;
+    }
+    const UINT x = (UINT)min(max(fx, 0.0f), (float)(hd.Width - 1)), y = (UINT)min(max(fy, 0.0f), (float)(hd.Height - 1));
+    const D3D11_BOX bx{x, y, 0, x + 1, y + 1, 1};
+    g_ctx->CopySubresourceRegion(g_cutStage[i], 0, (UINT)n, 0, 0, hud, 0, &bx);
+  }
+  g_cutPend[i] = true; g_cutI = (i + 1) % 3;
+}
+float hie_dim_alpha();   // below dim_layer
+bool hie_build() {
+  if (g_hieState) return g_hieState == 1;
+  g_hieState = -1;
+  HMODULE m = LoadLibraryW(L"d3dcompiler_47.dll");
+  D3DCompileFn compile = m ? (D3DCompileFn)GetProcAddress(m, "D3DCompile") : nullptr;
+  if (!compile) { snprintf(g_hieDiag, sizeof(g_hieDiag), "HUD in the eyes: no shader compiler"); return false; }
+  static const char vs[] =
+      "cbuffer K : register(b0) { float4 c[4]; };"
+      "struct O { float4 p : SV_Position; float2 uv : TEXCOORD0; };"
+      "O main(uint id : SV_VertexID) { O o; o.p = c[id]; o.uv = float2(id & 1, id >> 1); return o; }";
+  static const char ps[] =
+      "Texture2D t : register(t0); SamplerState s : register(s0); Texture2D<float> cutT : register(t1);"
+      "float4 main(float4 p : SV_Position, float2 uv : TEXCOORD0) : SV_Target { float4 c = t.Sample(s, uv); float k = cutT.Load(int3(0, 0, 0)); if (k > 0.0) c.a = saturate(1.0 - (1.0 - c.a) / max(1.0 - k, 1e-3)); return c; }";
+  ID3DBlob *vb = nullptr, *pb = nullptr, *err = nullptr;
+  bool ok = SUCCEEDED(compile(vs, sizeof(vs) - 1, "hievs", nullptr, nullptr, "main", "vs_5_0", 0, 0, &vb, &err));
+  if (err) { err->Release(); err = nullptr; }
+  ok = ok && SUCCEEDED(compile(ps, sizeof(ps) - 1, "hieps", nullptr, nullptr, "main", "ps_5_0", 0, 0, &pb, &err));
+  if (err) err->Release();
+  ok = ok && SUCCEEDED(g_device->CreateVertexShader(vb->GetBufferPointer(), vb->GetBufferSize(), nullptr, &g_hieVS));
+  ok = ok && SUCCEEDED(g_device->CreatePixelShader(pb->GetBufferPointer(), pb->GetBufferSize(), nullptr, &g_hiePS));
+  if (vb) vb->Release();
+  if (pb) pb->Release();
+  D3D11_BUFFER_DESC bd{}; bd.ByteWidth = 64; bd.Usage = D3D11_USAGE_DEFAULT; bd.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
+  ok = ok && SUCCEEDED(g_device->CreateBuffer(&bd, nullptr, &g_hieCB));
+  {   // MARKERCUT shaders
+    static const char vs2[] =
+        "cbuffer K : register(b0) { float4 c[4]; float4 uvr; };"
+        "struct O { float4 p : SV_Position; float2 uv : TEXCOORD0; };"
+        "O main(uint id : SV_VertexID) { O o; o.p = c[id]; o.uv = uvr.xy + float2(id & 1, id >> 1) * uvr.zw; return o; }";
+    static const char ps2[] =
+        "Texture2D t : register(t0); SamplerState s : register(s0); Texture2D<float> cutT : register(t1);"
+        "cbuffer M : register(b0) { float4 circ[8]; float4 mode; };"
+        "float4 main(float4 p : SV_Position, float2 uv : TEXCOORD0) : SV_Target {"
+        " bool inside = false;"
+        // MARKERRING 2026-10-09 (JJ: holes in the HUD where a marker's circle lay over other HUD - c031225 'INCOMPLETE'
+        // panel): a circle is cut only when the ring just outside it is EMPTY (no other HUD around the marker); otherwise
+        // the marker stays flat in the sheet this frame. Same test in the sheet pass and the card pass: they always agree.
+        " [loop] for (int i = 0; i < 8; ++i) { if (i < (int)mode.x) { float2 d = (uv - circ[i].xy) / circ[i].zw; if (dot(d, d) <= 1.0) {"
+        "   float busy = 0.0;"
+        "   [loop] for (int k = 0; k < 24; ++k) { float a = k * 0.2617994; float2 q = float2(cos(a), sin(a)) * circ[i].zw;"
+        "     busy = max(busy, t.SampleLevel(s, circ[i].xy + q * 1.2, 0).a); busy = max(busy, t.SampleLevel(s, circ[i].xy + q * 1.5, 0).a); }"
+        "   if (busy < 0.04 || mode.z < 0.5) inside = true; } } }"
+        " if (mode.y > 0.5 ? !inside : inside) discard;"
+        " float4 c = t.Sample(s, uv); float k = cutT.Load(int3(0, 0, 0)); if (k > 0.0) c.a = saturate(1.0 - (1.0 - c.a) / max(1.0 - k, 1e-3)); return c; }";
+    ID3DBlob *b1 = nullptr, *b2 = nullptr, *e1 = nullptr;
+    bool k = SUCCEEDED(compile(vs2, sizeof(vs2) - 1, "mcvs", nullptr, nullptr, "main", "vs_5_0", 0, 0, &b1, &e1));
+    if (e1) { e1->Release(); e1 = nullptr; }
+    k = k && SUCCEEDED(compile(ps2, sizeof(ps2) - 1, "mcps", nullptr, nullptr, "main", "ps_5_0", 0, 0, &b2, &e1));
+    if (e1) e1->Release();
+    k = k && SUCCEEDED(g_device->CreateVertexShader(b1->GetBufferPointer(), b1->GetBufferSize(), nullptr, &g_mcVS));
+    k = k && SUCCEEDED(g_device->CreatePixelShader(b2->GetBufferPointer(), b2->GetBufferSize(), nullptr, &g_mcPS));
+    if (b1) b1->Release();
+    if (b2) b2->Release();
+    D3D11_BUFFER_DESC b{}; b.Usage = D3D11_USAGE_DEFAULT; b.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
+    b.ByteWidth = 80; k = k && SUCCEEDED(g_device->CreateBuffer(&b, nullptr, &g_mcVCB));
+    b.ByteWidth = 144; k = k && SUCCEEDED(g_device->CreateBuffer(&b, nullptr, &g_mcPCB));
+    if (!k) { g_mcVS = nullptr; g_mcPS = nullptr; }   // no cut: the plain sheet as before
+  }
+  {   // BLACKKEY: the sheet with its pure-black see-through texels removed
+    static const char ps5[] =
+        "Texture2D t : register(t0); SamplerState s : register(s0); Texture2D<float> cutT : register(t1);"
+        "float4 main(float4 p : SV_Position, float2 uv : TEXCOORD0) : SV_Target {"
+        " float4 c = t.Sample(s, uv); c.a = min(c.a, max(c.r, max(c.g, c.b)) * 4.0); float k = cutT.Load(int3(0, 0, 0)); if (k > 0.0) c.a = saturate(1.0 - (1.0 - c.a) / max(1.0 - k, 1e-3)); return c; }";   // BLACKKEY2: soft (JJ: harsh mask edges on the wheels)
+    ID3DBlob *b5 = nullptr, *e5 = nullptr;
+    bool k = SUCCEEDED(compile(ps5, sizeof(ps5) - 1, "hiekey", nullptr, nullptr, "main", "ps_5_0", 0, 0, &b5, &e5));
+    if (e5) e5->Release();
+    k = k && SUCCEEDED(g_device->CreatePixelShader(b5->GetBufferPointer(), b5->GetBufferSize(), nullptr, &g_hieKeyPS));
+    if (b5) b5->Release();
+    if (!k) g_hieKeyPS = nullptr;
+  }
+  {   // BACKEXT: the sheet outside its own area, edge texels carried on (clamp sampler); inside the area nothing
+    static const char ps4[] =
+        "Texture2D t : register(t0); SamplerState s : register(s0);"
+        "float4 main(float4 p : SV_Position, float2 uv : TEXCOORD0) : SV_Target {"
+        " if (all(uv >= 0.0) && all(uv <= 1.0)) discard; return t.Sample(s, saturate(uv)); }";
+    ID3DBlob *b4 = nullptr, *e4 = nullptr;
+    bool k = SUCCEEDED(compile(ps4, sizeof(ps4) - 1, "hieext", nullptr, nullptr, "main", "ps_5_0", 0, 0, &b4, &e4));
+    if (e4) e4->Release();
+    k = k && SUCCEEDED(g_device->CreatePixelShader(b4->GetBufferPointer(), b4->GetBufferSize(), nullptr, &g_hieExtPS));
+    if (b4) b4->Release();
+    if (!k) g_hieExtPS = nullptr;
+  }
+  {   // WHEELEYE: plain colour (the darkening)
+    static const char ps3[] = "cbuffer K : register(b0) { float4 col; }; Texture2D<float> cutT : register(t1);"
+        "float4 main(float4 p : SV_Position) : SV_Target { float k = cutT.Load(int3(0, 0, 0)); float a = 1.0 - (1.0 - col.a) * (1.0 - k);"
+        " if (a <= 0.0) discard; return float4(col.rgb, a); }";   // PERF1: no writes while nothing is darkened
+    ID3DBlob *b3 = nullptr, *e3 = nullptr;
+    bool k = SUCCEEDED(compile(ps3, sizeof(ps3) - 1, "hiedim", nullptr, nullptr, "main", "ps_5_0", 0, 0, &b3, &e3));
+    if (e3) e3->Release();
+    k = k && SUCCEEDED(g_device->CreatePixelShader(b3->GetBufferPointer(), b3->GetBufferSize(), nullptr, &g_hieDimPS));
+    if (b3) b3->Release();
+    D3D11_BUFFER_DESC b{}; b.Usage = D3D11_USAGE_DEFAULT; b.BindFlags = D3D11_BIND_CONSTANT_BUFFER; b.ByteWidth = 16;
+    k = k && SUCCEEDED(g_device->CreateBuffer(&b, nullptr, &g_hieDimCB));
+    if (!k) g_hieDimPS = nullptr;   // no in-eye darkening: the dim layer stays
+  }
+  {   // FULLCUT5: one pixel = this frame's cut, from the sheet (same rules as cut_probe's log)
+    static const char ps6[] =
+        "Texture2D t : register(t0); cbuffer F : register(b0) { float4 f; };"   // f.x pause look, f.y on
+        "float lum(float4 c) { return max(c.r, max(c.g, c.b)); }"
+        "float4 main(float4 p : SV_Position) : SV_Target {"
+        " uint W, H; t.GetDimensions(W, H); float inX = W * 0.015, inY = H * 0.015;"
+        " float aMin = 1, aMax = 0, aSum = 0, rgb = 0;"
+        " [loop] for (int n = 0; n < 64; ++n) { int e = n / 16, k = n % 16;"
+        "  float fx = e < 2 ? (k + 0.5) / 16.0 * W : (e == 2 ? inX : W - 1 - inX);"
+        "  float fy = e < 2 ? (e == 0 ? inY : H - 1 - inY) : (k + 0.5) / 16.0 * H;"
+        "  float4 c = t.Load(int3(fx, fy, 0)); aMin = min(aMin, c.a); aMax = max(aMax, c.a); aSum += c.a; rgb = max(rgb, lum(c)); }"
+        " float ring = (aMin > 0.02 && aMax - aMin < 0.08 && rgb < 0.10) ? aSum / 64.0 : 0.0;"
+        " int cov = 0; float rMin = 1, rMax = 0, rSum = 0; bool mid = false;"
+        " [loop] for (int r = 0; r < 32; ++r) { float y = (r + 0.5) / 32.0 * H;"
+        "  float4 c0 = t.Load(int3(inX, y, 0)), c1 = t.Load(int3(W * 0.5, y, 0)), c2 = t.Load(int3(W - 1 - inX, y, 0));"
+        "  float lo = min(c0.a, min(c1.a, c2.a)), hi = max(c0.a, max(c1.a, c2.a));"
+        "  if (lo > 0.02 && hi - lo < 0.08 && max(lum(c0), max(lum(c1), lum(c2))) < 0.10) {"
+        "   ++cov; float m = (c0.a + c1.a + c2.a) / 3.0; rMin = min(rMin, m); rMax = max(rMax, m); rSum += m; if (r == 15 || r == 16) mid = true; } }"
+        " float box = (mid && cov >= 8 && rMax - rMin < 0.10) ? rSum / cov : 0.0;"
+        " float cut = max(ring, box); if (f.x > 0.5 && cut < 0.9) cut = 0.0; if (f.y < 0.5) cut = 0.0;"
+        " return cut.xxxx; }";
+    ID3DBlob *b6 = nullptr, *e6 = nullptr;
+    bool k = SUCCEEDED(compile(ps6, sizeof(ps6) - 1, "hiecut", nullptr, nullptr, "main", "ps_5_0", 0, 0, &b6, &e6));
+    if (e6) e6->Release();
+    k = k && SUCCEEDED(g_device->CreatePixelShader(b6->GetBufferPointer(), b6->GetBufferSize(), nullptr, &g_cutPS));
+    if (b6) b6->Release();
+    D3D11_TEXTURE2D_DESC td{}; td.Width = 1; td.Height = 1; td.MipLevels = 1; td.ArraySize = 1; td.Format = DXGI_FORMAT_R32_FLOAT; td.SampleDesc.Count = 1;
+    td.Usage = D3D11_USAGE_DEFAULT; td.BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
+    k = k && SUCCEEDED(g_device->CreateTexture2D(&td, nullptr, &g_cutTex));
+    k = k && SUCCEEDED(g_device->CreateRenderTargetView(g_cutTex, nullptr, &g_cutRTV));
+    k = k && SUCCEEDED(g_device->CreateShaderResourceView(g_cutTex, nullptr, &g_cutSRV));
+    D3D11_BUFFER_DESC b{}; b.Usage = D3D11_USAGE_DEFAULT; b.BindFlags = D3D11_BIND_CONSTANT_BUFFER; b.ByteWidth = 16;
+    k = k && SUCCEEDED(g_device->CreateBuffer(&b, nullptr, &g_cutCB));
+    if (!k) g_cutPS = nullptr;   // no same-frame cut: the sheet shaders read 0 (unbound)
+  }
+  D3D11_BLEND_DESC bl{}; auto &t = bl.RenderTarget[0];
+  t.BlendEnable = TRUE; t.SrcBlend = D3D11_BLEND_ONE; t.DestBlend = D3D11_BLEND_INV_SRC_ALPHA; t.BlendOp = D3D11_BLEND_OP_ADD;
+  t.SrcBlendAlpha = D3D11_BLEND_ZERO; t.DestBlendAlpha = D3D11_BLEND_ONE; t.BlendOpAlpha = D3D11_BLEND_OP_ADD;
+  t.RenderTargetWriteMask = D3D11_COLOR_WRITE_ENABLE_RED | D3D11_COLOR_WRITE_ENABLE_GREEN | D3D11_COLOR_WRITE_ENABLE_BLUE;
+  ok = ok && SUCCEEDED(g_device->CreateBlendState(&bl, &g_hieBS));
+  D3D11_SAMPLER_DESC sd{}; sd.Filter = D3D11_FILTER_MIN_MAG_MIP_LINEAR; sd.AddressU = sd.AddressV = sd.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP;
+  sd.MaxLOD = D3D11_FLOAT32_MAX;
+  ok = ok && SUCCEEDED(g_device->CreateSamplerState(&sd, &g_hieSS));
+  D3D11_RASTERIZER_DESC rd{}; rd.FillMode = D3D11_FILL_SOLID; rd.CullMode = D3D11_CULL_NONE; rd.DepthClipEnable = TRUE;
+  ok = ok && SUCCEEDED(g_device->CreateRasterizerState(&rd, &g_hieRS));
+  D3D11_DEPTH_STENCIL_DESC dd{}; dd.DepthEnable = FALSE; dd.StencilEnable = FALSE;
+  ok = ok && SUCCEEDED(g_device->CreateDepthStencilState(&dd, &g_hieDS));
+  if (!ok) { snprintf(g_hieDiag, sizeof(g_hieDiag), "HUD in the eyes: set-up FAILED"); return false; }
+  g_hieState = 1;
+  return true;
+}
+XrQuaternionf hie_conj(const XrQuaternionf &q) { return XrQuaternionf{-q.x, -q.y, -q.z, q.w}; }
+// MIRRORHUD 2026-10-09 (JJ: "I can't see HUD elements when you have the fake headset running. HUD elements don't show up
+// on the desktop"): the desktop window shows the DLSS left eye (DLSSMIRROR) and the HUD went to AKN's sheet only. The
+// sheet is laid over the whole window with the game's own blend (as in the flat game). Runs inside the mirror's own
+// device-context state (everything set here is thrown away with it).
+int g_mirrorHud = 1; long g_mhCalls = 0, g_mhDraws = 0, g_mhNoHud = 0, g_mhNoSrv = 0, g_mhNoBuild = 0;
+extern "C" __declspec(dllexport) const char* akvr_mirror_diag() {   // MIRRORHUD diag (AKN command "akvrdiag")
+  static char b[160]; snprintf(b, sizeof(b), "mirror HUD: calls %ld draws %ld | no sheet %ld no view %ld not built %ld", g_mhCalls, g_mhDraws, g_mhNoHud, g_mhNoSrv, g_mhNoBuild); return b; }
+void mirror_hud(ID3D11DeviceContext *c, ID3D11RenderTargetView *rtv, UINT w, UINT h) {
+  ++g_mhCalls;
+  if (!g_mirrorHud || !c || !rtv) return;
+  if (!hie_build()) { ++g_mhNoBuild; return; }
+  long seq = 0;
+  ID3D11Texture2D *hud = akn_get_hud(&seq);
+  if (!hud) { ++g_mhNoHud; return; }
+  if (g_hieSrc != hud) {
+    if (g_hieSRV) { g_hieSRV->Release(); g_hieSRV = nullptr; }
+    g_hieSrc = hud;
+    D3D11_TEXTURE2D_DESC hd{}; hud->GetDesc(&hd);
+    D3D11_SHADER_RESOURCE_VIEW_DESC vd{}; vd.Format = hd.Format == DXGI_FORMAT_R8G8B8A8_TYPELESS ? DXGI_FORMAT_R8G8B8A8_UNORM : hd.Format;
+    vd.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D; vd.Texture2D.MipLevels = 1;
+    if (FAILED(g_device->CreateShaderResourceView(hud, &vd, &g_hieSRV))) g_hieSRV = nullptr;
+  }
+  if (!g_hieSRV) { ++g_mhNoSrv; return; }
+  ++g_mhDraws;
+  const float full[16] = {-1, 1, 0.5f, 1,  1, 1, 0.5f, 1,  -1, -1, 0.5f, 1,  1, -1, 0.5f, 1};
+  c->UpdateSubresource(g_hieCB, 0, nullptr, full, 0, 0);
+  c->OMSetRenderTargets(1, &rtv, nullptr);
+  c->IASetInputLayout(nullptr); c->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
+  c->VSSetShader(g_hieVS, nullptr, 0); c->VSSetConstantBuffers(0, 1, &g_hieCB);
+  c->PSSetShader(g_hiePS, nullptr, 0); c->PSSetShaderResources(0, 1, &g_hieSRV); c->PSSetSamplers(0, 1, &g_hieSS);
+  const FLOAT bf[4] = {0, 0, 0, 0}; c->OMSetBlendState(g_hieBS, bf, 0xffffffff);
+  c->OMSetDepthStencilState(g_hieDS, 0); c->RSSetState(g_hieRS);
+  const D3D11_VIEWPORT vp{0.0f, 0.0f, (float)w, (float)h, 0.0f, 1.0f};
+  c->RSSetViewports(1, &vp);
+  c->Draw(4, 0);
+}
+// TURNEDEYE (lens mode 2): the centred lens AKN drew for this eye and the turn of its camera from the head (toward the
+// centre of the eye's field). (Mode 3 "same way" removed in CLEANTESTS 2026-10-09: the suit gloss is fixed by SUITGLOSS3.)
+bool akn_eye_lens(const XrFovf &rf, XrFovf &fov, XrQuaternionf &turn) {
+  if (g_aknLensMode != 2) return false;
+  const float yc = 0.5f * (rf.angleLeft + rf.angleRight), pc = 0.5f * (rf.angleUp + rf.angleDown);
+  const float hH = 0.5f * (rf.angleRight - rf.angleLeft), hV = 0.5f * (rf.angleUp - rf.angleDown);
+  fov = XrFovf{-hH, hH, hV, -hV};
+  const XrQuaternionf qy{0.0f, sinf(-yc * 0.5f), 0.0f, cosf(-yc * 0.5f)};   // yaw toward the field centre (right = -yaw)
+  const XrQuaternionf qp{sinf(pc * 0.5f), 0.0f, 0.0f, cosf(pc * 0.5f)};      // then pitch (up = +X rotation)
+  turn = hud_qmul(qy, qp);
+  return true;
+}
+// this eye's view exactly as the submitted projection view describes it (see the views loop: lens mode, turn, offset)
+void hie_eye_view(int e, const XrPosef &headPose, XrPosef &pose, XrFovf &fov) {
+  fov = g_rawFov[e];
+  XrQuaternionf turn{0.0f, 0.0f, 0.0f, 1.0f};
+  akn_eye_lens(g_rawFov[e], fov, turn);
+  const float hx = menu_one_spot() ? 0.0f : (e == 0 ? -0.5f : 0.5f) * akn_ipd_m();
+  const XrVector3f r = quat_rotate(headPose.orientation, XrVector3f{hx, 0.0f, 0.0f});
+  pose = headPose;
+  pose.position.x += r.x; pose.position.y += r.y; pose.position.z += r.z;
+  pose.orientation = hud_qmul(headPose.orientation, turn);
+}
+// SVRSTRAIGHT 2026-10-09 - JJ in SteamVR: with turned eye cameras (TURNEDEYE, lens mode 2) the eyes were "too far apart"
+// to fuse; "same way" (mode 3) fused. SteamVR's OpenXR mishandles projection views turned DIFFERENT ways per eye. JJ
+// chose the proper fix over mode 3 (+25 % pixels): keep rendering turned eyes, and turn each eye's finished picture back
+// into the runtime's own straight, off-centre lens here (a pure rotation: exact), then declare straight views.
+// svrstraight: 0 off, 1 auto (SteamVR only, default), 2 always (fake-headset test). Live: AKN command "svrstraight N".
+int g_svrStraight = 1;
+bool g_straightNow = false;     // this frame's picture was straightened: the views loop declares straight eyes
+long g_straightFrames = 0;
+ID3D11Texture2D *g_aknStraight = nullptr; ID3D11RenderTargetView *g_stRTV = nullptr;
+ID3D11PixelShader *g_stPS = nullptr; ID3D11Buffer *g_stCB = nullptr; int g_stOk = 0;
+bool straight_wanted() {
+  if (g_svrStraight == 0 || g_aknLensMode != 2) return false;
+  return g_svrStraight == 2 || std::strstr(g_runtime, "SteamVR") != nullptr;
+}
+bool straight_build() {
+  if (g_stOk) return g_stOk == 1;
+  g_stOk = -1;
+  if (!stretch_build()) return false;
+  HMODULE m = LoadLibraryW(L"d3dcompiler_47.dll");
+  StrCompileFn compile = m ? (StrCompileFn)GetProcAddress(m, "D3DCompile") : nullptr;
+  if (!compile) return false;
+  // uv = this eye's output pixel; out = its direction through the straight lens (tangents L R U D); c0..c2 = columns of
+  // the inverse turn (head frame -> turned eye camera); src = the turned camera's symmetric lens (half tangents) and
+  // which half of the side-by-side source this eye is
+  static const char ps[] =
+      "Texture2D t : register(t0); SamplerState s : register(s0);"
+      "cbuffer C : register(b0) { float4 lrud; float4 c0; float4 c1; float4 c2; float4 src; };"
+      "float4 main(float4 p : SV_Position, float2 uv : TEXCOORD0) : SV_Target {"
+      " float3 d = float3(lerp(lrud.x, lrud.y, uv.x), lerp(lrud.z, lrud.w, uv.y), -1.0);"
+      " float3 e = c0.xyz * d.x + c1.xyz * d.y + c2.xyz * d.z;"
+      " if (e.z > -1e-4) return float4(0, 0, 0, 1);"
+      " float2 tn = float2(e.x, e.y) / -e.z;"
+      " float2 su = float2(0.5 + 0.5 * tn.x / src.x, 0.5 - 0.5 * tn.y / src.y);"
+      " if (any(su < 0.0) || any(su > 1.0)) return float4(0, 0, 0, 1);"
+      " return t.SampleLevel(s, float2((src.z + su.x) * 0.5, su.y), 0); }";
+  ID3DBlob *pb = nullptr, *err = nullptr;
+  bool ok = SUCCEEDED(compile(ps, sizeof(ps) - 1, "stps", nullptr, nullptr, "main", "ps_5_0", 0, 0, &pb, &err)) && pb;
+  if (err) err->Release();
+  ok = ok && SUCCEEDED(g_device->CreatePixelShader(pb->GetBufferPointer(), pb->GetBufferSize(), nullptr, &g_stPS));
+  if (pb) pb->Release();
+  D3D11_BUFFER_DESC bd{}; bd.ByteWidth = 80; bd.Usage = D3D11_USAGE_DEFAULT; bd.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
+  ok = ok && SUCCEEDED(g_device->CreateBuffer(&bd, nullptr, &g_stCB));
+  g_stOk = ok ? 1 : -1;
+  if (!ok) mode_log("straighten: shader failed");
+  return ok;
+}
+// turn both eyes of g_aknSbs back to straight eyes into g_aknStraight; true = use g_aknStraight this frame
+bool straighten() {
+  if (!g_aknSbs || !g_rawFovOk || !straight_build()) return false;
+  D3D11_TEXTURE2D_DESC sd{}; g_aknSbs->GetDesc(&sd);
+  if (g_aknStraight) { D3D11_TEXTURE2D_DESC td{}; g_aknStraight->GetDesc(&td); if (td.Width != sd.Width || td.Height != sd.Height || td.Format != sd.Format) { if (g_stRTV) g_stRTV->Release(); g_stRTV = nullptr; g_aknStraight->Release(); g_aknStraight = nullptr; } }
+  if (!g_aknStraight) {
+    if (FAILED(g_device->CreateTexture2D(&sd, nullptr, &g_aknStraight))) { g_aknStraight = nullptr; return false; }
+    if (FAILED(g_device->CreateRenderTargetView(g_aknStraight, nullptr, &g_stRTV))) { g_stRTV = nullptr; return false; }
+  }
+  if (!g_sbsSRV && FAILED(g_device->CreateShaderResourceView(g_aknSbs, nullptr, &g_sbsSRV))) return false;
+  ID3D11DeviceContext1 *c1 = nullptr; ID3DDeviceContextState *prev = nullptr;
+  if (FAILED(g_ctx->QueryInterface(__uuidof(ID3D11DeviceContext1), (void **)&c1)) || !c1) return false;
+  c1->SwapDeviceContextState(g_strState, &prev);
+  // STRBLEND 2026-10-09: g_strState is shared and KEEPS what was set in it - MIRRORHUD leaves the HUD blend
+  // (ONE / INV_SRC_ALPHA) set, so every later draw in this state blended onto the old picture: the SVRSTRAIGHT output
+  // piled up frame on frame (JJ: "blown out to white ... blurring when moving your head"). Opaque, no depth, default raster.
+  { const FLOAT bf0[4] = {0, 0, 0, 0}; c1->OMSetBlendState(nullptr, bf0, 0xffffffff); c1->OMSetDepthStencilState(nullptr, 0); c1->RSSetState(nullptr); }
+  c1->OMSetRenderTargets(1, &g_stRTV, nullptr);
+  c1->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+  c1->VSSetShader(g_strVS, nullptr, 0); c1->PSSetShader(g_stPS, nullptr, 0);
+  c1->PSSetShaderResources(0, 1, &g_sbsSRV); c1->PSSetSamplers(0, 1, &g_strSamp); c1->PSSetConstantBuffers(0, 1, &g_stCB);
+  const float halfW = 0.5f * (float)sd.Width;
+  for (int e = 0; e < 2; ++e) {
+    const XrFovf &rf = g_rawFov[e];
+    XrFovf tf = rf; XrQuaternionf turn{0.0f, 0.0f, 0.0f, 1.0f};
+    akn_eye_lens(rf, tf, turn);   // the lens + turn this eye was drawn with (same call as the views loop)
+    const XrQuaternionf inv{-turn.x, -turn.y, -turn.z, turn.w};
+    const XrVector3f a = quat_rotate(inv, XrVector3f{1, 0, 0}), b = quat_rotate(inv, XrVector3f{0, 1, 0}), c = quat_rotate(inv, XrVector3f{0, 0, 1});
+    const float cb[20] = { tanf(rf.angleLeft), tanf(rf.angleRight), tanf(rf.angleUp), tanf(rf.angleDown),
+                           a.x, a.y, a.z, 0, b.x, b.y, b.z, 0, c.x, c.y, c.z, 0,
+                           tanf(tf.angleRight), tanf(tf.angleUp), (float)e, 0 };
+    c1->UpdateSubresource(g_stCB, 0, nullptr, cb, 0, 0);
+    D3D11_VIEWPORT vp{ e * halfW, 0.0f, halfW, (float)sd.Height, 0.0f, 1.0f };
+    c1->RSSetViewports(1, &vp);
+    c1->Draw(3, 0);
+  }
+  ID3D11ShaderResourceView *none = nullptr; c1->PSSetShaderResources(0, 1, &none);
+  ID3D11RenderTargetView *nrt = nullptr; c1->OMSetRenderTargets(1, &nrt, nullptr);
+  if (prev) { c1->SwapDeviceContextState(prev, nullptr); prev->Release(); }
+  c1->Release();
+  if (!g_straightFrames++) mode_log("straighten on");
+  return true;
+}
+// draw the HUD sheet into both halves of the side-by-side picture; headPose = the pose the picture was drawn with
+// PERFTIME: per-frame processor time of the VR submit and of the HUD step (reported by pt_report)
+LONGLONG g_ptFreq = 0; double g_ptSubmit = 0, g_ptHie = 0, g_ptHieA = 0, g_ptHieB = 0; long g_ptN = 0, g_ptHieN = 0;
+char g_ptDiag[200] = "VR frame time: not measured yet";
+inline LONGLONG pt_now() { LARGE_INTEGER t; QueryPerformanceCounter(&t); return t.QuadPart; }
+inline double pt_ms(LONGLONG a, LONGLONG b) { if (!g_ptFreq) { LARGE_INTEGER f; QueryPerformanceFrequency(&f); g_ptFreq = f.QuadPart; } return (b - a) * 1000.0 / (double)g_ptFreq; }
+bool hud_in_eyes_body(ID3D11Texture2D *sbs, const XrPosef &headPose);
+LONGLONG g_ptHieMark = 0;   // PERFTIME: where the marker part ends
+bool hud_in_eyes(ID3D11Texture2D *sbs, const XrPosef &headPose) {
+  const LONGLONG a = pt_now(); g_ptHieMark = 0;
+  const bool r = hud_in_eyes_body(sbs, headPose);
+  const LONGLONG b = pt_now();
+  g_ptHie += pt_ms(a, b); if (g_ptHieMark) { g_ptHieA += pt_ms(a, g_ptHieMark); g_ptHieB += pt_ms(g_ptHieMark, b); } ++g_ptHieN;
+  return r;
+}
+bool hud_in_eyes_body(ID3D11Texture2D *sbs, const XrPosef &headPose) {
+  g_hieDimDone = false;
+  if (g_cutLog) cut_probe();   // FULLCUT (PERF1: log only)
+  if (!g_hudLastQOk || !g_rawFovOk || !hie_build()) { ++g_hieSkips; return false; }
+  long seq = 0;
+  ID3D11Texture2D *hud = akn_get_hud(&seq);
+  if (!hud) { ++g_hieSkips; return false; }
+  if (g_hieSrc != hud) {
+    if (g_hieSRV) { g_hieSRV->Release(); g_hieSRV = nullptr; }
+    g_hieSrc = hud;
+    D3D11_TEXTURE2D_DESC hd{}; hud->GetDesc(&hd);
+    D3D11_SHADER_RESOURCE_VIEW_DESC vd{}; vd.Format = hd.Format == DXGI_FORMAT_R8G8B8A8_TYPELESS ? DXGI_FORMAT_R8G8B8A8_UNORM : hd.Format;
+    vd.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D; vd.Texture2D.MipLevels = 1;
+    if (FAILED(g_device->CreateShaderResourceView(hud, &vd, &g_hieSRV))) { g_hieSRV = nullptr; snprintf(g_hieDiag, sizeof(g_hieDiag), "HUD in the eyes: HUD picture cannot be read"); }
+  }
+  if (g_hieDst != sbs) {
+    if (g_hieRTV) { g_hieRTV->Release(); g_hieRTV = nullptr; }
+    g_hieDst = sbs;
+    if (FAILED(g_device->CreateRenderTargetView(sbs, nullptr, &g_hieRTV))) g_hieRTV = nullptr;
+  }
+  if (!g_hieSRV || !g_hieRTV) { ++g_hieSkips; return false; }
+  D3D11_TEXTURE2D_DESC sd{}; sbs->GetDesc(&sd);
+  const float halfW = (float)(sd.Width / 2);
+  // the quad in LOCAL space (a VIEW-space quad hangs off the head pose the picture was drawn with)
+  XrPosef qp = g_hudLastQ.pose;
+  if (g_hudLastQ.space == g_viewSpace) {
+    const XrVector3f o = quat_rotate(headPose.orientation, qp.position);
+    qp.position = XrVector3f{headPose.position.x + o.x, headPose.position.y + o.y, headPose.position.z + o.z};
+    qp.orientation = hud_qmul(headPose.orientation, qp.orientation);
+  }
+  const float hw = 0.5f * g_hudLastQ.size.width, hh = 0.5f * g_hudLastQ.size.height;
+  const XrVector3f R = quat_rotate(qp.orientation, XrVector3f{hw, 0, 0}), U = quat_rotate(qp.orientation, XrVector3f{0, hh, 0});
+  const XrVector3f C = qp.position;
+  const XrVector3f corner[4] = { {C.x - R.x + U.x, C.y - R.y + U.y, C.z - R.z + U.z},     // top left  (uv 0,0)
+                                 {C.x + R.x + U.x, C.y + R.y + U.y, C.z + R.z + U.z},     // top right (uv 1,0)
+                                 {C.x - R.x - U.x, C.y - R.y - U.y, C.z - R.z - U.z},     // bottom left
+                                 {C.x + R.x - U.x, C.y + R.y - U.y, C.z + R.z - U.z} };   // bottom right
+  // MARKERCUT 2026-10-08 (JJ: the distance marker / reticles not on their objects, the distance marker moves against
+  // the head; rock solid under geo-11). geo-11's way (TARGETANCHOR points + depth) and Arkham City's (Canvas.Project
+  // world point, per-eye placement) on pixels: each marker's HUD area is cut out of the sheet and drawn into each eye
+  // where that eye sees the marker's world point - per-eye depth, no head term (VR_WORLD_MARKERS_GUIDE 3-5).
+  struct Cut { float hx, hy; float p[2][2]; float q[2][4][3]; bool world; };   // q: MARKERWORLD corners TL TR BL BR per eye (NDC x, y + clip w: CARDPERSP)
+  Cut cuts[8]; int nCuts = 0;
+  {
+    D3D11_TEXTURE2D_DESC hd{}; hud->GetDesc(&hd);
+    float tp[16] = {}, toff[8] = {}, txf[4] = {};
+    g_hieNPts = akvr_hud_target_points(tp, 8, (int)hd.Width, (int)hd.Height, toff, txf);
+    for (int i = 0; i < 16; ++i) g_hiePts[i] = tp[i];
+    for (int i = 0; i < 4; ++i) g_hieXf[i] = txf[i];
+    if (txf[0] != 0.0f || txf[1] != 0.0f) { for (int i = 0; i < 4; ++i) g_hieXfLast[i] = txf[i]; g_hieXfOk = true; }   // MKEYE
+    if (!p_aknMarkers) { HMODULE m = GetModuleHandleW(L"XINPUT9_1_0.dll"); if (m) { p_aknMarkers = (AknMarkersFn)GetProcAddress(m, "akn_markers"); p_aknPairVp = (AknPairVpFn)GetProcAddress(m, "akn_pair_vp"); } }
+    {   using EyeModeFn = int (*)(); static EyeModeFn p_eyeMode = nullptr; static bool s_emTried = false;   // MKEYE
+        if (!s_emTried) { HMODULE m = GetModuleHandleW(L"XINPUT9_1_0.dll"); if (m) { p_eyeMode = (EyeModeFn)GetProcAddress(m, "akn_marker_eye_mode"); s_emTried = true; } }
+        g_hieEyeMode = p_eyeMode && p_eyeMode() != 0; }
+    float mk[16 * 5]; float vp[32];
+    const int nm = (!g_hieEyeMode && g_markerCut && g_mcVS && p_aknMarkers) ? p_aknMarkers(mk, 16) : 0;   // MKEYE: no cards
+    const bool vpOk = nm > 0 && p_aknPairVp && p_aknPairVp(vp);
+    // the cut centres: the HUD's on-target points (geo-11)
+    float cx[16], cy[16]; int nc = 0;
+    // only where the HUD tree says a marker IS drawn (MARKERMATCH: the old fallback to bare projected points cut circles
+    // out of whatever HUD lay there - hidden markers project too)
+    // MKDRAWN 2026-10-11 (JJ: the distance marker "jitters, like tiny little jitters"): the HUD-tree points race the game
+    // thread (at Present the next frame's layout can already be in place), so the card's window sat up to a frame off the
+    // drawn marker. AKN reports where this HUD frame's marker pieces were really drawn (bounding-box centre); the point is
+    // that drawn centre plus the anchor's offset from it, averaged (the race averages out, the layout offset stays).
+    using DrawnFn = int (*)(float *, int); static DrawnFn p_drawn = nullptr; static bool s_drawnTried = false;
+    if (!s_drawnTried) { HMODULE m = GetModuleHandleW(L"XINPUT9_1_0.dll"); if (m) { p_drawn = (DrawnFn)GetProcAddress(m, "akn_marker_drawn"); s_drawnTried = true; } }
+    // MKDRAWN OFF 2026-10-11 (JJ after it: "looks even worse now ... jittering even more, and also detaching from its
+    // position"): the drawn pieces differ frame to frame (text marked ~1 frame in 7, glow pastes, border), so their
+    // bounding-box centre jumps - and it moved the HUD window cut for the card, not just the match point. Kept for study.
+    constexpr bool kMkDrawnOn = false;
+    float dr[8 * 5]; const int nd = (kMkDrawnOn && p_drawn) ? p_drawn(dr, 8) : 0;
+    static float s_mkOff[8][2] = {}; static bool s_mkOffOk[8] = {};
+    for (int j = 0; j < 8; ++j) if (j >= nd || dr[j * 5 + 4] <= 0.0f) s_mkOffOk[j] = false;
+    for (int i = 0; i < g_hieNPts && nc < 16; ++i) {
+      float px = tp[i * 2], py = tp[i * 2 + 1];
+      int bj = -1; float bd2 = 0.12f * 0.12f;
+      for (int j = 0; j < nd; ++j) {
+        if (dr[j * 5 + 4] <= 0.0f) continue;
+        const float dx = dr[j * 5] - px, dy = dr[j * 5 + 1] - py;
+        if (dx * dx + dy * dy < bd2) { bd2 = dx * dx + dy * dy; bj = j; }
+      }
+      if (bj >= 0) {
+        const float gx = dr[bj * 5 + 2], gy = dr[bj * 5 + 3], ox = px - gx, oy = py - gy;
+        if (!s_mkOffOk[bj]) { s_mkOff[bj][0] = ox; s_mkOff[bj][1] = oy; s_mkOffOk[bj] = true; }
+        else { s_mkOff[bj][0] += (ox - s_mkOff[bj][0]) * 0.05f; s_mkOff[bj][1] += (oy - s_mkOff[bj][1]) * 0.05f; }
+        px = gx + s_mkOff[bj][0]; py = gy + s_mkOff[bj][1];
+      }
+      cx[nc] = px; cy[nc] = py; ++nc;
+    }
+    // MARKERMATCH 2026-10-08 (JJ: "the compass is broken: chunks taken out of it, some elements stuck to world space
+    // objects"): compass icons move with the view, so they count as on-target points, and the old 0.25 match in SHEET
+    // units (the sheet is the game's layout shrunk to the HUD box) paired them with the objective's projected point -
+    // a circle cut out of the compass and drawn at the objective. Compare in the game's own screen units (the layout map
+    // xf, as TARGETDIST does) and only close by: a real marker sits ON its projected point (MARKERBASE answers that
+    // point from the same head-free camera the game lays the HUD out with).
+    const float kMatch = 0.06f;
+    float bF[3], bR[3], bU[3], fF[3], fR[3], fU[3];   // MARKERWORLD: the head-free game camera's axes (world)
+    bool axOk = akvr_camera_axes_ago(0, bF, bR, bU, fF, fR, fU);
+    {   // PAIRAXES 2026-10-11 (JJ: marker jitter = a head-pose / camera delay unlike the world's?): the card's shape from the
+        // head-free camera the SHOWN pair was built with (AKN), not the newest one - a frame apart while the camera turns
+        using AxFn = int (*)(float *); static AxFn p_ax = nullptr; static bool s_axTried = false;
+        if (!s_axTried) { HMODULE m = GetModuleHandleW(L"XINPUT9_1_0.dll"); if (m) { p_ax = (AxFn)GetProcAddress(m, "akn_pair_axes"); s_axTried = true; } }
+        float a9[9];
+        if (p_ax && p_ax(a9)) { for (int k = 0; k < 3; ++k) { bF[k] = a9[k]; bR[k] = a9[3 + k]; bU[k] = a9[6 + k]; } axOk = true; }
+    }
+    auto projP = [&](const float *M, const float P[3], float &ox, float &oy) {
+      const float X = P[0] * M[0] + P[1] * M[4] + P[2] * M[8] + M[12], Y = P[0] * M[1] + P[1] * M[5] + P[2] * M[9] + M[13];
+      const float Wc = P[0] * M[3] + P[1] * M[7] + P[2] * M[11] + M[15];
+      if (Wc <= 0.0001f) return false;
+      ox = X / Wc; oy = Y / Wc; return true;
+    };
+    // MKCARRY 2026-10-11 (JJ: "the grappling hook reticle pop out randomly also just for single frames", earlier "the text still
+    // pops out for random frames"): a frame whose HUD-tree read finds no marker point (the game thread mid-update) drew no
+    // cards, so that frame's marker pieces showed flat or not at all. A marker matched by the tree within the last 250 ms is
+    // carried through such frames from this pair's own projected point (MKSAMEFRAME slot: world point + anchor offset).
+    struct SfSlot { float w[3], o[2], s[2]; ULONGLONG t, tt; unsigned f; bool ok; };
+    static SfSlot s_sf[8] = {};
+    static unsigned s_sfFrame = 0; ++s_sfFrame;
+    const ULONGLONG sfNow = GetTickCount64();
+    const bool sfMap = txf[0] != 0.0f || txf[1] != 0.0f;
+    for (int i = 0; i < nc + 8 && nCuts < 8 && vpOk; ++i) {
+      int best = -1, xs = -1; float hx0 = 0.0f, hy0 = 0.0f;
+      if (i < nc) {
+        float gx = cx[i], gy = cy[i];
+        if (sfMap) { gx += gx * txf[0] + txf[2]; gy += gy * txf[1] + txf[3]; }
+        float bd = kMatch * kMatch;
+        for (int j = 0; j < nm; ++j) { const float dx = mk[j * 5 + 3] - gx, dy = mk[j * 5 + 4] - gy; if (dx * dx + dy * dy < bd) { bd = dx * dx + dy * dy; best = j; } }
+        if (best < 0) { ++g_mcNoWorld; continue; }
+        hx0 = cx[i]; hy0 = cy[i];
+      } else {   // MKCARRY: a slot the tree did not match this frame
+        const int k = i - nc; SfSlot &n = s_sf[k];
+        if (!g_mkSameFrame || !g_mkCarryOn || !n.ok || n.f == s_sfFrame || sfNow - n.tt > 250) continue;
+        float bd = 60.0f * 60.0f;
+        for (int j = 0; j < nm; ++j) { const float dx = mk[j * 5] - n.w[0], dy = mk[j * 5 + 1] - n.w[1], dz = mk[j * 5 + 2] - n.w[2]; if (dx * dx + dy * dy + dz * dz < bd) { bd = dx * dx + dy * dy + dz * dz; best = j; } }
+        if (best < 0) continue;
+        xs = k;
+      }
+      Cut &c = cuts[nCuts]; c.hx = hx0; c.hy = hy0; bool ok = true;
+      if (g_mkSameFrame) {   // MKSAMEFRAME 2026-10-11 (JJ: "Still jitters a little bit ... the RB icon doing it ... also")
+        // The card's HUD window was centred on the HUD-tree point, read at Present while the game thread can already have
+        // laid out the NEXT frame - the marker pixels slid inside the card by one frame of screen motion. Centre it on this
+        // pair's own Canvas.Project point (same frame as the HUD sheet, PAIRPTS) plus the layout's anchor offset (tree
+        // point - projected point), learnt only while the projected point is still on screen (then both frames agree).
+        const float *W = mk + best * 5;
+        float sx = mk[best * 5 + 3], sy = mk[best * 5 + 4];
+        if (sfMap) { sx = (sx - txf[2]) / (1.0f + txf[0]); sy = (sy - txf[3]) / (1.0f + txf[1]); }
+        if (xs >= 0) {   // MKCARRY: no tree point this frame - the slot's learnt offset only
+          SfSlot &n = s_sf[xs];
+          n.s[0] = sx; n.s[1] = sy; n.w[0] = W[0]; n.w[1] = W[1]; n.w[2] = W[2]; n.t = sfNow; n.f = s_sfFrame;
+          c.hx = sx + n.o[0]; c.hy = sy + n.o[1]; ++g_mkCarry;
+        } else {
+          int sl = -1, fr = -1;
+          for (int k = 0; k < 8; ++k) {
+            if (!s_sf[k].ok || sfNow - s_sf[k].t > 1000) { if (fr < 0) fr = k; continue; }
+            if (s_sf[k].f == s_sfFrame) continue;   // already placed this frame
+            const float dx = s_sf[k].w[0] - W[0], dy = s_sf[k].w[1] - W[1], dz = s_sf[k].w[2] - W[2];
+            if (dx * dx + dy * dy + dz * dz < 60.0f * 60.0f) { sl = k; break; }
+          }
+          const float ox = cx[i] - sx, oy = cy[i] - sy;
+          if (sl < 0 && fr >= 0) { sl = fr; SfSlot &n = s_sf[sl]; n.w[0] = W[0]; n.w[1] = W[1]; n.w[2] = W[2]; n.o[0] = ox; n.o[1] = oy; n.s[0] = sx; n.s[1] = sy; n.ok = true; ++g_mkSfNew; }
+          if (sl >= 0) {
+            SfSlot &n = s_sf[sl];
+            const float mv = fabsf(sx - n.s[0]) + fabsf(sy - n.s[1]);   // screen motion of the marker since the last frame
+            const float dOff = fabsf(ox - n.o[0]) + fabsf(oy - n.o[1]);
+            if (dOff > 0.06f && mv < 0.002f) { n.o[0] = ox; n.o[1] = oy; ++g_mkSfNew; }   // a new layout (another widget)
+            else if (mv < 0.002f) { n.o[0] += (ox - n.o[0]) * 0.2f; n.o[1] += (oy - n.o[1]) * 0.2f; ++g_mkSfLearn; }
+            n.s[0] = sx; n.s[1] = sy; n.w[0] = W[0]; n.w[1] = W[1]; n.w[2] = W[2]; n.t = sfNow; n.tt = sfNow; n.f = s_sfFrame;
+            c.hx = sx + n.o[0]; c.hy = sy + n.o[1]; ++g_mkSfUsed;
+          }
+        }
+      }
+      for (int e = 0; e < 2 && ok; ++e) {
+        const float *M = vp + e * 16, *W = mk + best * 5;
+        const float X = W[0] * M[0] + W[1] * M[4] + W[2] * M[8] + M[12];
+        const float Y = W[0] * M[1] + W[1] * M[5] + W[2] * M[9] + M[13];
+        const float Wc = W[0] * M[3] + W[1] * M[7] + W[2] * M[11] + M[15];
+        if (Wc <= 0.0001f) { ok = false; break; }
+        c.p[e][0] = X / Wc; c.p[e][1] = Y / Wc;
+      }
+      c.world = false;
+      if (ok && axOk && g_mkWorldOn) {   // MARKERWORLD: world size from the left eye (1 unit along the camera's right = how much NDC)
+        const float *W = mk + best * 5; const float *M0 = vp;
+        float Pr[3] = { W[0] + bR[0], W[1] + bR[1], W[2] + bR[2] }, Pu[3] = { W[0] + bU[0], W[1] + bU[1], W[2] + bU[2] };
+        float rx, ry, ux, uy;
+        if (projP(M0, Pr, rx, ry) && projP(M0, Pu, ux, uy)) {
+          const float dR = sqrtf((rx - c.p[0][0]) * (rx - c.p[0][0]) + (ry - c.p[0][1]) * (ry - c.p[0][1]));
+          const float sR = (rx - c.p[0][0]) >= 0.0f ? 1.0f : -1.0f, sU = (uy - c.p[0][1]) >= 0.0f ? 1.0f : -1.0f;   // card x right, y up
+          const float rC = (g_markSheetOn ? g_mkCardR : g_mcRadius) * g_mkScale;
+          if (dR > 1e-6f) {
+            const float h = rC / dR;   // world half-size
+            const float cs[4][2] = { { -1.0f, 1.0f }, { 1.0f, 1.0f }, { -1.0f, -1.0f }, { 1.0f, -1.0f } };
+            bool cok = true;
+            for (int e = 0; e < 2 && cok; ++e)
+              for (int k = 0; k < 4 && cok; ++k) {
+                float P[3]; for (int a = 0; a < 3; ++a) P[a] = W[a] + h * (cs[k][0] * sR * bR[a] + cs[k][1] * sU * bU[a]);
+                cok = projP(vp + e * 16, P, c.q[e][k][0], c.q[e][k][1]);
+                { const float *M = vp + e * 16; c.q[e][k][2] = P[0] * M[3] + P[1] * M[7] + P[2] * M[11] + M[15]; }   // CARDPERSP: clip w
+              }
+            c.world = cok;
+            if (nCuts == 0) {   // EYESHOT diagnostics for the first card
+              int o = snprintf(g_mkCardDiag, sizeof(g_mkCardDiag), "W %.1f %.1f %.1f | right %.3f %.3f %.3f up %.3f %.3f %.3f fwd %.3f %.3f %.3f | dR %.6f h %.2f sR %.0f sU %.0f | hud %.3f %.3f\n",
+                               W[0], W[1], W[2], bR[0], bR[1], bR[2], bU[0], bU[1], bU[2], bF[0], bF[1], bF[2], dR, h, sR, sU, c.hx, c.hy);
+              for (int e = 0; e < 2 && o > 0 && o < (int)sizeof(g_mkCardDiag); ++e) {
+                o += snprintf(g_mkCardDiag + o, sizeof(g_mkCardDiag) - o, "eye %d centre %.4f %.4f corners TL %.4f %.4f TR %.4f %.4f BL %.4f %.4f BR %.4f %.4f | VP", e, c.p[e][0], c.p[e][1],
+                              c.q[e][0][0], c.q[e][0][1], c.q[e][1][0], c.q[e][1][1], c.q[e][2][0], c.q[e][2][1], c.q[e][3][0], c.q[e][3][1]);
+                for (int k = 0; k < 16 && o > 0 && o < (int)sizeof(g_mkCardDiag); ++k) o += snprintf(g_mkCardDiag + o, sizeof(g_mkCardDiag) - o, " %.5f", vp[e * 16 + k]);
+                if (o > 0 && o < (int)sizeof(g_mkCardDiag)) o += snprintf(g_mkCardDiag + o, sizeof(g_mkCardDiag) - o, "\n");
+              }
+            }
+          }
+        }
+      }
+      if (ok) ++nCuts;
+    }
+  }
+  // MKCARD 2026-10-11 (akvr_native/NOTES.md MKCARD): AKN routes the marker pieces into the flat marker sheet and hands each
+  // marker as a perspective card per eye (upright at its world point, facing the camera's heading, world up, the game's
+  // layout scale, same frame); drawn below by the CARDPERSP path. No HUD-tree points, no matching here.
+  bool cardMode = false;
+  if (g_hieEyeMode) {
+    using CardModeFn = int (*)(); using CardsFn = int (*)(float, float, float *, int);
+    static CardModeFn p_cm = nullptr; static CardsFn p_cards = nullptr; static bool s_ct = false;
+    if (!s_ct) { HMODULE m = GetModuleHandleW(L"XINPUT9_1_0.dll"); if (m) { p_cm = (CardModeFn)GetProcAddress(m, "akn_marker_card_mode"); p_cards = (CardsFn)GetProcAddress(m, "akn_marker_cards"); s_ct = true; } }
+    if (p_cm && p_cards && p_cm()) {
+      cardMode = true;
+      float cd[8 * 26]; const int ncd = p_cards(g_mkCardR, g_mkScale, cd, 8);
+      nCuts = 0;
+      for (int i = 0; i < ncd && nCuts < 8; ++i) {
+        Cut &c = cuts[nCuts]; const float *o = cd + i * 26;
+        c.hx = o[0]; c.hy = o[1]; c.world = true;
+        for (int e = 0; e < 2; ++e) {
+          c.p[e][0] = c.p[e][1] = 0.0f;
+          for (int k = 0; k < 4; ++k) { for (int a = 0; a < 3; ++a) c.q[e][k][a] = o[2 + e * 12 + k * 3 + a]; c.p[e][0] += 0.25f * c.q[e][k][0]; c.p[e][1] += 0.25f * c.q[e][k][1]; }
+        }
+        ++nCuts;
+      }
+    }
+  }
+  const bool keyE = g_blackKey && g_pauseLive && g_hieKeyPS;   // (pause screens: no cards - nothing routed either)
+  for (int i = 0; i < nCuts; ++i) { g_mkExp[i * 2] = cuts[i].hx; g_mkExp[i * 2 + 1] = cuts[i].hy; }   // MARKSHEET: for AKN's next HUD frame
+  // MKHOLD 2026-10-09 (JJ: the distance marker flickers): AKN routes the marker pieces by THESE centres on its next HUD
+  // frame; a single frame without a match used to drop the routing, and the marker fell back to small cut circles.
+  // Keep the last centres for up to 8 frames.
+  { static int s_mkHold = 0;
+    if (keyE) { g_mkExpN = 0; s_mkHold = 0; }
+    else if (nCuts > 0) { g_mkExpN = nCuts; s_mkHold = 8; }
+    else if (s_mkHold > 0) --s_mkHold;
+    else g_mkExpN = 0; }
+  bool msheet = false;   // MARKSHEET: the marker pieces are in their own sheet this frame
+  if (g_markSheetOn && nCuts > 0 && !keyE) {
+    if (!p_aknMarkerHudTried) { HMODULE m = GetModuleHandleW(L"XINPUT9_1_0.dll"); p_aknMarkerHud = m ? (AknMarkerHudFn)GetProcAddress(m, "akn_get_marker_hud") : nullptr; p_aknMarkerHudTried = m != nullptr; }
+    long routed = 0; ID3D11Texture2D *mt = p_aknMarkerHud ? p_aknMarkerHud(&routed) : nullptr;
+    if (mt && g_mkSrc != mt) {
+      if (g_mkSRV) { g_mkSRV->Release(); g_mkSRV = nullptr; }
+      g_mkSrc = mt;
+      D3D11_TEXTURE2D_DESC md{}; mt->GetDesc(&md);
+      D3D11_SHADER_RESOURCE_VIEW_DESC vd{}; vd.Format = md.Format == DXGI_FORMAT_R8G8B8A8_TYPELESS ? DXGI_FORMAT_R8G8B8A8_UNORM : md.Format;
+      vd.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D; vd.Texture2D.MipLevels = 1;
+      if (FAILED(g_device->CreateShaderResourceView(mt, &vd, &g_mkSRV))) g_mkSRV = nullptr;
+    }
+    msheet = mt && g_mkSRV && routed > 0;
+    if (msheet) ++g_mkSheetFrames;
+  }
+  // MKNOCUT 2026-10-09 (JJ: corners missing, "cutting out the text that's near it", flicker): with the marker sheet on, a
+  // frame AKN could not route is drawn whole - the marker stays flat on the HUD for that frame - instead of cutting
+  // small circles out of the HUD sheet (bites out of nearby text, the bracket corners lost).
+  // (MKNOCUT reverted 23:1x: the distance marker's pieces are drawn by HUD shaders AKN cannot route, so the marker
+  // sheet is empty for it - without the cut card it stayed flat on the HUD, off its target. JJ: "floats away".)
+  // MKNOCUT2 2026-10-10 (MKTAG routes the marked pieces reliably; JJ: "cutting out with a circle seems like a pretty bad
+  // hack", and the cut on unrouted frames copied the compass around the marker = a flickering duplicate): with the marker
+  // sheet on, a frame without routed pieces draws no cards and cuts nothing - the HUD sheet is shown whole.
+  if (g_markSheetOn && !msheet) nCuts = 0;
+  if (g_hieEyeMode && !cardMode) nCuts = 0;   // MKEYE: the markers come in their per-eye layers (MKCARD: AKN's cards)
+  const float rCut = msheet ? g_mkCardR : g_mcRadius;
+  float circ[36] = {};   // 8 x (uv centre, uv radii) + mode
+  for (int i = 0; i < nCuts; ++i) { circ[i * 4] = cuts[i].hx * 0.5f + 0.5f; circ[i * 4 + 1] = 0.5f - cuts[i].hy * 0.5f; circ[i * 4 + 2] = rCut * 0.5f; circ[i * 4 + 3] = rCut * 0.5f; }
+  circ[34] = msheet ? 0.0f : 1.0f;   // mode.z: MARKERRING test only when cutting the HUD sheet
+  g_ptHieMark = pt_now();   // PERFTIME: marker work done, drawing starts
+  // save what we touch
+  ID3D11RenderTargetView *oRTV = nullptr; ID3D11DepthStencilView *oDSV = nullptr; g_ctx->OMGetRenderTargets(1, &oRTV, &oDSV);
+  UINT nvp = D3D11_VIEWPORT_AND_SCISSORRECT_OBJECT_COUNT_PER_PIPELINE; D3D11_VIEWPORT ovp[D3D11_VIEWPORT_AND_SCISSORRECT_OBJECT_COUNT_PER_PIPELINE]; g_ctx->RSGetViewports(&nvp, ovp);
+  ID3D11VertexShader *oVS = nullptr; ID3D11PixelShader *oPS = nullptr; g_ctx->VSGetShader(&oVS, nullptr, nullptr); g_ctx->PSGetShader(&oPS, nullptr, nullptr);
+  ID3D11ShaderResourceView *oSRV = nullptr; g_ctx->PSGetShaderResources(0, 1, &oSRV);
+  ID3D11SamplerState *oSS = nullptr; g_ctx->PSGetSamplers(0, 1, &oSS);
+  ID3D11Buffer *oCB = nullptr; g_ctx->VSGetConstantBuffers(0, 1, &oCB);
+  ID3D11Buffer *oPCB = nullptr; g_ctx->PSGetConstantBuffers(0, 1, &oPCB);
+  ID3D11InputLayout *oIL = nullptr; g_ctx->IAGetInputLayout(&oIL);
+  D3D11_PRIMITIVE_TOPOLOGY oTop; g_ctx->IAGetPrimitiveTopology(&oTop);
+  ID3D11BlendState *oBS = nullptr; FLOAT oBF[4]; UINT oBM = 0; g_ctx->OMGetBlendState(&oBS, oBF, &oBM);
+  ID3D11DepthStencilState *oDS = nullptr; UINT oRef = 0; g_ctx->OMGetDepthStencilState(&oDS, &oRef);
+  ID3D11RasterizerState *oRS = nullptr; g_ctx->RSGetState(&oRS);
+  ID3D11ShaderResourceView *oSRV1 = nullptr; g_ctx->PSGetShaderResources(1, 1, &oSRV1);   // FULLCUT5
+  g_ctx->IASetInputLayout(nullptr); g_ctx->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
+  const bool cutGpu = g_fullCut && g_cutPS && g_cutRTV && g_cutSRV && !akvr_xr_main_menu_detected();
+  if (cutGpu) {   // FULLCUT5: this frame's cut, measured on the graphics card (no readback delay)
+    const float full[16] = {-1, 1, 0.5f, 1,  1, 1, 0.5f, 1,  -1, -1, 0.5f, 1,  1, -1, 0.5f, 1};
+    const float fl[4] = {g_pauseLive ? 1.0f : 0.0f, 1.0f, 0.0f, 0.0f};
+    g_ctx->UpdateSubresource(g_hieCB, 0, nullptr, full, 0, 0); g_ctx->UpdateSubresource(g_cutCB, 0, nullptr, fl, 0, 0);
+    ID3D11ShaderResourceView *noSrv = nullptr; g_ctx->PSSetShaderResources(1, 1, &noSrv);
+    g_ctx->OMSetRenderTargets(1, &g_cutRTV, nullptr);
+    const D3D11_VIEWPORT one{0.0f, 0.0f, 1.0f, 1.0f, 0.0f, 1.0f}; g_ctx->RSSetViewports(1, &one);
+    g_ctx->OMSetBlendState(nullptr, nullptr, 0xffffffff); g_ctx->OMSetDepthStencilState(g_hieDS, 0); g_ctx->RSSetState(g_hieRS);
+    g_ctx->VSSetShader(g_hieVS, nullptr, 0); g_ctx->VSSetConstantBuffers(0, 1, &g_hieCB);
+    g_ctx->PSSetShader(g_cutPS, nullptr, 0); g_ctx->PSSetConstantBuffers(0, 1, &g_cutCB);
+    g_ctx->PSSetShaderResources(0, 1, &g_hieSRV);
+    g_ctx->Draw(4, 0);
+  }
+  g_ctx->OMSetRenderTargets(1, &g_hieRTV, nullptr);
+  { ID3D11ShaderResourceView *c1 = cutGpu ? g_cutSRV : nullptr; g_ctx->PSSetShaderResources(1, 1, &c1); }
+  const bool keyNow = g_blackKey && g_pauseLive && g_hieKeyPS;   // BLACKKEY
+  const bool cut = nCuts > 0 && !keyNow;
+  if (cut) {   // MARKERCUT: the sheet without the marker areas (MARKSHEET: the whole sheet - the markers are not in it)
+    circ[32] = msheet ? 0.0f : (float)nCuts; circ[33] = 0.0f;
+    g_ctx->UpdateSubresource(g_mcPCB, 0, nullptr, circ, 0, 0);
+    g_ctx->VSSetShader(g_mcVS, nullptr, 0); g_ctx->PSSetShader(g_mcPS, nullptr, 0);
+    g_ctx->VSSetConstantBuffers(0, 1, &g_mcVCB); g_ctx->PSSetConstantBuffers(0, 1, &g_mcPCB);
+  } else {
+    g_ctx->VSSetShader(g_hieVS, nullptr, 0); g_ctx->PSSetShader(keyNow ? g_hieKeyPS : g_hiePS, nullptr, 0);
+    g_ctx->VSSetConstantBuffers(0, 1, &g_hieCB);
+  }
+  g_ctx->PSSetShaderResources(0, 1, &g_hieSRV); g_ctx->PSSetSamplers(0, 1, &g_hieSS);
+  const FLOAT bf[4] = {0, 0, 0, 0}; g_ctx->OMSetBlendState(g_hieBS, bf, 0xffffffff);
+  g_ctx->OMSetDepthStencilState(g_hieDS, 0); g_ctx->RSSetState(g_hieRS);
+  g_hieDimDone = false;
+  if (const float da = g_hieDimPS ? hie_dim_alpha() : 0.0f; da > 0.0f || (cutGpu && g_hieDimPS)) {   // FULLCUT5: + this frame's cut
+    // WHEELEYE: darken both eye pictures first (ONE / INV_SRC_ALPHA with black = picture x (1 - a)), then the HUD on top
+    const float full[16] = {-1, 1, 0.5f, 1,  1, 1, 0.5f, 1,  -1, -1, 0.5f, 1,  1, -1, 0.5f, 1};
+    const float col[4] = {0.0f, 0.0f, 0.0f, da};
+    g_ctx->UpdateSubresource(g_hieCB, 0, nullptr, full, 0, 0); g_ctx->UpdateSubresource(g_hieDimCB, 0, nullptr, col, 0, 0);
+    g_ctx->VSSetShader(g_hieVS, nullptr, 0); g_ctx->VSSetConstantBuffers(0, 1, &g_hieCB);
+    g_ctx->PSSetShader(g_hieDimPS, nullptr, 0); g_ctx->PSSetConstantBuffers(0, 1, &g_hieDimCB);
+    const D3D11_VIEWPORT whole{0.0f, 0.0f, (float)sd.Width, (float)sd.Height, 0.0f, 1.0f};
+    g_ctx->RSSetViewports(1, &whole);
+    g_ctx->Draw(4, 0);
+    g_hieDimDone = da > 0.0f;   // FULLCUT5: only the pause / depth-of-field darkening replaces the dim layer
+    if (cut) {   // back to the sheet shaders
+      g_ctx->VSSetShader(g_mcVS, nullptr, 0); g_ctx->PSSetShader(g_mcPS, nullptr, 0);
+      g_ctx->VSSetConstantBuffers(0, 1, &g_mcVCB); g_ctx->PSSetConstantBuffers(0, 1, &g_mcPCB);
+    } else { g_ctx->PSSetShader(keyNow ? g_hieKeyPS : g_hiePS, nullptr, 0); }
+  }
+  ID3D11ShaderResourceView *eyeSRV[2] = {};   // MKEYE: AKN's per-eye marker layers
+  if (g_hieEyeMode && !cardMode && !keyNow) {
+    using EyeHudFn = ID3D11Texture2D *(*)(int, long *); static EyeHudFn p_eyeHud = nullptr; static bool s_ehTried = false;
+    if (!s_ehTried) { HMODULE m = GetModuleHandleW(L"XINPUT9_1_0.dll"); if (m) { p_eyeHud = (EyeHudFn)GetProcAddress(m, "akn_get_eye_marker_hud"); s_ehTried = true; } }
+    static ID3D11Texture2D *s_eyeSrc[2] = {}; static ID3D11ShaderResourceView *s_eyeSRV[2] = {};
+    for (int k = 0; k < 2 && p_eyeHud; ++k) {
+      long routed = 0; ID3D11Texture2D *t = p_eyeHud(k, &routed);
+      if (t != s_eyeSrc[k]) {
+        if (s_eyeSRV[k]) { s_eyeSRV[k]->Release(); s_eyeSRV[k] = nullptr; }
+        s_eyeSrc[k] = t;
+        if (t) {
+          D3D11_TEXTURE2D_DESC md{}; t->GetDesc(&md);
+          D3D11_SHADER_RESOURCE_VIEW_DESC vd{}; vd.Format = md.Format == DXGI_FORMAT_R8G8B8A8_TYPELESS ? DXGI_FORMAT_R8G8B8A8_UNORM : md.Format;
+          vd.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D; vd.Texture2D.MipLevels = 1;
+          if (FAILED(g_device->CreateShaderResourceView(t, &vd, &s_eyeSRV[k]))) s_eyeSRV[k] = nullptr;
+        }
+      }
+      eyeSRV[k] = s_eyeSRV[k];
+    }
+  }
+  for (int e = 0; e < 2; ++e) {
+    XrPosef ep; XrFovf f; hie_eye_view(e, headPose, ep, f);
+    const float tl = tanf(f.angleLeft), tr = tanf(f.angleRight), tu = tanf(f.angleUp), td = tanf(f.angleDown);
+    const XrQuaternionf inv = hie_conj(ep.orientation);
+    float c[16];
+    for (int k = 0; k < 4; ++k) {
+      const XrVector3f d{corner[k].x - ep.position.x, corner[k].y - ep.position.y, corner[k].z - ep.position.z};
+      const XrVector3f v = quat_rotate(inv, d);            // eye space: x right, y up, -z ahead
+      const float w = -v.z;
+      c[k * 4 + 0] = (2.0f * v.x + (tr + tl) * v.z) / (tr - tl);
+      c[k * 4 + 1] = (2.0f * v.y + (tu + td) * v.z) / (tu - td);
+      c[k * 4 + 2] = 0.5f * w;
+      c[k * 4 + 3] = w;
+    }
+    const D3D11_VIEWPORT vp{e * halfW, 0.0f, halfW, (float)sd.Height, 0.0f, 1.0f};
+    g_ctx->RSSetViewports(1, &vp);
+    if (g_backExt && g_pauseLive && g_hieExtPS && g_mcVS && g_mcVCB) {
+      // BACKEXT: the sheet's plane grown about its centre (texture coordinates past 0..1, clamped = its edge texels)
+      for (float grow = 3.0f; grow >= 1.5f; grow -= 0.5f) {
+        float q[20]; bool front = true;
+        for (int k = 0; k < 4 && front; ++k) {
+          const XrVector3f wpt{C.x + (corner[k].x - C.x) * grow, C.y + (corner[k].y - C.y) * grow, C.z + (corner[k].z - C.z) * grow};
+          const XrVector3f v = quat_rotate(inv, XrVector3f{wpt.x - ep.position.x, wpt.y - ep.position.y, wpt.z - ep.position.z});
+          const float w = -v.z;
+          if (w < 0.05f) { front = false; break; }
+          q[k * 4 + 0] = (2.0f * v.x + (tr + tl) * v.z) / (tr - tl);
+          q[k * 4 + 1] = (2.0f * v.y + (tu + td) * v.z) / (tu - td);
+          q[k * 4 + 2] = 0.5f * w; q[k * 4 + 3] = w;
+        }
+        if (!front) continue;
+        q[16] = 0.5f - 0.5f * grow; q[17] = 0.5f - 0.5f * grow; q[18] = grow; q[19] = grow;
+        g_ctx->VSSetShader(g_mcVS, nullptr, 0); g_ctx->VSSetConstantBuffers(0, 1, &g_mcVCB);
+        g_ctx->PSSetShader(g_hieExtPS, nullptr, 0);
+        g_ctx->UpdateSubresource(g_mcVCB, 0, nullptr, q, 0, 0);
+        g_ctx->Draw(4, 0);
+        if (cut) { g_ctx->PSSetShader(g_mcPS, nullptr, 0); g_ctx->PSSetConstantBuffers(0, 1, &g_mcPCB); }
+        else { g_ctx->VSSetShader(g_hieVS, nullptr, 0); g_ctx->VSSetConstantBuffers(0, 1, &g_hieCB); g_ctx->PSSetShader(keyNow ? g_hieKeyPS : g_hiePS, nullptr, 0); }
+        break;
+      }
+    }
+    if (cut) {
+      float c5[20]; for (int k = 0; k < 16; ++k) c5[k] = c[k]; c5[16] = 0.0f; c5[17] = 0.0f; c5[18] = 1.0f; c5[19] = 1.0f;
+      g_ctx->UpdateSubresource(g_mcVCB, 0, nullptr, c5, 0, 0);
+      g_ctx->Draw(4, 0);
+      // the marker cards: each marker's area, in this eye's own picture, centred where this eye sees its world point
+      circ[32] = (float)nCuts; circ[33] = 1.0f; g_ctx->UpdateSubresource(g_mcPCB, 0, nullptr, circ, 0, 0);
+      if (msheet) g_ctx->PSSetShaderResources(0, 1, &g_mkSRV);   // MARKSHEET: cards from the marker sheet
+      for (int i = 0; i < nCuts; ++i) {
+        const float r = rCut, rs = rCut * g_mkScale, px = cuts[i].p[e][0], py = cuts[i].p[e][1];
+        float q[20] = { px - rs, py + rs, 0.5f, 1.0f,  px + rs, py + rs, 0.5f, 1.0f,  px - rs, py - rs, 0.5f, 1.0f,  px + rs, py - rs, 0.5f, 1.0f,
+                        circ[i * 4] - r * 0.5f, circ[i * 4 + 1] - r * 0.5f, r, r };
+        if (cuts[i].world)   // MARKERWORLD: the world-locked panel's corners in this eye
+          // CARDPERSP 2026-10-10 (JJ: the marker "rotated and shifted differently" per eye, skewing and stretching with head
+          // moves): the corners went in as flat NDC (w = 1), so the card's picture was spread over its two triangles in screen
+          // space - the card is a trapezoid of a different shape in each turned eye, so the content bent differently per eye.
+          // Clip coordinates (x w, y w, z, w) let the GPU lay the picture on the card as on a real surface.
+          for (int k = 0; k < 4; ++k) { const float w = cuts[i].q[e][k][2]; q[k * 4] = cuts[i].q[e][k][0] * w; q[k * 4 + 1] = cuts[i].q[e][k][1] * w; q[k * 4 + 2] = 0.5f * w; q[k * 4 + 3] = w; }
+        g_ctx->UpdateSubresource(g_mcVCB, 0, nullptr, q, 0, 0);
+        g_ctx->Draw(4, 0);
+        ++g_mcCards;
+      }
+      circ[32] = msheet ? 0.0f : (float)nCuts; circ[33] = 0.0f; g_ctx->UpdateSubresource(g_mcPCB, 0, nullptr, circ, 0, 0);
+      if (msheet) g_ctx->PSSetShaderResources(0, 1, &g_hieSRV);
+    } else {
+      g_ctx->UpdateSubresource(g_hieCB, 0, nullptr, c, 0, 0);
+      g_ctx->Draw(4, 0);
+    }
+    if (eyeSRV[e] && !cut) {   // MKEYE: this eye's marker layer, drawn in this eye's own picture space = 1:1 over the eye
+      const float fullq[16] = {-1, 1, 0.5f, 1,  1, 1, 0.5f, 1,  -1, -1, 0.5f, 1,  1, -1, 0.5f, 1};
+      g_ctx->VSSetShader(g_hieVS, nullptr, 0); g_ctx->VSSetConstantBuffers(0, 1, &g_hieCB); g_ctx->PSSetShader(g_hiePS, nullptr, 0);
+      g_ctx->UpdateSubresource(g_hieCB, 0, nullptr, fullq, 0, 0);
+      g_ctx->PSSetShaderResources(0, 1, &eyeSRV[e]);
+      g_ctx->Draw(4, 0);
+      g_ctx->PSSetShaderResources(0, 1, &g_hieSRV);
+      ++g_hieEyeDraws;
+    }
+  }
+  ID3D11ShaderResourceView *none = nullptr; g_ctx->PSSetShaderResources(0, 1, &none);
+  g_ctx->PSSetShaderResources(1, 1, &oSRV1); if (oSRV1) oSRV1->Release();   // FULLCUT5
+  // restore
+  g_ctx->OMSetRenderTargets(1, &oRTV, oDSV);
+  if (nvp) g_ctx->RSSetViewports(nvp, ovp);
+  g_ctx->VSSetShader(oVS, nullptr, 0); g_ctx->PSSetShader(oPS, nullptr, 0);
+  g_ctx->PSSetShaderResources(0, 1, &oSRV); g_ctx->PSSetSamplers(0, 1, &oSS); g_ctx->VSSetConstantBuffers(0, 1, &oCB);
+  g_ctx->PSSetConstantBuffers(0, 1, &oPCB); if (oPCB) oPCB->Release();
+  g_ctx->IASetInputLayout(oIL); g_ctx->IASetPrimitiveTopology(oTop);
+  g_ctx->OMSetBlendState(oBS, oBF, oBM); g_ctx->OMSetDepthStencilState(oDS, oRef); g_ctx->RSSetState(oRS);
+  if (oRTV) oRTV->Release(); if (oDSV) oDSV->Release(); if (oVS) oVS->Release(); if (oPS) oPS->Release();
+  if (oSRV) oSRV->Release(); if (oSS) oSS->Release(); if (oCB) oCB->Release(); if (oIL) oIL->Release();
+  if (oBS) oBS->Release(); if (oDS) oDS->Release(); if (oRS) oRS->Release();
+  ++g_hieDraws;
+  snprintf(g_hieDiag, sizeof(g_hieDiag), "HUD in the eyes: %ld frames (skipped %ld) | target points %d: (%.3f %.3f) (%.3f %.3f) map %.3f %.3f %.3f %.3f | markers per eye (MKEYE) %s, layers drawn %u, layout map %s | markers cut now %d, cards %ld, no world point %ld | same-frame centre %u, learnt %u, new %u, carried through a missed frame %u | first: hud (%.3f %.3f) L (%.3f %.3f) R (%.3f %.3f)",
+           g_hieDraws, g_hieSkips, g_hieNPts, g_hiePts[0], g_hiePts[1], g_hiePts[2], g_hiePts[3], g_hieXf[0], g_hieXf[1], g_hieXf[2], g_hieXf[3],
+           g_hieEyeMode ? "on" : "off", g_hieEyeDraws, g_hieXfOk ? "known" : "not yet", nCuts, g_mcCards, g_mcNoWorld, g_mkSfUsed, g_mkSfLearn, g_mkSfNew, g_mkCarry, nCuts ? cuts[0].hx : 0.f, nCuts ? cuts[0].hy : 0.f, nCuts ? cuts[0].p[0][0] : 0.f, nCuts ? cuts[0].p[0][1] : 0.f, nCuts ? cuts[0].p[1][0] : 0.f, nCuts ? cuts[0].p[1][1] : 0.f);
   return true;
 }
 
@@ -1568,7 +3090,7 @@ bool vig_swapchain() {
   sci.faceCount = 1;
   sci.arraySize = 1;
   sci.mipCount = 1;
-  if (XR_FAILED(xrCreateSwapchain(g_session, &sci, &g_vigSwap))) { g_vigSwap = XR_NULL_HANDLE; g_vigErr = 2; return false; }
+  if (XR_FAILED(sc_create("vignette layer", &sci, &g_vigSwap))) { g_vigSwap = XR_NULL_HANDLE; g_vigErr = 2; return false; }
   uint32_t imgCount = 0;
   xrEnumerateSwapchainImages(g_vigSwap, 0, &imgCount, nullptr);
   std::vector<XrSwapchainImageD3D11KHR> imgs(imgCount, {XR_TYPE_SWAPCHAIN_IMAGE_D3D11_KHR});
@@ -1613,17 +3135,33 @@ bool vig_fill(float strength) {
   return true;
 }
 // Per ended frame: fade toward on/off, and build the layer when any of it shows.
+// DETVIG 2026-10-09 (JJ: detective mode's vignette "should be removed per eye and a new one added across both eyes"):
+// AKN hides the game's per-eye one and reports detective mode (akn_detective_active); this layer then draws one
+// vignette fixed to the view, the same for both eyes, with its own gentler shape. Test switch akvr_set_detvig_test.
+float g_detVigStrength = 0.85f, g_detVigClear = 12.0f, g_detVigRamp = 28.0f; int g_detVigTest = 0;   // HF5: 26/30 sat outside the view
+bool akn_detective_now() {
+  using DetFn = int (*)(); static DetFn f = nullptr; static bool tried = false;
+  if (!tried) { HMODULE m = GetModuleHandleW(L"XINPUT9_1_0.dll"); f = m ? (DetFn)GetProcAddress(m, "akn_detective_active") : nullptr; tried = m != nullptr; }
+  return g_detVigTest || (f && f());
+}
 bool vig_layer(XrCompositionLayerQuad &q, bool gameplay) {
   const float fov = akvr_camera_game_fov();
+  const bool det = akvr_engine_stereo() && akn_detective_now();   // DETVIG
   if (fov > 1.0f) {
     if (g_gameFovMin <= 0.0f || fov < g_gameFovMin) g_gameFovMin = fov;
     if (fov > g_gameFovMax) g_gameFovMax = fov;
   }
-  const bool want = g_vigStrength > 0.0f && (g_vigPreview || (gameplay && fov > 1.0f && fov < g_vigBelowDeg));
+  const bool want = det || (g_vigStrength > 0.0f && (g_vigPreview || (gameplay && fov > 1.0f && fov < g_vigBelowDeg)));
   const float step = 1.0f / 8.0f;   // ~0.1 s at 90 Hz for the whole fade
   g_vigAmt = want ? (g_vigAmt + step > 1.0f ? 1.0f : g_vigAmt + step) : (g_vigAmt - step < 0.0f ? 0.0f : g_vigAmt - step);
   if (g_vigAmt <= 0.0f || g_viewSpace == XR_NULL_HANDLE) return false;
-  if (!vig_fill(g_vigStrength * g_vigAmt)) return false;
+  bool filled;
+  if (det) {   // DETVIG: its own shape (the zoom one's numbers put back after)
+    const float c0 = g_vigClearDeg, r0 = g_vigRampDeg; g_vigClearDeg = g_detVigClear; g_vigRampDeg = g_detVigRamp;
+    filled = vig_fill(g_detVigStrength * g_vigAmt);
+    g_vigClearDeg = c0; g_vigRampDeg = r0;
+  } else filled = vig_fill(g_vigStrength * g_vigAmt);
+  if (!filled) return false;
   q = XrCompositionLayerQuad{XR_TYPE_COMPOSITION_LAYER_QUAD};
   q.layerFlags = XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT;
   q.space = g_viewSpace;
@@ -1671,7 +3209,7 @@ bool dim_fill(float a) {
     sci.faceCount = 1;
     sci.arraySize = 1;
     sci.mipCount = 1;
-    if (XR_FAILED(xrCreateSwapchain(g_session, &sci, &g_dimSwap))) { g_dimSwap = XR_NULL_HANDLE; g_dimErr = 2; return false; }
+    if (XR_FAILED(sc_create("dim layer", &sci, &g_dimSwap))) { g_dimSwap = XR_NULL_HANDLE; g_dimErr = 2; return false; }
     uint32_t imgCount = 0;
     xrEnumerateSwapchainImages(g_dimSwap, 0, &imgCount, nullptr);
     std::vector<XrSwapchainImageD3D11KHR> imgs(imgCount, {XR_TYPE_SWAPCHAIN_IMAGE_D3D11_KHR});
@@ -1697,14 +3235,29 @@ bool dim_fill(float a) {
   g_dimDrawn = a;
   return true;
 }
+// DOFQUICK 2026-10-06 - JJ: a quick option that "just turns off the depth of field ... sharp and faster, but also
+// brighter, so ... automatically darken the image a bit". With DepthOfField=False the game also drops its exposure
+// adaptation and colour grading (SHCENSUS); the same see-through black layer as the pause darkens the world (under
+// the HUD) by g_dofDarken while depth of field is off this start. The pause darkening multiplies on top.
+bool g_dofPlayOff = false, g_dofPlayWas = false;   // DOFLIVE: the panel's "off during play"
+// POSTOK 2026-10-07 - JJ: "Make sure all these post effects are disabled during menu screens and title screens".
+// True only in real play: not the start-up / title screens or the main menu (until it has been left, and again after
+// "MAIN MENU again"), not the pause look, not the map or any floating screen. eyeaa.cpp and HDRCURVE read it.
+volatile bool g_postOk = false;
+float g_dofDarken = 0.25f;   // DOFSTOPS 2026-10-06 (JJ: "should really go up to 2"): exposure stops, 1 = half as bright
 bool dim_layer(XrCompositionLayerQuad &q) {
   const float step = 1.0f / 12.0f;
   const bool want = g_pauseLive && g_pauseDim > 0.0f;
   g_pauseDimAmt = want ? (g_pauseDimAmt + step > 1.0f ? 1.0f : g_pauseDimAmt + step)
                        : (g_pauseDimAmt - step < 0.0f ? 0.0f : g_pauseDimAmt - step);
-  if (g_pauseDimAmt <= 0.0f || g_viewSpace == XR_NULL_HANDLE) return false;
-  // 16 levels, so a fade rewrites the image a handful of times only
-  const float a = floorf(g_pauseDim * g_pauseDimAmt * 16.0f + 0.5f) / 16.0f;
+  const float base = (akvr_dof_off() || akvr_dof_live_state() == 0) ? 1.0f - powf(2.0f, -g_dofDarken) : 0.0f;   // DOFQUICK / DOFSTOPS / DOFLIVE
+  if (g_hieDimDone) { g_hieDimDone = false; return false; }   // WHEELEYE: already in the eye pictures, under the HUD
+  // FULLCUT2 2026-10-10: full-screen cuts are drawn into the eye pictures only (hud_in_eyes), never by this layer - the
+  // first FULLCUT build made this layer create its swapchain at the main menu's black start screen and Virtual Desktop
+  // crashed on that creation (OpenXR.log 01:42:07 xrCreateSwapchain ovrResult -7000, then a fail-fast in its DLL)
+  if ((g_pauseDimAmt <= 0.0f && base <= 0.0f) || g_viewSpace == XR_NULL_HANDLE) return false;
+  // 64 levels, so a fade rewrites the image a handful of times only
+  const float a = floorf((1.0f - (1.0f - base) * (1.0f - g_pauseDim * g_pauseDimAmt)) * 64.0f + 0.5f) / 64.0f;
   if (a <= 0.0f || !dim_fill(a)) return false;
   q = XrCompositionLayerQuad{XR_TYPE_COMPOSITION_LAYER_QUAD};
   q.layerFlags = XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT;
@@ -1718,6 +3271,12 @@ bool dim_layer(XrCompositionLayerQuad &q) {
   q.pose.position = {0.0f, 0.0f, -kVigDist};
   q.size = {kVigSize, kVigSize};
   return true;
+}
+// WHEELEYE: the dim layer's current darkness (same sum, without stepping the fade)
+float hie_dim_alpha() {
+  const float base = (akvr_dof_off() || akvr_dof_live_state() == 0) ? 1.0f - powf(2.0f, -g_dofDarken) : 0.0f;
+  if (g_pauseDimAmt <= 0.0f && base <= 0.0f) return 0.0f;
+  return floorf((1.0f - (1.0f - base) * (1.0f - g_pauseDim * g_pauseDimAmt)) * 64.0f + 0.5f) / 64.0f;   // (FULLCUT5: the cut is added on the graphics card)
 }
 XrCompositionLayerQuad g_dimQuad{XR_TYPE_COMPOSITION_LAYER_QUAD};
 bool g_dimHas = false;
@@ -1777,7 +3336,7 @@ void  akvr_xr_eye_half_fov(float& h, float& v) {
   v = g_headHalfV + trimRad;
 }
 // Vertical centre shift for the projection (added to m[9]; 0 unless FULLVIEW).
-float akvr_xr_eye_v_offset() { return g_vOffNdc; }
+float akvr_xr_eye_v_offset() { return akvr_engine_stereo() ? 0.0f : g_vOffNdc; }   // GEO11OFF: AKN builds each eye's own off-centre lens
 bool akvr_xr_full_view() { return g_fullView; }
 bool akvr_xr_tilt_fill() { return g_tiltFill; }
 void akvr_xr_tilt_fill_set(bool on) { g_tiltFill = on; }
@@ -2075,6 +3634,7 @@ void akvr_xr_frame_begin() {
   }
 
   pump_events();
+  space_choose(true);   // SVRSPACE: live switch
   if (g_state == XR_SESSION_STATE_EXITING ||
       g_state == XR_SESSION_STATE_LOSS_PENDING) {
     g_running = false;
@@ -2120,13 +3680,15 @@ void akvr_xr_frame_begin() {
       XrFrameBeginInfo rb{XR_TYPE_FRAME_BEGIN_INFO};
       if (XR_FAILED(xrBeginFrame(g_session, &rb)))
         break;
-      const XrCompositionLayerBaseHeader *rl[8];
+      const XrCompositionLayerBaseHeader *rl[10];
       uint32_t rn = 0;
       if (g_rpHasProj) rl[rn++] = (const XrCompositionLayerBaseHeader *)&g_rpLayer;
+      if (g_rpHasProj && g_scrQuadNow && akvr_engine_stereo())   // SCREENQUAD2: one quad
+        rl[rn++] = (const XrCompositionLayerBaseHeader *)&g_scrQuad;
       if (g_rpHasProj && g_dimHas) rl[rn++] = (const XrCompositionLayerBaseHeader *)&g_dimQuad;   // PAUSEDIM
       // HUDLAYER4: the HUD is re-placed for THIS frame's display time (head-locked at 90 Hz).
       if (g_rpHasProj && g_rpHasHud && hud_place(g_rpHud, fs.predictedDisplayTime)) {
-        if (g_hudEyes) {   // HUDLAYER5
+        if (g_hudEyes && !(g_roomScrNow && g_hudOnScreen)) {   // HUDLAYER5 (SCREENQUAD2: not on a room screen)
           hud_eye_pair(g_rpHud, g_rpHudL, g_rpHudR);
           rl[rn++] = (const XrCompositionLayerBaseHeader *)&g_rpHudL;
           rl[rn++] = (const XrCompositionLayerBaseHeader *)&g_rpHudR;
@@ -2182,7 +3744,7 @@ void akvr_xr_frame_begin() {
       // camera AND the submitted layer both carry it (see g_tiltFill).
       // Not in the floating screen: that screen hangs level, so a tilted camera
       // would put the horizon low in the window.
-      const bool tilt = g_tiltFill && g_fullView && !g_projvrOn && g_native && !g_forceScreen &&
+      const bool tilt = !akvr_engine_stereo() && g_tiltFill && g_fullView && !g_projvrOn && g_native && !g_forceScreen &&   // GEO11OFF
                         g_tiltRad > 0.0f && g_tiltRad < 0.35f;
       g_tiltUsed = tilt ? g_tiltRad : 0.0f;
       if (tilt) loc.pose.orientation = pitch_postmul(loc.pose.orientation, -g_tiltRad);
@@ -2207,7 +3769,8 @@ void akvr_xr_frame_begin() {
     // wrote LAST Present (sequence g_poseHead, before this increment). Record that,
     // so a finalize index can be turned back into the exact pose it drew with.
     {
-      const uint64_t fc = akvr_camera_finalize_count();
+      // PAUSESTAMP: engine stereo stamps pictures with finalizes + pause-look camera writes
+      const uint64_t fc = akvr_engine_stereo() ? akvr_camera_write_count() : akvr_camera_finalize_count();
       if (g_finRecorded == 0 || fc < g_finRecorded || fc - g_finRecorded > 200)
         g_finRecorded = fc;                        // first call, or a reset: no history
       while (g_finRecorded < fc) {
@@ -2215,16 +3778,50 @@ void akvr_xr_frame_begin() {
         g_seqForFin[g_finRecorded & 255u] = g_poseHead;
       }
     }
+    // POSEJUMP (SVRSPACE): no head turns 25 deg or moves 25 cm in one frame - such a jump is the tracking space
+    // itself moving (SteamVR's silent LOCAL switch, any runtime recentre without an event): re-zero like a recentre.
+    {
+      static bool s_prevOk = false; static XrPosef s_prev{};
+      const bool ok = (loc.locationFlags & XR_SPACE_LOCATION_ORIENTATION_VALID_BIT) != 0;
+      if (ok && s_prevOk) {
+        const XrQuaternionf &a = s_prev.orientation, &b = newPose.orientation;
+        const float d = fabsf(a.x * b.x + a.y * b.y + a.z * b.z + a.w * b.w);
+        const float deg = 2.0f * acosf(d > 1.0f ? 1.0f : d) * 57.29578f;
+        const float dx = newPose.position.x - s_prev.position.x, dy = newPose.position.y - s_prev.position.y,
+                    dz = newPose.position.z - s_prev.position.z;
+        const float m = sqrtf(dx * dx + dy * dy + dz * dz);
+        if (deg > 25.0f || m > 0.25f) {
+          ++g_poseJumps; g_recenterPending = true; g_recenterAt = 0;
+          char j[64]; snprintf(j, sizeof(j), "pose jump %.0f deg %.2f m: re-zeroed", deg, m); mode_log(j);
+        }
+      }
+      if (ok) { s_prevOk = true; s_prev = newPose; }
+    }
     g_poseHist[++g_poseHead & 63u] = newPose;
     // Which pose drew the picture being presented now? Exactly, when the engine's
     // own frame counters are found (frameid.cpp); otherwise the fixed delay JJ set.
     uint32_t delay = (uint32_t)(akvr_xr_menu3d_active() ? g_menuPoseDelay : g_poseDelay);   // MENUDELAY
+    // PAUSESTAMP 2026-10-09: in engine stereo the exact delay is 1 (run 14: 4370 of 4370 stamped pictures); the geo-11
+    // fixed delay (JJ's ini: 2) only ever applied when a stamp failed - e.g. all through a pause - and was then wrong
+    if (akvr_engine_stereo()) delay = 1;
     g_poseMatched = false;
     uint64_t pf = 0;
     if (g_poseAuto && akvr_frameid_presented_finalize(pf) && pf <= g_finRecorded &&
         g_finRecorded - pf < 200) {
       const uint32_t d = g_poseHead - g_seqForFin[pf & 255u];
       if (d >= 1 && d <= 30) { delay = d; g_poseMatched = true; }
+    }
+    // POSESTAMP (JJ's 4th Quest test: jitter on head turns): in engine stereo the pair names the camera finalize its
+    // views were built from; present it with exactly the pose that finalize consumed.
+    if (akvr_engine_stereo()) {
+      static long s_match = 0, s_total = 0;
+      ++s_total;
+      const unsigned long long st = akn_get_pair_stamp();
+      if (st && st <= g_finRecorded && g_finRecorded - st < 200) {
+        const uint32_t d = g_poseHead - g_seqForFin[st & 255u];
+        if (d >= 1 && d <= 30) { delay = d; g_poseMatched = true; ++s_match; }
+      }
+      akn_send_pose_report(s_match, s_total, (long)delay);
     }
     g_usedDelay = (int)delay;
     if (g_poseMatched && delay < 16) ++g_delayHist[delay];
@@ -2318,6 +3915,27 @@ void akvr_xr_frame_begin() {
       // the residual JJ reports. Measure it instead of assuming it.
       for (int e = 0; e < 2; ++e) g_rawFov[e] = vv[e].fov;
       g_rawFovOk = true;
+      // AKN M5: each eye renders exactly its own lens (asymmetric tangents) from its own position: half the measured
+      // eye distance either side of the head, in game units (world scale = camera.cpp's lean gain, 1.00 = 1:1).
+      if (akvr_engine_stereo()) {
+        float tan8[8];
+        for (int e = 0; e < 2; ++e) {
+          tan8[e * 4 + 0] = tanf(vv[e].fov.angleLeft);
+          tan8[e * 4 + 1] = tanf(vv[e].fov.angleRight);
+          tan8[e * 4 + 2] = tanf(vv[e].fov.angleUp);
+          tan8[e * 4 + 3] = tanf(vv[e].fov.angleDown);
+        }
+        // MENUCLOSE (JJ's Quest test 2026-10-07: "Batman is completely out of focus" in the main menu): the main menu's
+        // camera sits centimetres from Batman - true eye separation there cannot be fused. In the main menu both eyes
+        // render from ONE spot with the game's own lens and AKVR shows that one picture to both eyes (as under geo-11).
+        // JJ's 2nd test: the game's own lens made head motion look exaggerated in the menu; now both eyes render from
+        // ONE spot (no depth to fuse) but each through its own real lens, and are shown exactly as rendered (1:1 motion).
+        const bool menuFlatNow = menu_one_spot();   // MENU3D: only when asked for
+        const bool flatScr = g_mapFlat && g_aknFlatScreen;   // MAPFLAT: the game's own lens, both eyes at the head
+        const float half = (menuFlatNow || flatScr) ? 0.0f : 0.5f * akn_ipd_m() * akvr_head_pos_scale();
+        const float off2[2] = {-half, half};
+        akn_send_eyes(tan8, off2, flatScr ? 0 : g_aknLensMode);   // TURNEDEYE: 2 = centred lens on a turned eye camera (default), 1 = off-centre
+      }
     }
   }
 
@@ -2346,10 +3964,23 @@ void akvr_xr_frame_begin() {
            (int)g_state, g_posValid ? ", 6DOF" : ", 3DOF");
 }
 
+// PERFTIME 2026-10-10 (PERFSWEEP: "HUD in the eyes off" = +8.8 pairs/s, and the graphics card was idle 12 % more with
+// it on = the render thread waits, not graphics work): processor time per frame of this whole function and of the HUD
+// step, averaged per second, printed by AKN (akvr_perf_diag).
+void pt_report() {
+  static ULONGLONG s_t = 0; const ULONGLONG now = GetTickCount64();
+  if (now - s_t < 1000) return;
+  s_t = now;
+  snprintf(g_ptDiag, sizeof(g_ptDiag), "VR frame (processor): submit %.2f ms | HUD in the eyes %.2f ms (markers part %.2f, drawing part %.2f) | %ld frames, %ld HUD",
+           g_ptN ? g_ptSubmit / g_ptN : 0.0, g_ptHieN ? g_ptHie / g_ptHieN : 0.0, g_ptHieN ? g_ptHieA / g_ptHieN : 0.0, g_ptHieN ? g_ptHieB / g_ptHieN : 0.0, g_ptN, g_ptHieN);
+  g_ptSubmit = g_ptHie = g_ptHieA = g_ptHieB = 0; g_ptN = g_ptHieN = 0;
+}
+struct PtScope { LONGLONG a = pt_now(); ~PtScope() { g_ptSubmit += pt_ms(a, pt_now()); ++g_ptN; pt_report(); } };
 void akvr_xr_frame_submit(IDXGISwapChain *swapChain, float gameFovDeg,
                           bool gameplay) {
   if (!g_frameBegun)
     return; // nothing was begun this Present
+  PtScope ptScope;   // PERFTIME
   g_frameBegun = false;
   if (gameFovDeg > 10.0f && gameFovDeg < 170.0f)
     g_lastGameFov = gameFovDeg;
@@ -2503,6 +4134,15 @@ void akvr_xr_frame_submit(IDXGISwapChain *swapChain, float gameFovDeg,
     const bool camStopped = s_pStill >= 2;
     const bool fits = g_pauseLook && g_anamorphic && !g_forceScreen && !akvr_xr_screen_mode() &&
                       (!g_autoMainMenu || g_menuPhase >= 2) && akvr_camera_main_view_live();
+    // MAPFLY 2026-10-06 - JJ: the map "flies in and rotates from the bottom ... all the HUD elements are strangely flying
+    // in". F2 16:34 mode timeline: every map open went "pause look on" -> 0.1 s "screen" -> "pause look off": for its
+    // first frames the map still passes the pause test (the game draws the player view while it fades), so the pause
+    // look started (world frozen, HUD on its room layer at the pause anchor) and then gave way to the floating screen
+    // at another place and size. The pause look now starts only after the test has held for 250 ms; the eye picture
+    // is held meanwhile (pauseHold below), so a real pause still freezes cleanly and the map goes straight to its screen.
+    static ULONGLONG s_fitsSince = 0;
+    if (!fits) s_fitsSince = 0; else if (!s_fitsSince) s_fitsSince = nowMs;
+    g_pauseWaiting = fits && !g_pauseLive && s_fitsSince && nowMs - s_fitsSince < 250;
     // UNPAUSE 2026-10-01 — JJ: "when exiting the pause menu, I'm seeing the entire thing being framed in a small window
     // before it pops back out to the full 360". It ended on the first camera tick, but gameplay was only shown again
     // once the camera was clearly running (or the slower verdict): a few frames fell back to the floating window.
@@ -2511,9 +4151,9 @@ void akvr_xr_frame_submit(IDXGISwapChain *swapChain, float gameFovDeg,
     // still counted the LAST ticks before the pause (newest < 150 ms), so the pause ended on its next frame and could
     // not restart. It ends only on a NEW tick (s_pStill == 0) with the camera clearly running.
     if (g_pauseLive) {
-      if (!fits || (s_pStill == 0 && camTicking)) { g_pauseLive = false; mode_log("pause look off"); hud_pause_anchor(false); s_lastGame = 0; }
-    } else if (fits && camStopped && s_lastGame && nowMs - s_lastGame < 1000) {
-      g_pauseLive = true; mode_log("pause look on"); hud_pause_anchor(true);
+      if (!fits || (s_pStill == 0 && camTicking)) { g_pauseLive = false; mode_log("pause look off"); hud_pause_anchor(false); s_lastGame = 0; if (akvr_engine_stereo()) akn_command("hudskipon 0"); }
+    } else if (fits && camStopped && s_lastGame && nowMs - s_lastGame < 1000 && nowMs - s_fitsSince >= 250) {
+      g_pauseLive = true; mode_log("pause look on"); hud_pause_anchor(true); if (akvr_engine_stereo()) akn_command("hudskipon 1");   // HUDSKIP: pause / wheel backdrops off
     }
     if (gameplay && !camStopped && !akvr_xr_screen_mode()) s_lastGame = nowMs;
     g_pauseCand = g_pauseLive || (fits && s_lastGame && nowMs - s_lastGame < 1000);
@@ -2528,6 +4168,15 @@ void akvr_xr_frame_submit(IDXGISwapChain *swapChain, float gameFovDeg,
   // CAMRUN: a running camera with a 3D picture is gameplay at once (the smoothed verdict follows ~0.2-0.5 s later).
   const bool camRun3D = camTicking && g_anamorphic && !g_forceScreen;
   bool effGameplay = (gameplay || g_pauseLive || menuFirst3D || camRun3D) && !akvr_xr_screen_mode();
+  // MAPFLAT: a floating screen over a 3D picture (map, plain pause) - AKN draws its next frames the flat game's way
+  g_aknFlatScreen = akvr_engine_stereo() && !effGameplay && !g_pauseWaiting && !akvr_xr_main_menu_detected() && !g_forceScreen;
+  g_hudOnScreen = g_mapFlat && akvr_engine_stereo() && !effGameplay;
+  g_postOk = (gameplay || camRun3D) && !g_pauseLive && !g_pauseWaiting && !akvr_xr_screen_mode() && !(g_autoMainMenu && g_menuPhase < 2);   // POSTOK
+  // DOFLIVE 2026-10-06: depth of field off during play (sharper, faster), on for the map / pause / menus (the map is
+  // drawn through it). The game starts with it on (dofoff=0).
+  if (g_dofPlayOff) akvr_dof_live_apply(!(effGameplay && !g_pauseLive));
+  else if (g_dofPlayWas) akvr_dof_live_apply(true);
+  g_dofPlayWas = g_dofPlayOff;
   {   // MENUSTART: when the 3D main menu first comes up, AKVR captures it (hooks.cpp) - JJ still sees "the view of
       // Batman from the top at the bottom of the screen" there, too briefly for F2.
     static bool s_msDone = false;
@@ -2565,7 +4214,10 @@ void akvr_xr_frame_submit(IDXGISwapChain *swapChain, float gameFovDeg,
       const uint32_t seq = g_seqForFin[g_finRecorded & 255u];
       if (g_poseHead - seq < 60u) drawn = g_poseHist[seq & 63u];
     }
-    g_fixedPose = g_anamorphic ? drawn : level_pose(g_curPose);
+    // MAPUPRIGHT 2026-10-06 - JJ: "The map screen should open vertically in world space, not according to head tilt".
+    // Since PAUSELOOK the pause shows the live world, so this frozen picture is mostly the map (drawn by the game's own
+    // map camera, not the head): hang it upright, straight ahead. The drawn pose is kept only with the pause look off.
+    g_fixedPose = (g_anamorphic && !g_pauseLook) ? drawn : level_pose(g_curPose);
     g_wasGameplay = false;
   }
   if (g_refixScreen) {
@@ -2586,7 +4238,7 @@ void akvr_xr_frame_submit(IDXGISwapChain *swapChain, float gameFovDeg,
   // the other eye keeps its previous frame. g_submitEye is the eye this
   // backbuffer was rendered for (its camera was offset that way last Present).
   // PAUSEEDGE: the first 2 Presents without a finalize show a picture drawn from the handed-back camera: keep the last one
-  const bool pauseHold = g_pauseCand && g_stillPresents >= 1 && g_stillPresents <= 2;
+  const bool pauseHold = g_pauseCand && g_stillPresents >= 1 && (g_stillPresents <= 2 || g_pauseWaiting);   // MAPFLY: also while the pause test settles
   const bool holdScreen = ((g_holdScreen && !effGameplay) || pauseHold) && g_swapInit[0] && g_swapInit[1];
   if (g_shouldRender && swapChain && g_ctx && !holdScreen) {
     ID3D11Texture2D *backBuffer = nullptr;
@@ -2597,7 +4249,24 @@ void akvr_xr_frame_submit(IDXGISwapChain *swapChain, float gameFovDeg,
     // the window doubled in WIDTH = side-by-side) and puts an OVER/UNDER preview
     // on the monitor. Judging the layout by the screen is the trap that cost us
     // a session — always take the shared surface. See geo11-works-on-ak-fresh-install.
-    if (g_native && g_katFeed && g_katTex) {
+    g_straightNow = false;   // SVRSTRAIGHT
+    static int s_gapFrames = 0;   // BLACKGAP: gameplay frames since the last pair (0 outside gameplay)
+    const bool aknOk = akvr_engine_stereo() && g_native && aknSbsUpdate(swapChain, effGameplay && s_gapFrames < 180);
+    s_gapFrames = (!effGameplay || g_aknFresh) ? 0 : (s_gapFrames < 100000 ? s_gapFrames + 1 : s_gapFrames);
+    if (aknOk) {
+      backBuffer = g_aknSbs;     // AKN M5: the game's own two eyes side by side (or the flat picture twice)
+      fromKatanga = true;        // SBS by construction: no probe
+      // HUDINEYE: gameplay HUD drawn into the eyes with the game's own blend (menus / pause / flat frames keep the layer)
+      // WHEELEYE 2026-10-08 (JJ: the weapon wheel "still banding and posterized" with HUDINEYE): opening the wheel stops
+      // the game camera, so the pause look goes live (captures 19:44 / 19:59: "pause look LIVE now", camera 3.5 s without
+      // a finalize) and the HUD fell back to the linear-blended quad layer. The pause look's HUD is drawn into the eyes too.
+      g_hieThisFrame = g_hudInEye && g_aknFresh && effGameplay && (!g_hudMenuNow || g_pauseLive) && g_hudColour != 0 &&
+                       hud_in_eyes(g_aknSbs, submitPose);
+      // SVRSTRAIGHT: the same frames the views loop declares turned eyes for (keep the two conditions identical)
+      g_straightNow = straight_wanted() && g_aknFresh && g_rawFovOk && (effGameplay || akvr_xr_main_menu_detected() || g_pauseLive) &&
+                      straighten();
+      if (g_straightNow) backBuffer = g_aknStraight;
+    } else if (g_native && g_katFeed && g_katTex) {
       backBuffer = g_katTex;     // 5120x1440 SBS, one eye per half
       fromKatanga = true;
     } else if (g_sceneSrc) {
@@ -2691,16 +4360,20 @@ void akvr_xr_frame_submit(IDXGISwapChain *swapChain, float gameFovDeg,
                 // screen in the world does exactly that (the 3D-TV effect). While a
                 // screen floats, give both eyes the same half: a flat picture.
                 int sourceEye = swap_eff() ? (1 - e) : e;
-                if (g_menuFlat && !effGameplay) sourceEye = swap_eff() ? 1 : 0;
+                if ((g_menuFlat && !effGameplay && !akvr_engine_stereo()) || (akvr_engine_stereo() && !effGameplay && !akvr_xr_main_menu_detected() && !g_pauseLive)) sourceEye = swap_eff() ? 1 : 0;   // engine mode: floating screens flat
+                if (g_roomScrNow && akvr_engine_stereo()) sourceEye = e;   // SCREENROOM: each half is drawn for its own eye
                 box.left = (UINT)sourceEye * g_eyeW;
                 box.right = box.left + g_eyeW;
                 box.top = 0;
                 box.bottom = g_swH;
                 box.front = 0;
                 box.back = 1;
-                g_ctx->CopySubresourceRegion(g_swapImages[e][idx], 0, 0, 0, 0,
-                                             backBuffer, 0,
-                                             &box); // this eye's half
+                // EYEAA: the mod's own edge smoothing on the way to the headset (off = the plain copy)
+                akvr_eyeaa_eye(e);
+                if (!akvr_eyeaa_apply(g_device, g_ctx, backBuffer, box, g_swapImages[e][idx]))
+                  g_ctx->CopySubresourceRegion(g_swapImages[e][idx], 0, 0, 0, 0,
+                                               backBuffer, 0,
+                                               &box); // this eye's half
               } else if (bd.SampleDesc.Count > 1) {
                 // Tapped scene buffer is multisampled — CopyResource can't read MSAA;
                 // resolve it into the (single-sample) eye image instead.
@@ -2858,6 +4531,21 @@ void akvr_xr_frame_submit(IDXGISwapChain *swapChain, float gameFovDeg,
   s_wasEff = effGameplay;
   const bool splash = s_latchedSplash && !g_forceScreen;   // SPLASHSIZE
   const bool loadIn = s_latchedLoad && !g_forceScreen;     // LOADSIZE
+  g_nearScreenNow = !effGameplay && (splash || loadIn) && g_nearScreenM > 0.1f;   // SCREENNEAR
+  {   // SCR30 2026-10-11: the game's own frame rate per kind of screen (JJ: title and loading screens run at ~30/s)
+    const int kind = splash && !effGameplay ? 0 : akvr_xr_main_menu_detected() ? 1 : loadIn && !effGameplay ? 2 : effGameplay ? 3 : 4;
+    static int s_kind = -1; static ULONGLONG s_t0 = 0; static long s_n = 0;
+    const ULONGLONG now = GetTickCount64();
+    if (kind != s_kind) {
+      if (s_kind >= 0 && now - s_t0 > 700) {
+        static const char *nm[5] = {"start-up/title", "main menu", "loading", "gameplay", "other screen"};
+        char m[64]; snprintf(m, sizeof(m), "%s %.0f frames/s (%.0fs)", nm[s_kind], s_n * 1000.0 / (double)(now - s_t0), (now - s_t0) / 1000.0);
+        mode_log(m);
+      }
+      s_kind = kind; s_t0 = now; s_n = 0;
+    }
+    ++s_n;
+  }
   float fovScale = effGameplay ? 1.0f
                    : (g_forceScreen ? g_floatScreenScale
                       : (splash ? g_splashFovScale
@@ -2907,10 +4595,16 @@ void akvr_xr_frame_submit(IDXGISwapChain *swapChain, float gameFovDeg,
     fov.angleUp = atanf(tanf(halfV) * vFrac * kTan);
     fov.angleDown = -fov.angleUp;
   }
+  g_scrVFrac = effGameplay ? 1.0f : vFrac; g_scrCropW = effGameplay ? 1.0f : cropWidthRatio;   // MAPFLAT: the HUD sheet gets the same crop
   if (loadIn && !effGameplay && g_loadUpDeg != 0.0f) {   // LOADUP
     const float t = tanf(g_loadUpDeg * (3.14159265f / 180.0f));
     fov.angleUp = atanf(tanf(fov.angleUp) + t);
     fov.angleDown = atanf(tanf(fov.angleDown) + t);
+  }
+  if (g_nearScreenNow) {   // SCREENROOM: the screen's window, for drawing it into the eyes next frame
+    g_roomScrT[0] = tanf(fov.angleLeft); g_roomScrT[1] = tanf(fov.angleRight);
+    g_roomScrT[2] = tanf(fov.angleUp); g_roomScrT[3] = tanf(fov.angleDown);
+    g_roomScrTOk = true;
   }
   int fallback =
       g_swapInit[0] ? 0
@@ -2972,7 +4666,7 @@ void akvr_xr_frame_submit(IDXGISwapChain *swapChain, float gameFovDeg,
     int32_t halfX = 0;
     if (g_sbsActive) {
       int sourceEye = swap_eff() ? (1 - e) : e;
-      if (g_menuFlat && !effGameplay) sourceEye = swap_eff() ? 1 : 0;
+      if ((g_menuFlat && !effGameplay && !akvr_engine_stereo()) || (akvr_engine_stereo() && !effGameplay && !akvr_xr_main_menu_detected() && !g_pauseLive)) sourceEye = swap_eff() ? 1 : 0;   // engine mode: floating screens flat
       halfX = sourceEye * (int32_t)g_eyeW;
     }
     int32_t fullW = (int32_t)g_eyeW;
@@ -2990,6 +4684,38 @@ void akvr_xr_frame_submit(IDXGISwapChain *swapChain, float gameFovDeg,
       views[e].subImage.imageRect.offset = {halfX + cropX, (fullH - cropH) / 2};
       views[e].subImage.imageRect.extent.width = cropW;
       views[e].subImage.imageRect.extent.height = cropH;
+    }
+    // AKN M5: in gameplay each half IS that eye's own render: its lens exactly as the runtime gave it (declared =
+    // rendered, VR_ESSENTIALS 3) and its own position, half the eye distance along the head's right from the head
+    // pose the frame was drawn with.
+    // engine mode, a fresh pair: each eye shown exactly as rendered - its own lens, its own position (the main menu: both
+    // eyes at the head, as AKN rendered them there). Menus and pause too, not just gameplay: a picture drawn through the
+    // per-eye lens must be declared with that lens, or head motion stretches it (JJ's 2nd test, main menu).
+    if (akvr_engine_stereo() && g_aknFresh && g_rawFovOk && (effGameplay || akvr_xr_main_menu_detected() || g_pauseLive)) {
+      views[e].fov = g_rawFov[e];
+      XrQuaternionf turn{0.0f, 0.0f, 0.0f, 1.0f};
+      akn_eye_lens(g_rawFov[e], views[e].fov, turn);   // TURNEDEYE / SAMEDIR: the centred lens AKN drew, its camera's turn
+      if (g_straightNow) { views[e].fov = g_rawFov[e]; turn = XrQuaternionf{0.0f, 0.0f, 0.0f, 1.0f}; }   // SVRSTRAIGHT: picture turned back
+      const float hx = menu_one_spot() ? 0.0f : (e == 0 ? -0.5f : 0.5f) * akn_ipd_m();   // MENU3D
+      const XrVector3f r = quat_rotate(eyePose.orientation, XrVector3f{hx, 0.0f, 0.0f});
+      views[e].pose = eyePose;
+      views[e].pose.position.x += r.x; views[e].pose.position.y += r.y; views[e].pose.position.z += r.z;
+      views[e].pose.orientation = hud_qmul(eyePose.orientation, turn);   // TURNEDEYE (identity for lens mode 1)
+      // halfX: this eye's half when both eyes share ONE side-by-side swapchain (SBSONE); with one swapchain per eye
+      // the whole image starts at 0 (5c run 1: e * width there read past the right eye's edge = streaks)
+      views[e].subImage.imageRect.offset = {halfX, 0};
+      views[e].subImage.imageRect.extent.width = (int32_t)g_eyeW;
+      views[e].subImage.imageRect.extent.height = (int32_t)g_swH;
+    }
+    if (g_roomScrNow && akvr_engine_stereo() && g_rawFovOk && !g_aknFresh) {
+      // SCREENROOM: each half holds the room panel as this eye saw it from g_roomScrHead through the runtime's own lens
+      views[e].fov = g_rawFov[e];
+      const XrVector3f r = quat_rotate(g_roomScrHead.orientation, XrVector3f{(e == 0 ? -0.5f : 0.5f) * akn_ipd_m(), 0.0f, 0.0f});
+      views[e].pose = g_roomScrHead;
+      views[e].pose.position.x += r.x; views[e].pose.position.y += r.y; views[e].pose.position.z += r.z;
+      views[e].subImage.imageRect.offset = {g_sbsActive ? e * (int32_t)g_eyeW : 0, 0};   // one swapchain per eye: its own image from 0
+      views[e].subImage.imageRect.extent.width = (int32_t)g_eyeW;
+      views[e].subImage.imageRect.extent.height = (int32_t)g_swH;
     }
   }
   // Peak-hold the correction so a spin leaves a readable number behind instead of
@@ -3067,16 +4793,21 @@ void akvr_xr_frame_submit(IDXGISwapChain *swapChain, float gameFovDeg,
 
   // HUDLAYER: the HUD image (hudsplit.cpp), head-locked by the compositor at every refresh.
   XrCompositionLayerQuad hudq{XR_TYPE_COMPOSITION_LAYER_QUAD};
-  const bool hasHud = submitted && hud_layer_build(hudq, fov);
-  const XrCompositionLayerBaseHeader *layers[8];
+  const bool hieNow = g_hieThisFrame; g_hieThisFrame = false;   // HUDINEYE
+  const bool hasHud = submitted && hud_layer_build(hudq, fov) && !hieNow;   // HUDINEYE: built (keeps its place current), not shown
+  const XrCompositionLayerBaseHeader *layers[10];
   uint32_t nLayers = 0;
   if (submitted)
     layers[nLayers++] = (const XrCompositionLayerBaseHeader *)&layer;
+  // SCREENQUAD2: ONE quad - Virtual Desktop already draws a quad per eye (PANELONE: the per-eye pair read "too close"; JJ
+  // here: "a bit too close ... I didn't feel like it was at the distance"), the pair doubled the depth
+  if (submitted && g_scrQuadNow && akvr_engine_stereo())
+    layers[nLayers++] = (const XrCompositionLayerBaseHeader *)&g_scrQuad;
   g_dimHas = submitted && dim_layer(g_dimQuad);   // PAUSEDIM: over the world, under the menus
   if (g_dimHas)
     layers[nLayers++] = (const XrCompositionLayerBaseHeader *)&g_dimQuad;
   XrCompositionLayerQuad hudL{XR_TYPE_COMPOSITION_LAYER_QUAD}, hudR{XR_TYPE_COMPOSITION_LAYER_QUAD};
-  if (hasHud && g_hudEyes) {   // HUDLAYER5: eye shift
+  if (hasHud && g_hudEyes && !(g_roomScrNow && g_hudOnScreen)) {   // HUDLAYER5: eye shift (SCREENQUAD2: not on a room screen)
     hud_eye_pair(hudq, hudL, hudR);
     layers[nLayers++] = (const XrCompositionLayerBaseHeader *)&hudL;
     layers[nLayers++] = (const XrCompositionLayerBaseHeader *)&hudR;
@@ -3085,9 +4816,18 @@ void akvr_xr_frame_submit(IDXGISwapChain *swapChain, float gameFovDeg,
   g_vigHas = submitted && vig_layer(g_vigQuad, g_eyeWantGameplay);   // ZOOMVIG: over the game and HUD, under the panel
   if (g_vigHas)
     layers[nLayers++] = (const XrCompositionLayerBaseHeader *)&g_vigQuad;
-  if (g_ovDrewThisFrame)
+  // PANELDEPTH 2026-10-06 - JJ: the upright panel "looks like it's tilting backwards; it's not vertical in world
+  // space". It IS upright in LOCAL space, but Virtual Desktop draws a quad the same in both eyes (no parallax), so the
+  // only depth cue left is its perspective when you look down at it, which reads as leaning back. One quad per eye,
+  // shifted by that eye's offset (the HUD's HUDEYES pair), gives it real depth so it reads as a flat upright panel.
+  // PANELONE 2026-10-08 - JJ: "the VR overlay is too close to my face. Make it the same as the other mods, the same
+  // depth." His reference is Batman City's panel: ONE quad for both eyes, 1.30 m ahead, 0.984 m wide, 0.10 m down
+  // (SWBF2 notes: per-eye shifted panel quads read too close). The per-eye pair (PANELDEPTH) is gone.
+  XrCompositionLayerQuad ovL{XR_TYPE_COMPOSITION_LAYER_QUAD}, ovR{XR_TYPE_COMPOSITION_LAYER_QUAD};
+  (void)ovL; (void)ovR;
+  if (g_ovDrewThisFrame) {
     layers[nLayers++] = (const XrCompositionLayerBaseHeader *)&quad;
-  else
+  } else
     g_ovAnchored = false; // panel hidden → re-anchor in front of you when it reopens
 
   XrFrameEndInfo fei{XR_TYPE_FRAME_END_INFO};
@@ -3097,6 +4837,14 @@ void akvr_xr_frame_submit(IDXGISwapChain *swapChain, float gameFovDeg,
       nLayers; // always end the frame we began (0 layers if nothing to show)
   fei.layers = nLayers ? layers : nullptr;
   xrEndFrame(g_session, &fei);
+  if (akvr_engine_stereo()) akn_send_present();   // AKN M5: this frame's HUD is complete
+  if (g_mirrorPending) {   // MIRRORLATE: the desktop mirror only now, outside AKN's HUD collection
+    g_mirrorPending = false;
+    ID3D11Texture2D *mb = nullptr;
+    if (swapChain && SUCCEEDED(swapChain->GetBuffer(0, __uuidof(ID3D11Texture2D), (void **)&mb)) && mb) {
+      D3D11_TEXTURE2D_DESC md{}; mb->GetDesc(&md); g_mirrorHasHud = hieNow; dlss_mirror(mb, md); g_mirrorHasHud = false; mb->Release();
+    }
+  }
   // FPSLOCK: keep what was just shown, to show again while the next frame is early.
   g_rpHasProj = submitted;
   if (submitted) {
@@ -3133,6 +4881,7 @@ void akvr_xr_set_device(ID3D11Device *dev) {
   if (!g_device && dev) {
     g_device = dev;
     g_device->GetImmediateContext(&g_ctx);
+    if (akvr_engine_stereo()) akn_send_game_device(dev);   // AKN: hook THIS device's context table (VD has its own)
 
     // Is the geo-11 stereo renderer active? If so, default to native SBS mode.
     // (\ key still overrides.)
@@ -3149,7 +4898,9 @@ void akvr_xr_set_device(ID3D11Device *dev) {
     // Ask the question we actually mean instead. `akvr_early_geo11()` keys on
     // `d3dxdm.ini` next to us, which is true in BOTH modes and is already the
     // flag the rest of the mod stands down on.
-    if (akvr_early_geo11()) {
+    if (akvr_engine_stereo()) {
+      g_native = true;   // AKN M5: the game draws both eyes; the pair comes from AKN (aknSbsUpdate)
+    } else if (akvr_early_geo11()) {
       g_native = true;
     } else {
       HMODULE m = GetModuleHandleW(L"d3d11.dll");
@@ -3202,6 +4953,10 @@ bool akvr_xr_pause_live() { return g_pauseLive; }
 bool akvr_xr_pause_candidate() { return g_pauseCand; }   // PAUSEEDGE
 bool akvr_xr_pause_look() { return g_pauseLook; }
 void akvr_xr_pause_look_set(bool on) { g_pauseLook = on; }
+bool  akvr_xr_dof_play_off() { return g_dofPlayOff; }   // DOFLIVE
+void  akvr_xr_dof_play_off_set(bool on) { g_dofPlayOff = on; }
+float akvr_xr_dof_darken() { return g_dofDarken; }   // DOFQUICK
+void  akvr_xr_dof_darken_set(float v) { g_dofDarken = v < 0.0f ? 0.0f : (v > 2.0f ? 2.0f : v); }   // DOFSTOPS: 0..2 stops
 float akvr_xr_pause_dim() { return g_pauseDim; }
 void akvr_xr_pause_dim_set(float v) { g_pauseDim = v < 0.0f ? 0.0f : (v > 0.9f ? 0.9f : v); }
 bool akvr_xr_screen_frozen() {
@@ -3220,6 +4975,8 @@ bool akvr_xr_menu3d() { return g_menu3d; }
 // gone (akvr_xr_menu3d_offset below never reports a shift). The text now behaves like
 // the HUD: in view, at the main-menu size.
 void akvr_xr_menu3d_set(bool on) { g_menu3d = on; g_menu3dWas = false; }
+bool akvr_xr_menu_one_spot() { return g_menuOneSpot; }
+void akvr_xr_menu_one_spot_set(bool on) { g_menuOneSpot = on; }
 bool akvr_xr_menu_flat() { return g_menuFlat; }
 void akvr_xr_menu_flat_set(bool on) { g_menuFlat = on; }
 // Head rotation since the pinned menu appeared, in OpenXR's sense (+yaw = left,
@@ -3235,6 +4992,8 @@ bool akvr_xr_menu3d_offset(float &dyawDeg, float &dpitchDeg) {
   return true;
 }
 bool akvr_xr_main_menu_detected() { return g_autoMainMenu && g_menuPhase == 1; }
+// MENUSIDE5: the menu scene from its first live camera frame (start-up phase), or the recognised main menu
+bool akvr_xr_menu_scene() { return g_autoMainMenu && (g_menuPhase == 1 || (g_menuPhase == 0 && g_menuGameplaySince != 0)); }
 int  akvr_xr_menu_phase() { return g_autoMainMenu ? g_menuPhase : 2; }   // AUDIOSYNC: 0 = start-up
 void akvr_xr_mode_note(const char *what) { mode_log(what); }            // AUDIOSYNC3: into the mode timeline
 bool akvr_xr_startup_3d() { return g_autoMainMenu && g_menuPhase == 0 && g_anamorphic; }   // AUDIOSYNC3: the menu scene has begun
@@ -3252,6 +5011,8 @@ float akvr_xr_load_zoom() { return g_loadFovScale; }
 void  akvr_xr_load_zoom_set(float v) { g_loadFovScale = v < 0.1f ? 0.1f : (v > 1.0f ? 1.0f : v); }
 float akvr_xr_load_up() { return g_loadUpDeg; }
 void  akvr_xr_load_up_set(float v) { g_loadUpDeg = v < -30.0f ? -30.0f : (v > 30.0f ? 30.0f : v); }
+float akvr_xr_screen_near() { return g_nearScreenM; }   // SCREENNEAR
+void  akvr_xr_screen_near_set(float v) { g_nearScreenM = v < 0.5f ? 0.0f : (v < 1.0f ? 1.0f : (v > 20.0f ? 20.0f : v)); }   // 0 = far
 void  akvr_xr_splash_zoom_set(float v) { g_splashFovScale = v < 0.1f ? 0.1f : (v > 1.0f ? 1.0f : v); }
 void akvr_xr_pause_zoom_set(float v) {
   g_pauseFovScale = v < 0.1f ? 0.1f : (v > 1.0f ? 1.0f : v);
@@ -3379,6 +5140,9 @@ void akvr_xr_backbuffer_size(uint32_t &w, uint32_t &h) {
 // eye, unlike the swapchain preview, so it is the only picture that shows the real
 // shape of what was rendered.
 ID3D11Texture2D *akvr_xr_katanga_texture() { return g_katTex; }
+ID3D11Texture2D *akvr_xr_eyes_texture() { return g_hieDst; }   // EYESHOT
+ID3D11Texture2D *akvr_xr_akn_sbs() { return g_aknSbs; }   // MKREC: the eye pair with the HUD drawn in
+const char *akvr_xr_card_diag() { return g_mkCardDiag; }
 void akvr_xr_submitted_fov_deg(float &h, float &v) {
   h = g_subHalfH * 2.0f * 57.29578f;
   v = g_subHalfV * 2.0f * 57.29578f;
@@ -3509,8 +5273,44 @@ const char *akvr_xr_hud_layer_diag() {
 int  akvr_xr_hud_space() { return g_hudSpace; }
 void akvr_xr_hud_space_set(int v) { g_hudSpace = (v == 1 || v == 2) ? v : 0; g_hudWorldOk = false; }
 void akvr_xr_hud_reanchor() { g_hudWorldOk = false; }
+const char *akvr_xr_hie_diag() { return g_hieDiag; }
+int akvr_xr_hud_in_eye() { return g_hudInEye; }
+int akvr_xr_space_mode() { return g_xrSpaceMode; }                         // SVRSPACE
+int akvr_xr_svr_straight() { return g_svrStraight; }                       // SVRSTRAIGHT
+void akvr_xr_svr_straight_set(int v) { g_svrStraight = (v >= 0 && v <= 2) ? v : 1; }
+long akvr_xr_straight_frames() { return g_straightFrames; }
+void akvr_xr_space_mode_set(int v) { g_xrSpaceMode = (v >= 0 && v <= 2) ? v : 0; }
+void akvr_xr_hud_in_eye_set(int v) { g_hudInEye = v ? 1 : 0; }
+extern "C" __declspec(dllexport) void akvr_set_markercut(int v) { g_markerCut = v ? 1 : 0; }   // MARKERCUT test switch
+extern "C" __declspec(dllexport) void akvr_set_map_flat(int v) { g_mapFlat = v ? 1 : 0; }   // MAPFLAT test switch
+extern "C" __declspec(dllexport) int akvr_flat_screen_now() { return g_aknFlatScreen ? 1 : 0; }   // VSSPLIT (AKN): map / flat screens up
+extern "C" __declspec(dllexport) void akvr_set_backext(int v) { g_backExt = v ? 1 : 0; }   // BACKEXT test switch
+extern "C" __declspec(dllexport) const char *akvr_perf_diag() { return g_ptDiag; }   // PERFTIME (AKN logs it)
+extern "C" __declspec(dllexport) void akvr_set_cutlog(int v) { g_cutLog = v ? 1 : 0; }   // PERF1: FULLCUT border readback for the log
+extern "C" __declspec(dllexport) void akvr_set_fullcut(int v) { g_fullCut = v ? 1 : 0; if (!v) g_cutA = 0.0f; }   // FULLCUT switch
+extern "C" __declspec(dllexport) int akvr_fullcut_state(float *alpha) { if (alpha) *alpha = g_cutA; return (int)g_cutFrames; }   // FULLCUT telemetry (AKN log)
+extern "C" __declspec(dllexport) const char *akvr_fullcut_diag() { return g_cutDiag; }   // FULLCUT3: last second's strongest border reading
+extern "C" __declspec(dllexport) void akvr_set_blackkey(int v) { g_blackKey = v ? 1 : 0; }   // BLACKKEY test switch
+extern "C" __declspec(dllexport) void akvr_set_detvig_test(int v) { g_detVigTest = v ? 1 : 0; }   // DETVIG test switch
+int akvr_xr_lens_mode() { return g_aknLensMode; }
+// SAMEDIR: the eye picture's shape (wide:tall x1000) for the lens AKN draws in engine stereo - square pixels at the next
+// start. 0 = not known yet (no headset lens).
+int akvr_xr_engine_shape() {
+  if (!g_rawFovOk) return 0;
+  XrFovf f = g_rawFov[0]; XrQuaternionf t{0.0f, 0.0f, 0.0f, 1.0f};
+  akn_eye_lens(g_rawFov[0], f, t);
+  const float w = tanf(f.angleRight) - tanf(f.angleLeft), h = tanf(f.angleUp) - tanf(f.angleDown);
+  return h > 0.01f ? (int)(w / h * 1000.0f + 0.5f) : 0;
+}
+void akvr_xr_lens_mode_set(int v) { if (v == 1 || v == 2) g_aknLensMode = v; }   // 3 (same way) removed: falls back to 2
+int akvr_xr_markercut() { return g_markerCut; }
+float akvr_xr_marker_scale() { return g_mkScale; }   // MARKERWORLD
+void akvr_xr_marker_scale_set(float v) { g_mkScale = v < 0.5f ? 0.5f : (v > 3.0f ? 3.0f : v); }
+void akvr_xr_markercut_set(int v) { g_markerCut = v ? 1 : 0; }
+bool akvr_xr_akn_fresh() { return g_aknFresh; }   // HUDHOLD
+bool akvr_xr_akn_3d() { return g_aknNoFresh < 4; }   // LOADFIT2 (JJ: the loading screen first appears too big, then rescales): 30 -> 4 frames
 int  akvr_xr_hud_colour() { return g_hudColour; }
-void akvr_xr_hud_colour_set(int v) { g_hudColour = v == 0 ? 0 : 1; }
+void akvr_xr_hud_colour_set(int v) { g_hudColour = v == 0 ? 0 : (v == 2 ? 2 : 1); }   // HUDGLOW: 2 = old clipping conversion
 bool akvr_xr_hud_eye_follow() { return g_hudEyeFollow; }                    // HUDEYES
 void akvr_xr_hud_eye_follow_set(bool on) { g_hudEyeFollow = on; }
 unsigned long long akvr_xr_menu_start_tick() { return g_menuStartTick; }    // MENUSTART
@@ -3548,10 +5348,39 @@ void  akvr_xr_vig_preview(bool on) { g_vigPreview = on; }
 // ZOOMHIDE: zoomed right now. ZOOMHIDE0 2026-10-05 - a player: "It won't let me fully disable zoom vignette. When I put
 // it at 0.0 vignette sticks to my screen". The game's own 2D zoom overlay was hidden only while OUR vignette showed, so
 // strength 0 brought the game's overlay back. It now follows the zoom itself, whatever the strength.
+// ZOOMEDGE 2026-10-06 - a player: the game's overlay "still briefly appears when zooming, even when it's dialled down to
+// zero". The game fades its overlay in as soon as the zoom starts, but the hide waited for the FOV to pass vigbelow (45),
+// and dropped as soon as it climbed back. Now "zoomed" also starts the moment the FOV narrows fast below its recent level
+// (a baseline that follows slow changes at up to 15 deg/s and is frozen while narrowed), and holds 0.4 s after.
+unsigned long long akvr_gamepad_zoom_press_ms();   // gamepad.cpp: ZOOMPRESS
+// ZOOMPRESS 2026-10-07 - JJ again: at vignette 0 the game's overlay "still briefly appears for a fraction of a second
+// when zooming". The game starts its overlay on the button press, before its view narrows, so ZOOMEDGE (narrowing)
+// still came a moment late. A right-stick click in play now hides it at once, for 0.8 s; the zoom itself keeps it.
 bool  akvr_xr_vig_active() {
   const float fov = akvr_camera_game_fov();
-  const bool zoomed = g_eyeWantGameplay && fov > 1.0f && fov < g_vigBelowDeg;
-  return (g_vigAmt > 0.0f && !g_vigPreview) || zoomed;
+  static float s_base = 0.0f; static bool s_narrow = false; static ULONGLONG s_last = 0, s_offAt = 0, s_steadySince = 0;
+  static float s_prevFov = 0.0f;
+  const ULONGLONG now = GetTickCount64();
+  const float dt = s_last ? (float)(now - s_last) * 0.001f : 0.0f;
+  s_last = now;
+  bool zoomed = false;
+  if (g_eyeWantGameplay && fov > 1.0f) {
+    if (s_base <= 0.0f || fov >= s_base) { s_base = fov; s_narrow = false; }
+    if (!s_narrow) {
+      if (fov < s_base - 3.0f) { s_narrow = true; s_steadySince = now; }
+      else s_base = (std::max)(fov, s_base - 15.0f * (dt > 0.1f ? 0.1f : dt));
+    }
+    if (s_narrow) {
+      if (std::fabs(fov - s_prevFov) > 0.05f) s_steadySince = now;
+      // a lasting narrower view that is not a zoom (fov above vigbelow, unchanged 3 s): take it as the new normal
+      if (fov >= s_base - 3.0f || (fov >= g_vigBelowDeg && now - s_steadySince > 3000)) { s_narrow = false; s_base = fov; }
+    }
+    zoomed = s_narrow || fov < g_vigBelowDeg;
+  } else { s_base = 0.0f; s_narrow = false; }
+  s_prevFov = fov;
+  if (zoomed) s_offAt = now + 400;
+  if (g_eyeWantGameplay && akvr_gamepad_zoom_press_ms() < 800) return true;   // ZOOMPRESS
+  return (g_vigAmt > 0.0f && !g_vigPreview) || zoomed || now < s_offAt;
 }
 const char *akvr_xr_vig_diag() {
   static char d[200];
@@ -3561,3 +5390,6 @@ const char *akvr_xr_vig_diag() {
   return d;
 }
 float akvr_xr_startup_bright() { return startup_bright_impl(); }   // STARTBRIGHT
+
+const char *akvr_xr_share_probe() { return g_shareProbe; }   // SHAREPROBE
+bool akvr_xr_post_ok() { return g_postOk; }   // POSTOK
