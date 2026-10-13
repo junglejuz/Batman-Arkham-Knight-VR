@@ -3,6 +3,11 @@
 Last updated 2026-10-09 22:50 (SteamVR route + suit gloss). Read this first, then the last sections of `NOTES.md` (full run log) and `DLSS_PLAN.md`.
 Workspace rules: `VR_ESSENTIALS.md`, `VR_HUD_GUIDE.md`, `VR_WORLD_MARKERS_GUIDE.md`.
 
+**2026-10-14: RELEASED v0.3.0 (pre-release)** - https://github.com/junglejuz/Batman-Arkham-Knight-VR/releases/tag/v0.3.0, commit 632157d,
+zip sha256 267c5c9c... verified after upload. Panel test drawer renamed TROUBLESHOOTING; background probes off (HUDRING press/screen dumps,
+BLACKHUNT on capture, SPRITEFIND, DETRING, fixed FXCB watch, BATEVENT/MENUSTATE hooks); DIAGKIT kept (`VR_DEBUG_TOOLKIT.md`). Smoke
+cards default spriteaxes 2 (upright, JJ). Parked: compass/distance-marker jump, DLSS bright-rain fade, ground-reflection flicker, bats HR4.
+
 **2026-10-13: HUD / markers / detective mode / menu transitions -> read `HUD_REBUILD_PLAN.md` first** (JJ-approved plan: general
 placement rule instead of per-element fixes; detective mode all at HUD depth; transitions from game state only).
 
