@@ -24,6 +24,7 @@
 #include <atomic>
 #include <MinHook.h>      // projVR: whole-function hook on BuildProjectionMatrix
 
+extern volatile LONG g_charWanted, g_charOk; extern volatile float g_charPos[3], g_charHead[3];   // CHARPOS (defined near akvr_camera_game_fov)
 namespace
 {
     // ---- signatures (verified unique vs the 2023 exe) ----
@@ -754,7 +755,9 @@ namespace
         return (uintptr_t)fp_call_vt(pc, vt);
     }
     // the eye point for this camera update (world), false = stay third person this frame
-    bool fp_eye(float eye[3], const float cam[3])
+    // CHARPOS 2026-10-14 (JJ: the smoke cards "should keep facing my character"): Batman's skeleton lookup, shared by FIRSTPERSON and
+    // the particle cards (AKN SPRITEFACE via akvr_character_pos); head = the head bone, org = the skeleton's origin, world units
+    bool fp_body(float head[3], float org[3], const float cam[3])
     {
         if (!fp_init()) return false;
         if (akvr_xr_menu_scene() || akvr_xr_main_menu_detected() || akvr_xr_screen_frozen())
@@ -762,7 +765,7 @@ namespace
         const uintptr_t t = fp_view_target();
         if (!t) { g_fpOffOk = false; return false; }
         const ULONGLONG now = GetTickCount64();
-        float head[3] = {}, org[3] = {};
+        head[0] = head[1] = head[2] = 0.0f; org[0] = org[1] = org[2] = 0.0f;
         bool have = false;
         if (t == g_fpTarget && g_fpMeshOff >= 0 && g_fpActor)
         {
@@ -803,6 +806,13 @@ namespace
             else snprintf(g_fpWhy, sizeof(g_fpWhy), "third person for now: no head found (Batmobile, cutscene, gadget?) - view target %llX, pawn %llX (akvr_captures\\fp_probe.txt)", (unsigned long long)t, (unsigned long long)pawn);
         }
         if (!have) { ++g_fpMisses; g_fpOffOk = false; return false; }
+        return true;
+    }
+    bool fp_eye(float eye[3], const float cam[3])
+    {
+        float head[3] = {}, org[3] = {};
+        if (!fp_body(head, org, cam)) return false;
+        const ULONGLONG now = GetTickCount64(); (void)now;
         LARGE_INTEGER qn, qf; QueryPerformanceCounter(&qn); QueryPerformanceFrequency(&qf);
         const float dt = g_fpLast.QuadPart ? (float)((double)(qn.QuadPart - g_fpLast.QuadPart) / (double)qf.QuadPart) : 0.0f;
         g_fpLast = qn;
@@ -843,6 +853,7 @@ namespace
             {   // FIRSTPERSON: the camera at Batman's head (CAMRESTORE takes it off again for the game, like CAMSMOOTH's part)
                 float e[3];
                 const bool fp = g_fpOn && fp_eye(e, p);
+                if (g_charWanted) { float hh[3], oo[3]; const bool ok = fp_body(hh, oo, p); if (ok) { for (int i = 0; i < 3; ++i) { g_charPos[i] = oo[i]; g_charHead[i] = hh[i]; } } g_charOk = ok ? 1 : 0; }   // CHARPOS
                 g_fpActive = fp;
                 if (fp)
                 {
@@ -2361,6 +2372,8 @@ void akvr_head_update()
     }
 }
 
+volatile LONG g_charWanted = 0, g_charOk = 0; volatile float g_charPos[3] = {}, g_charHead[3] = {};   // CHARPOS
+extern "C" __declspec(dllexport) int akvr_character_pos(float* org, float* head) { g_charWanted = 1; if (!g_charOk) return 0; for (int i = 0; i < 3; ++i) { if (org) org[i] = g_charPos[i]; if (head) head[i] = g_charHead[i]; } return 1; }   // CHARPOS (AKN)
 float akvr_camera_game_fov() { return g_gameFov; }   // ZOOMVIG: 0 until the FOV lock has run
 
 // NEARRAIN 2026-10-01: the game's OWN camera axes this frame (the base rotator the stub saved at the last finalize,

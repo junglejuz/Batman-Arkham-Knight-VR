@@ -39,3 +39,6 @@ native/captures_*/
 native/configure.log
 *.bmp
 *.csv
+
+# Local source backups made before scripted edits
+backups/

@@ -3,6 +3,9 @@
 Last updated 2026-10-09 22:50 (SteamVR route + suit gloss). Read this first, then the last sections of `NOTES.md` (full run log) and `DLSS_PLAN.md`.
 Workspace rules: `VR_ESSENTIALS.md`, `VR_HUD_GUIDE.md`, `VR_WORLD_MARKERS_GUIDE.md`.
 
+**2026-10-13: HUD / markers / detective mode / menu transitions -> read `HUD_REBUILD_PLAN.md` first** (JJ-approved plan: general
+placement rule instead of per-element fixes; detective mode all at HUD depth; transitions from game state only).
+
 ## 1. What this is
 
 - **AKN** = `akvr_native/` → `XINPUT9_1_0.dll` in the game folder. Makes the game render BOTH eyes itself (a cloned view
@@ -140,3 +143,21 @@ Folder moved: akvr_native -> akvr/native (junction at the old path). Commits 83c
 Panel tidy (PANELTIDY4), installer/uninstaller rewritten (no geo-11), README in the Batman City layout, practice tests 35/35
 (scratchpad Test-AKPackage.ps1). JJ's geo-11 / fix files kept in E:\...\Batman Arkham Knight\vrmod_geo11_backup_2026-10-11.
 Open: first person does nothing in AK (JJ) - hidden from the panel; after JJ's check: push, release v0.3.0 (AKVR-ArkhamKnight.zip).
+
+## 2026-10-11 22:14 MKFACEPOS + crash / prompt / detective findings (NOTES "JJ 2026-10-11 ~22:00")
+AKN installed (22:14): markers now tilt to face the game camera's position (City MARKERFACE, roll-free sizing; "mkfacepos 0|1");
+logs kept across launches (akn_log_prev*.txt); captures save both eye marker layers. JJ's SteamVR crash (19:01) = null read in
+NVIDIA's driver while SteamVR took a frame; the 19:06 crash was VD exiting. Open, with ready runners: missing prompts
+(tools\Run-PROMPT.ps1), detective-mode lights missing in the left eye (tools\Run-DET2.ps1). TEST PLAN JJ1011N in NOTES.
+
+## 2026-10-11 23:07 DETSHARE (default) + DETHOLD; open DETCALLOUT
+The right eye now shares the game's view state by default (vs 0): fixes detective mode's half-lit right eye and the right
+eye's missing lighting after / before detective mode (JJ: "consistent now"). Pending JJ: smearing check, SteamVR crash
+repro without view-state swaps. Next build: detective scan callouts (four-plus box + line + label) locked to their object
+by a depth anchor (NOTES "DETCALLOUT"); they are not placed through Canvas.Project.
+
+## 2026-10-12 04:20 DETCALLOUT (fake headset verified, JJ's headset check pending)
+Detective scan callouts (box of four plus signs + line + label) are drawn as one world card at the scanned object: AKVR marks
+the callout HUD parts (K1/0.0.0.0.3.0.9/.10/.4/.3/.5/.8, own mark) and reports the box point; AKN finds the object's distance by
+marching the head-free camera ray through the left eye's depth (copied before UE3's mid-render foreground depth clear), then
+places the pieces like every marker (MKGS, MKFACEPOS). Detective key for tests: X (pad injection is ignored). NOTES "DC1".

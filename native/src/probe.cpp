@@ -413,6 +413,13 @@ extern volatile LONG g_rainDump;   // RAINDUMP (below)
 extern volatile unsigned long long g_skipVs, g_skipLo, g_skipHi; extern volatile LONG g_vsInv;   // SKIPVS / VSINV (below)
 extern volatile LONG g_xeye;   // XEYE (below)
 extern volatile LONG g_flareOff;   // FLAREOFF (below)
+void vw_uavs(ID3D11DeviceContext* c, ID3D11UnorderedAccessView* const* u, UINT n, bool deferred); void vw_rtvs(ID3D11DeviceContext* c, ID3D11RenderTargetView* const* v, UINT n, bool deferred); extern ID3D11Resource* g_vwRes; extern ULONGLONG g_vwUntil;   // VOLWATCH (below)
+extern volatile unsigned long long g_fxWatch; extern volatile LONG g_lightLag; extern volatile LONG g_fxcbArm; extern volatile LONG g_fxcbHave[2]; extern volatile LONG g_spriteAxes, c_spriteAxes, g_vwArm, g_vcDumps, g_smokeLight, c_smokeLight; extern volatile LONG g_hrOn; extern "C" __declspec(dllexport) void akn_hudring_dump(const char* why, int delayMs); extern volatile LONG g_rainMask, c_rainMask; extern volatile LONG g_rainLight2, c_rainLight2; extern volatile LONG g_rainLight, c_rainLight, g_rainRelight, c_rainRelit, c_rainRelightSkip;   // RAINLIGHT / RAINRELIGHT (below)
+extern volatile LONG g_flatLines; extern ULONGLONG g_flatUntil; extern int g_flatSigN; }   // (namespace pause)
+extern "C" int akn_detective_active();
+namespace {
+void hud_rec_dump(const char* tag);   // HUDREC (below)
+extern volatile LONG g_pnOn, g_pnArmed, g_pnLines, g_psSkip, c_psSkipped; extern ULONGLONG g_pnArmT; extern volatile ULONGLONG g_pnArmAt; void ps_new_list();   // PSNEW / PSSKIP (below)
 extern double g_qpf;   // HOOKBATCH timing (below)
 extern volatile LONG g_shCacheGen;   // PERF1: shader-name caches, renewed on load hitches (below)
 extern volatile LONG g_histSwap, g_histLog;   // PERF1: the HISTSWAP detector only runs for the test (below)
@@ -488,7 +495,12 @@ void log_m(const char* n, const float* m)
     logf("  %s [%.4f %.4f %.4f %.4f] [%.4f %.4f %.4f %.4f] [%.4f %.4f %.4f %.4f] [%.3f %.3f %.3f %.3f]", n,
          m[0], m[1], m[2], m[3], m[4], m[5], m[6], m[7], m[8], m[9], m[10], m[11], m[12], m[13], m[14], m[15]);
 }
-volatile LONG g_vsMode = 4;          // second eye's view state: 0 = share the game's, 1 = its own, 2 = none (aknvs=<n>, command "vs n")
+// DETSHARE 2026-10-11 23:0x (default 4 -> 0): the right eye's private view state (mode 4 + VSSPLIT / VSSYNC) was the cause of
+// detective mode's half-lit right eye, the right eye's missing lighting after detective mode and from the start (JJ, live
+// "vs 0": "The two eyes are consistent now", exit "looks better now too"; pair_shareoff / pair_shareon). Per-eye history now
+// lives in each eye's own DLSS feature. Mode 4 also swapped view states on every detective toggle - the suspect for the
+// SteamVR driver crashes. Back with "vs 4" or aknvs=4.
+volatile LONG g_vsMode = 0;          // second eye's view state: 0 = share the game's, 1 = its own, 2 = none, 4 = own + VSSPLIT (aknvs=<n>, command "vs n")
 volatile bool g_camOk = false;        // the last mono view had a finite projection
 volatile LONG g_asym = 0;             // command "asym 1": per-eye off-centre lens from g_tan
 volatile LONG g_mkBase = 1;            // MARKERBASE (below hk_Proj): command "markerbase 0|1"
@@ -515,6 +527,10 @@ volatile LONG g_hsiLo = -1, g_hsiHi = -1, f_hudIdx = 0, g_hsiLogged = 0;
 // eye renders (0 = off).
 void* volatile g_vsOf[2] = {}; volatile LONG g_vsSnap = 0; char g_vsSnapTag[24] = "";
 volatile unsigned long long g_skipPs = 0; volatile LONG g_psInv = 0;
+// DIAGKIT 2026-10-14 (JJ: "build into the overlay test features ... so that we don't have to continually build new ones"): the panel's
+// TESTS drawer drives these. FXSTEP: "fxcollect" lists the pixel shaders drawn in the eye renders (4 frames), "fxstep +1 / -1" hides them
+// one at a time (the draw is skipped), "fxstep 0" shows all; akn_fx_status gives the panel its line.
+unsigned long long g_fxList[4096]; volatile LONG g_fxN = 0, g_fxIdx = -1, g_fxCollect = 0;
 unsigned long long g_psSet[4096]; volatile LONG g_psN = 0;
 // DETVIG 2026-10-09 (JJ: detective mode's vignette "should be removed per eye and a new one added across both eyes"):
 // CAPDET c022421 found it - hiding pixel shader ce8b103bb56ebabe (detective mode's final composite: vignette + Batman's
@@ -522,6 +538,15 @@ unsigned long long g_psSet[4096]; volatile LONG g_psN = 0;
 // "detvig 0|1"); seeing it = detective mode is on (export akn_detective_active, AKVR then draws ONE vignette over both
 // eyes, view-fixed). Shader names cached per object (no name lookup per draw).
 volatile LONG g_detVigSkip = 1; volatile ULONGLONG g_detSeenMs = 0;
+// DETHOLD 2026-10-11 (JJ, SteamVR at 22-43 frames/s: right eye wrong after detective mode, a white border flicking during it):
+// detective mode counted as over after only 100 ms without its composite shader; at ~22 frames/s (45 ms apart, plus thread
+// jitter) that dropped out every few seconds - the right eye flipped between its detective and normal-play view states 12
+// times in 50 s (log 22:27:44-22:28:37), and the normal-play state was used IN detective mode, which leaves it half in
+// detective mode afterwards. Also the detection ran only while "detvig" hid the shader: the DET2 test step "detvig 0" made
+// the normal-play state in the middle of detective mode. Now: detection always runs; one hold time for every user (view
+// state choice, exit, AKVR's vignette); per-second line "detective: composite seen/s, longest gap".
+volatile LONG g_detHoldMs = 600, c_detSeen = 0, g_detGapMax = 0;   // command "dethold <ms>"
+inline bool det_on() { const ULONGLONG s = g_detSeenMs; return s && GetTickCount64() - s < (ULONGLONG)g_detHoldMs; }
 // VSFRESH 2026-10-09 (JJ: right eye still wrong after detective mode - c025418: right eye without fog, light shafts and
 // rain, left fine; the rain step stopped running in the right eye's render at the exit): the game puts its own view
 // state back on the exit, never ours. When detective mode ends (AKN stops seeing its composite shader) the right eye
@@ -540,9 +565,30 @@ volatile LONG g_mkRecFrames = 0; FILE* g_mkRecF = nullptr;   // MKREC: per-frame
 volatile LONG g_mkGS = 1;   // MKGS: marker pieces placed per vertex in 3D per eye by a geometry shader in their own draw; "mkgs 0|1"
 volatile LONG g_mkCard = 0;   // (MKCARD off 2026-10-11: JJ - elements split, size changed, "hacky")   // MKCARD: marker pieces into the flat marker sheet + a perspective card per eye (1) / moved per eye in their draw (0); "mkcard 0|1"
 volatile LONG g_mkFaceCam = 1;   // MKFACE2: markers face the game camera's direction (1) or the viewer's eyes (0); command "mkfacecam 0|1"
+volatile LONG g_mkFacePos = 1, c_mkFaced = 0;   // MKFACEPOS: the card tilts to face the game camera's position (City MARKERFACE); "mkfacepos 0|1"
+// DETCALLOUT (below mk_cam_centre): detective scan callout as one marker at its box's object; "scan 0|1", "scanmin <units>"
+volatile LONG g_scanOn = 1, g_mkScanIdx = -1, c_scanPieces = 0, c_scanSeen = 0, c_scanPlaced = 0, c_scanReads = 0, c_scanSky = 0, c_scanPasses = 0;
+volatile LONG g_scanBase = 1, g_scanExact = 1, c_scanExact = 0; float g_scanMatchD = 0.0f;
+volatile LONG g_hudSigOn = 0, g_hsigLines = 0;   // HUDSIG (hud_sig_note) - off by default since HR5 quiet (2026-10-13): command "recorders 1"
+float g_flipR = 0.12f;   // FLIPRAD 2026-10-14: FLIPREC's search radius (command "fliprad <r>"; the flat distance number sits ~0.11-0.15 from the marker point)
+volatile LONG g_recOn = 0;   // HR5 quiet: HUDCOVER readback, SCANREC / SCANPIECE / FLIPREC / MKMISS event lines only with "recorders 1" (counters stay)
+volatile LONG g_mkCarry2 = 1, c_mkCarry2 = 0;   // MKCARRY2 (mk_eye_frame)
+volatile LONG g_mkCont = 1, c_mkContHeld = 0, c_mkContTake = 0, g_mkContLines = 0;   // MKCONT (mk_eye_frame)
+volatile LONG g_mkHeldNow = 0, c_mkHeldDrop = 0;   // HELDDROP: this HUD frame's map / point was held back; marked pieces out of reach are left out, not drawn flat
+volatile LONG c_mkMissNone = 0, c_mkMissReach = 0, g_mkMissLines = 0;   // MKMISS
+volatile LONG c_mkPlaceJump = 0, g_mkPlaceLines = 0;   // MKPLACE
+volatile LONG g_heldLines = 0, g_markedLines = 0;   // HELDREC
+volatile LONG g_tagFade = 1, c_mkTagFaded = 0;   // TAGFADE (command "tagfade 0|1")
+volatile LONG g_mkStickyOn = 0;   // MKSTICKYOFF (mk_sticky)
+volatile LONG g_flipLines = 0, c_flipSingle = 0, c_flipBatch = 0, g_scanRecLines = 0, g_scanPieceLines = 0;   // FLIPREC / SCANREC / SCANPIECE
+volatile LONG g_bhStep = -1, g_bhWait = 0, g_bhMax = 0; float g_bhBase = -1.0f;   // BLACKHUNT
+volatile LONG g_hrOn = 0, g_hrDumps = 0; volatile LONGLONG g_hrDumpAt = 0; char g_hrWhy[48] = "";   // HUDRING
+float g_scanWpub[3] = {}, g_scanSheet[2] = {}; volatile LONG g_scanWok = 0; char g_scanNearDiag[220] = "";   // SCANLINE: the box's world point this HUD frame (export akn_scan_point)   // SCANPROJ: detective projections head-free; box at the projected object point
+float g_scanMin = 600.0f; char g_scanDiag[400] = "";   // DETCALLOUT2: 300 -> 600 (JJ's run: hits at 311 / 435 units = Batman / the ledge)
+volatile LONG g_depthProbe = 0;   // DEPTHPROBE: frames left to compare the SMAA-time depth (DLSS's) with the pre-clear copy; "depthprobe N"
 volatile LONG g_mkAnchorOn = 0;   // (default OFF: JJ "even worse") MKANCHOR: command "mkanchor 0|1"
 volatile LONG g_markSheet = 1, g_mkPieces = 0, f_mkRouted = 0, g_mkRoutedLast = 0, c_mkRouted = 0, c_mkFlat = 0, c_mkNoCb = 0; float g_mkReach = 0.09f;   // MKREACH 2026-10-09: 0.08 left the bracket corners / distance text on the HUD sheet; MKBATCH 23:4x: back to 0.09 - 0.16 pulled a piece 0.11 away (another HUD element) onto the marker, and the brackets / glow are batched pieces now routed one by one   // MARKSHEET (below hud_ready)
-volatile LONG g_mkByTag = 1, c_mkTagged = 0, c_mkTagLost = 0, c_mkOffSheet = 0; float g_mkTagReach = 0.35f;   // MKTAG (commands mkmode / mktag / mktagreach)
+volatile LONG g_mkByTag = 1, c_mkTagged = 0, c_mkTagLost = 0, c_mkOffSheet = 0; float g_mkTagReach = 0.35f;   // TAGREACH REVERTED 2026-10-14 (HUDREC: at 0.15 the glow / a corner fell flat on ~18 % of frames - JJ "box and glow have detached"); was: 2026-10-14 (JJ: the compass's green objective box flickers off like the distance marker - the box carries the marker mark and joined the marker whenever the marker came within 0.35 of it): 0.35 -> 0.15   // MKTAG (commands mkmode / mktag / mktagreach)
 // VSCOPY 2026-10-09 (JJ 03:09, c030900/c030937: with a FRESH right-eye view state detective mode turns lights white
 // and the map shows the real city - the game sets up every view state it already knows on those switches, a fresh one
 // misses it; dozens of fields keep start-up values (0x1f at +0xC/+0x54/+0x574..). So VSFRESH is off by default.) The
@@ -592,6 +638,26 @@ void do_command(char* line)
 {
         int v = 0; float x = 0;
         if (akn_afw_cmd(line)) return;   // AFW: afw / afwmode / afwwin / afwlum / afwdbg / afwlog (afw.cpp)
+        if (sscanf_s(line, "rainrelight %d", &v) == 1) { g_rainRelight = v; logf("command: rain lit again in the second eye %d (RAINRELIGHT)", v);  return; }
+        if (strncmp(line, "fxcollect", 9) == 0) { g_skipPs = 0; g_psN = 0; g_fxCollect = 1; g_psInv = 4; logf("command: FXSTEP collecting the effects on screen"); return; }   // DIAGKIT
+        if (sscanf_s(line, "fxstep %d", &v) == 1) {   // DIAGKIT
+            if (v == 0 || g_fxN <= 0) { g_fxIdx = -1; g_skipPs = 0; logf("command: FXSTEP all effects shown"); return; }
+            LONG i = g_fxIdx + (v > 0 ? 1 : -1); if (i < 0) i = g_fxN - 1; if (i >= g_fxN) i = 0; g_fxIdx = i; g_skipPs = g_fxList[i];
+            logf("FXSTEP: hiding effect %ld of %ld - pixel shader %016llx", i + 1, g_fxN, g_fxList[i]); return; }
+        if (strncmp(line, "psnewarm", 8) == 0) { g_pnOn = 1; g_pnArmed = 0; g_pnArmT = GetTickCount64() + 2000; g_pnLines = 0; g_pnArmAt = g_pnArmT; logf("command: PSNEW baseline for 2 s, then new effects are logged"); return; }   // DIAGKIT
+        if (strncmp(line, "fxwatch ", 8) == 0) { g_fxWatch = _strtoui64(line + 8, nullptr, 16); logf("command: FXCB watches pixel shader %016llx at each capture", (unsigned long long)g_fxWatch); return; }
+        if (sscanf_s(line, "lightlag %d", &v) == 1) { g_lightLag = v < 0 ? 0 : v > 3 ? 3 : v; logf("command: sprite light directions from the game camera %ld frame(s) back (LIGHTLAG)", (long)g_lightLag); return; }
+        if (sscanf_s(line, "smokelight %d", &v) == 1) { g_smokeLight = v; logf("command: smoke light grid lit along the game camera, not the head %d (SMOKELIGHT)", v); return; }
+        if (sscanf_s(line, "spriteaxes %d", &v) == 1) { g_spriteAxes = v; logf("command: particle sprites face the head-free camera %d (SPRITEAXES)", v); return; }
+        if (sscanf_s(line, "rainmask %d", &v) == 1) { g_rainMask = v; logf("command: rain marked for DLSS %d (RAINMASK)", v); return; }
+        if (sscanf_s(line, "rainlight2 %d", &v) == 1) { g_rainLight2 = v; logf("command: rain lit from the eye that drew the light picture %d (RAINLIGHT2)", v);  return; }
+        if (sscanf_s(line, "rainlight %d", &v) == 1) { g_rainLight = v; logf("command: rain lit from the eye's own spot %d (RAINLIGHT)", v);  return; }
+        if (sscanf_s(line, "mkcont %d", &v) == 1) { g_mkCont = v; g_mkContLines = 0; logf("command: marker points kept through one-off jumps %d (MKCONT)", v);  return; }
+        if (strncmp(line, "psnew list", 10) == 0) { ps_new_list(); return; }
+        if (sscanf_s(line, "psnew %d", &v) == 1) { g_pnOn = 1; g_pnArmed = v; g_pnArmT = GetTickCount64(); g_pnLines = 0; logf("command: PSNEW %s (shaders known so far are the baseline)", v ? "armed" : "collecting");  return; }
+        if (strncmp(line, "flatwin", 7) == 0) { g_flatUntil = GetTickCount64() + 700; g_flatLines = 0; g_flatSigN = 0; logf("FLATREC: manual window - flat HUD draws for 0.7 s");  return; }
+        if (strncmp(line, "psskip ", 7) == 0) { g_psSkip = (LONG)strtoul(line + 7, nullptr, 16); c_psSkipped = 0; logf("command: PSSKIP %08X (no shader bound in its place)", (unsigned)g_psSkip);  return; }
+        if (strncmp(line, "fliprad ", 8) == 0) { g_flipR = (float)atof(line + 8); g_flipLines = 0; logf("command: FLIPREC radius %.3f (lines reset)", g_flipR);  return; }
         if (strncmp(line, "perfsweep", 9) == 0) { g_sweepWant = 1; return; }   // PERF1: the feature cost sweep (worker loop)
         if (sscanf_s(line, "cutlog %d", &v) == 1) {   // PERF1: FULLCUT's CPU readback (telemetry) on / off
             using FcFn = void(*)(int); HMODULE m = GetModuleHandleW(L"dinput8.dll"); FcFn f = m ? (FcFn)GetProcAddress(m, "akvr_set_cutlog") : nullptr;
@@ -650,6 +716,7 @@ void do_command(char* line)
             using DtFn = void(*)(int); HMODULE m = GetModuleHandleW(L"dinput8.dll"); DtFn f = m ? (DtFn)GetProcAddress(m, "akvr_set_detvig_test") : nullptr;
             if (f) f(v); logf("command: shared detective vignette test %d (%s)", v, f ? "sent to AKVR" : "AKVR export missing"); }
         else if (strncmp(line, "akvrdiag", 8) == 0) { using DgFn = const char*(*)(); HMODULE m = GetModuleHandleW(L"dinput8.dll"); DgFn f = m ? (DgFn)GetProcAddress(m, "akvr_mirror_diag") : nullptr; logf("AKVR: %s", f ? f() : "diag export missing"); }
+        else if (sscanf_s(line, "dethold %d", &v) == 1) { g_detHoldMs = v < 50 ? 50 : v; logf("command: detective mode held %ld ms after its composite was last seen (DETHOLD)", (long)g_detHoldMs); }
         else if (sscanf_s(line, "detvig %d", &v) == 1) { g_detVigSkip = v; logf("command: detective mode's per-eye vignette hidden %d", v); }   // DETVIG
         else if (strncmp(line, "vscopy clear", 12) == 0) { g_vsCopyN = 0; logf("command: view-state copy list empty"); }   // VSCOPY
         else if (strncmp(line, "vscopy ", 7) == 0)
@@ -662,6 +729,23 @@ void do_command(char* line)
         else if (sscanf_s(line, "mkgs %d", &v) == 1) { g_mkGS = v; logf("command: marker pieces placed per vertex in 3D (MKGS) %d", v); }
         else if (sscanf_s(line, "mkcard %d", &v) == 1) { g_mkCard = v; logf("command: markers as perspective cards (MKCARD) %d", v); }
         else if (sscanf_s(line, "mkfacecam %d", &v) == 1) { g_mkFaceCam = v; logf("command: markers face %s (MKFACE2)", v ? "the game camera's direction" : "the viewer's eyes"); }
+        else if (sscanf_s(line, "scan %d", &v) == 1) { g_scanOn = v; using SsFn = void(*)(int); HMODULE hm = GetModuleHandleW(L"dinput8.dll"); SsFn f = hm ? (SsFn)GetProcAddress(hm, "akvr_scan_set") : nullptr; if (f) f(v); logf("command: detective scan callout on its object %d (DETCALLOUT)", v); }
+        else if (sscanf_s(line, "depthprobe %d", &v) == 1) { g_depthProbe = v; logf("command: depth probe for %d left-eye renders", v); }
+        else if (strncmp(line, "scancut", 7) == 0) { int on = 1; float r = 0.0f; sscanf_s(line + 7, "%d %f", &on, &r); using ScFn = void(*)(int, float); HMODULE hm = GetModuleHandleW(L"dinput8.dll"); ScFn f = hm ? (ScFn)GetProcAddress(hm, "akvr_scan_cut") : nullptr; if (f) f(on, r); logf("command: scan box drawn from a small square only %d (r %.3f) (SCANCUT)", on, r); }
+        else if (strncmp(line, "blackhunt", 9) == 0) { if (g_bhStep < 0) { g_bhStep = 0; g_bhBase = -1.0f; g_bhWait = 1; logf("command: BLACKHUNT (find the menus' black backdrop draw)"); } }
+        else if (strncmp(line, "transfull", 9) == 0) { int on = 1; float dd = 0.0f, zz = 0.0f; sscanf_s(line + 9, "%d %f %f", &on, &dd, &zz); using TfFn = void(*)(int, float, float); HMODULE hm = GetModuleHandleW(L"dinput8.dll"); TfFn f = hm ? (TfFn)GetProcAddress(hm, "akvr_transfull") : nullptr; if (f) f(on, dd, zz); logf("command: full-view transitions %d (distance %.2f, enlargement %.2f; 0 = unchanged) (TRANSFULL)", on, dd, zz); }
+        else if (sscanf_s(line, "mksticky %d", &v) == 1) { g_mkStickyOn = v; logf("command: hold unmarked pieces of a recently marked shader with the marker %d (MKSTICKY)", v); }
+        else if (sscanf_s(line, "tagfade %d", &v) == 1) { g_tagFade = v; logf("command: marker mark found under the piece's own fade %d (TAGFADE)", v); }
+        else if (sscanf_s(line, "recorders %d", &v) == 1) { g_recOn = v; g_hudSigOn = v; g_flipLines = 0; g_mkMissLines = 0; g_scanRecLines = 0; g_scanPieceLines = 0; logf("command: test recorders %d (HUDSIG, HUDCOVER, SCANREC, SCANPIECE, FLIPREC / MKMISS lines)", v); }
+        else if (sscanf_s(line, "mkcarry %d", &v) == 1) { g_mkCarry2 = v; logf("command: marker points kept through frames without any %d (MKCARRY2)", v); }
+        else if (sscanf_s(line, "partid %d", &v) == 1) { using PiFn = void(*)(int); HMODULE hm = GetModuleHandleW(L"dinput8.dll"); PiFn f = hm ? (PiFn)GetProcAddress(hm, "akvr_partid_set") : nullptr; if (f) f(v); g_flipLines = 0; logf("command: per-part room marks %d (PARTID; table akvr_captures\partid.txt)", v); }
+        else if (sscanf_s(line, "hudring %d", &v) == 1) { g_hrOn = v; g_hrDumps = 0;   /* RINGRESET */ logf("command: HUD sheet ring %d (HUDRING)", v); }
+        else if (sscanf_s(line, "hudsig %d", &v) == 1) { g_hudSigOn = v; g_hsigLines = 0; logf("command: HUD draw kinds log %d (HUDSIG)", v); }
+        else if (sscanf_s(line, "scanown %d", &v) == 1) { using SoFn = void(*)(int); HMODULE hm = GetModuleHandleW(L"dinput8.dll"); SoFn f = hm ? (SoFn)GetProcAddress(hm, "akvr_scan_own_set") : nullptr; if (f) f(v); logf("command: scan box point from the game's own HUD placement %d (SCANOWN; 0 = with our HUD-layer shrink)", v); }
+        else if (sscanf_s(line, "scanbase %d", &v) == 1) { g_scanBase = v; logf("command: detective projections answered head-free %d (SCANPROJ)", v); }
+        else if (sscanf_s(line, "scanexact %d", &v) == 1) { g_scanExact = v; logf("command: scan box at the projected object point %d (SCANPROJ; 0 = depth march)", v); }
+        else if (strncmp(line, "scanmin ", 8) == 0) { g_scanMin = (float)atof(line + 8); if (g_scanMin < 10.0f) g_scanMin = 10.0f; logf("command: scan depth ignores surfaces nearer than %.0f units", g_scanMin); }
+        else if (sscanf_s(line, "mkfacepos %d", &v) == 1) { g_mkFacePos = v; logf("command: markers %s (MKFACEPOS)", v ? "tilt to face the game camera's position" : "stand upright facing the camera's heading"); }
         else if (sscanf_s(line, "mkrec %d", &v) == 1) { g_mkRecFrames = v; logf("command: marker record for %d HUD frames (akn\\mkrec_<time>.csv)", v); }   // MKREC
         else if (sscanf_s(line, "mkanchor %d", &v) == 1) { g_mkAnchorOn = v; logf("command: markers placed about their own layout anchor (MKANCHOR) %d", v); }
         else if (sscanf_s(line, "mklag %d", &v) == 1) { g_mkLagMode = v; logf("command: marker layout frame %s", v == 0 ? "the pair's own" : v == 1 ? "the other kept frame" : "chosen by measurement (auto)"); }   // MKLAG
@@ -711,7 +795,12 @@ void do_command(char* line)
         else if (sscanf_s(line, "hudblend %d", &v) == 1) { g_hudBlend = v; logf("command: HUD coverage blend %d (swaps so far %ld, other modes %ld, variants %d)", v, c_bvSwaps, c_bvOther, g_bvN); }
         else if (strncmp(line, "capmk", 5) == 0) {   // MK3: JJ's panel capture - both eyes + HUD + marker data in one go
             char t[16] = "c"; sscanf_s(line + 5, " %15s", t, (unsigned)sizeof(t)); strcpy_s(g_capTag, t); g_capWant = 4; g_capHud = 1; g_mkDump = 80; g_projLog = 40; g_mkPieces = 200;   // + MKPIECE log (marker routing)
-            mk_census(t); }
+            mk_census(t); hud_rec_dump(t); g_vsInv = 3; g_vwArm = 1; g_vcDumps = 0;
+            if (!g_fxCollect) { g_psN = 0; g_psInv = 3; }   // DIAGKIT: + akn\ps_inventory.txt (AKVR saves the drawn shaders' code into the capture)
+            if (g_hrOn) akn_hudring_dump(t, 1);   // DIAGKIT replay: the last frames before the button
+            if (g_pnOn) ps_new_list();   // DIAGKIT: effects that appeared since watching started
+            if (g_skipPs || g_fxWatch) { g_fxcbHave[0] = g_fxcbHave[1] = 0; g_fxcbArm = 1; }   // FXCB: its constants in the next two eye renders
+            if (g_skipPs) logf("CAPTURE: effect hidden now: pixel shader %016llx (%ld of %ld)", (unsigned long long)g_skipPs, g_fxIdx + 1, g_fxN); }   // SPRITEFIND: + the vertex shaders drawn now (akns_inventory.txt)
         else if (strncmp(line, "capdet", 6) == 0) {   // CAPDET, now on request only (CAPSLIM 2026-10-10: it ran on EVERY capture,
             // up to 14 extra 45 MB pairs per press - drive E filled up, 70 GB in akn\, and a capture came out empty)
             char t[16] = "d"; sscanf_s(line + 6, " %15s", t, (unsigned)sizeof(t));
@@ -887,6 +976,10 @@ RaCount g_projRa[24] = {};
 // (b) HUD pieces: VS cb0 rows of every HUD-phase draw (Scaleform placement), next to the PROJ calls of that frame.
 M44 g_mkGameV, g_mkGameP; volatile LONG g_mkGameOk = 0;
 M44 g_mkVfull, g_mkVbase; volatile LONG g_mkBaseOk = 0;
+// LIGHTLAG 2026-10-14 (JJ: smoke steady with head moves now, "but when you move the camera with the gamepad, it still changes colour"):
+// the sprite light directions are made a frame or more before the draw (UE3 thread lag) - LIGHTDIR can use the head-free camera of N
+// frames back. "lightlag 0..3" (panel "light delay"), default 1.
+M44 g_mkVbaseHist[4]; volatile LONG g_mkHistHead = 0, g_lightLag = 1;
 volatile LONG g_mkDump = 0, g_mkDumpN = 0, g_mkChecks = 0;
 volatile LONG g_mkForce = 0; float g_mkForceXY[2] = {};   // MK2: command "mkforce x y" (thousandths), "mkforce off"
 int g_mkSignR = 1, g_mkSignU = 1;
@@ -936,6 +1029,20 @@ void mc_note(const float* world, const float* r)
     int& n = g_mcN[g_mcCur]; bool dup = false;
     for (int i = 0; i < n; ++i) if (fabsf(g_mcPts[g_mcCur][i].w[0] - world[0]) + fabsf(g_mcPts[g_mcCur][i].w[1] - world[1]) + fabsf(g_mcPts[g_mcCur][i].w[2] - world[2]) < 0.5f) { dup = true; break; }
     if (!dup && n < 16) { McPt& q = g_mcPts[g_mcCur][n++]; q.w[0] = world[0]; q.w[1] = world[1]; q.w[2] = world[2]; q.r[0] = r[0]; q.r[1] = r[1]; }
+    ReleaseSRWLockExclusive(&g_mcLock);
+}
+// SCANPROJ: the detective HUD's projections (RA 0x5A2BB1) per game frame, like mc_note (same lock, own buffers)
+// (g_scanBase / g_scanExact: with the DETCALLOUT globals)
+McPt g_spPts[2][64]; int g_spN[2] = {}; int g_spCur = 0; unsigned long long g_spStampCur = 0, g_spStampBuf[2] = {};
+void scan_proj_note(const float* world, const float* r)
+{
+    AcquireSRWLockExclusive(&g_mcLock);
+    const unsigned long long st = g_famStamp;
+    if (st != g_spStampCur) { g_spStampCur = st; g_spCur ^= 1; g_spN[g_spCur] = 0; g_spStampBuf[g_spCur] = st; }
+    int& n = g_spN[g_spCur];
+    bool dup = false;
+    for (int i = 0; i < n && !dup; ++i) dup = fabsf(g_spPts[g_spCur][i].w[0] - world[0]) + fabsf(g_spPts[g_spCur][i].w[1] - world[1]) + fabsf(g_spPts[g_spCur][i].w[2] - world[2]) < 0.5f;
+    if (!dup && n < 64) { McPt& q = g_spPts[g_spCur][n++]; q.w[0] = world[0]; q.w[1] = world[1]; q.w[2] = world[2]; q.r[0] = r[0]; q.r[1] = r[1]; }
     ReleaseSRWLockExclusive(&g_mcLock);
 }
 // out: per point W xyz + R xy (5 floats), this frame's then the previous frame's; returns the count
@@ -996,6 +1103,19 @@ float* __fastcall hk_Proj(void* view, float* out, const float* world)
     {
         float c[4]; mk_xform(world, g_mkVbase, g_mkGameP, c);
         if (fabsf(c[3]) > 1e-4f) { const float rw = 1.0f / c[3]; r[0] = c[0] * rw; r[1] = c[1] * rw; r[2] = c[2] * rw; r[3] = c[3]; }   // UE3 FSceneView::Project
+    }
+    // SCANPROJ 2026-10-12 (JJ: the scan box + line "moving all around the place with your head movements and camera movements";
+    // his log 16:3x: this caller ran ~1,000/s in detective mode only): the detective HUD projects each scannable object here -
+    // its world point and the screen point the box is drawn at. Answered head-free like Canvas.Project (MARKERBASE), and kept
+    // so the box's marker takes the object's EXACT world point (moving drones included) instead of a depth guess.
+    if (ra == 0x5A2BB1 && r && world)
+    {
+        if (g_scanBase && g_mkBaseOk && g_mkGameOk)
+        {
+            float c[4]; mk_xform(world, g_mkVbase, g_mkGameP, c);
+            if (fabsf(c[3]) > 1e-4f) { const float rw = 1.0f / c[3]; r[0] = c[0] * rw; r[1] = c[1] * rw; r[2] = c[2] * rw; r[3] = c[3]; }
+        }
+        scan_proj_note(world, r);
     }
     if (g_mkForce && r && ra == 0x86DC0D) { r[0] = g_mkForceXY[0]; r[1] = g_mkForceXY[1]; }   // MK2 calibration: a known screen point
     if (r && world && ra == 0x86DC0D) mc_note(world, r);   // MARKERCUT
@@ -1191,6 +1311,7 @@ void mk_build(const float* loc)
     }
     mk_view(loc, ff, fr, fu, g_mkSignR, g_mkSignU, g_mkVfull);
     mk_view(g_calcBase, bf, br, bu, g_mkSignR, g_mkSignU, g_mkVbase);
+    { const LONG h = (g_mkHistHead + 1) & 3; g_mkVbaseHist[h] = g_mkVbase; g_mkHistHead = h; }   // LIGHTLAG
     g_mkBaseOk = 1;
 }
 void* stereo_calc(void* p, void* fam, void* loc, void* rot, void* vp, void* drawer)
@@ -1217,13 +1338,13 @@ void* stereo_calc(void* p, void* fam, void* loc, void* rot, void* vp, void* draw
     bool vsSpecial = false;   // VSSPLIT: detective mode or a flat screen (map) now
     {   // VSFRESH: detective mode just ended (seen in the last 300 ms .. now gone for 300 ms)
         static bool detWas = false;
-        const bool detNow = g_detSeenMs && GetTickCount64() - g_detSeenMs < 300;
+        const bool detNow = det_on();   // DETHOLD
         const bool detExit = detWas && !detNow;   // (VSSPLIT bug 04:18: tested detWas after it was overwritten)
         if (detExit && g_vsFreshDet) g_vsFreshWant = 1;
         detWas = detNow;
         using FlatFn = int (*)(); static FlatFn flat = nullptr; static bool tried = false;
         if (!tried) { HMODULE m = GetModuleHandleW(L"dinput8.dll"); flat = m ? (FlatFn)GetProcAddress(m, "akvr_flat_screen_now") : nullptr; tried = m != nullptr; }
-        vsSpecial = (g_detSeenMs && GetTickCount64() - g_detSeenMs < 100) || (flat && flat());
+        vsSpecial = detNow || (flat && flat());   // DETHOLD (was 100 ms: flipped mid-detective at low frame rates)
         if (g_vsSplit && g_vsMode == 4 && g_vs4 && !g_vsNorm && detExit)
         {   // VSSPLIT: the normal-play view state, made once at the first detective exit
             void* m = p_Malloc(0x8850, 8);
@@ -1385,6 +1506,7 @@ volatile LONG c_hudRedirect = 0, c_hudClear = 0, c_hudCopy = 0;
 // coverage (command "hudstat N"). Candidate fixes, live: "hudall 1" = every window-buffer bind outside the eye renders
 // goes to the sheet, cleared right after AKVR took it; "huddef 1" = deferred lists' window-buffer binds too;
 // "hudfull 0" (AKVR) = the HUD laid out at the render size again.
+volatile LONG f_hudFrameDraws = 0, g_hudDrawsLast = 0;   // MENUSOUND: HUD-sheet draws in the last frame (AKVR's start-up sound hold)
 volatile LONG f_hudDraws = 0, f_hudRedir = 0, f_hudMissImm = 0, f_hudBbDef = 0, f_hudDefRedir = 0, f_hudDsvBind = 0, f_hudDsvMis = 0;
 volatile LONG g_capHud = 0;                 // save the HUD at the next frame start (it is complete then)
 bool make_like(ID3D11Texture2D* src, UINT w, UINT bind, ID3D11Texture2D** out)
@@ -1520,7 +1642,7 @@ struct MkEyeT { float a[4], t[2]; };   // HUD-sheet NDC -> eye NDC: q = A p + t 
 MkEyeT g_mkT[8][2] = {};
 int g_mkLastMk = -1;   // the marker of the last piece drawn per eye this HUD frame (a glow paste's owner)
 volatile LONG c_mkEyePieces = 0, c_mkEyeWhole = 0, c_mkEyeNoMap = 0, c_mkEyeNoView = 0, c_mkEyeFrames = 0, c_mkEyeMarkers = 0;
-struct MkPlan { int kind, mk1; UINT bytes; int rowX, rowY, rowW, st, lim, nFar; unsigned long long nearM; signed char mk[64]; };
+struct MkPlan { int kind, mk1; UINT bytes; int rowX, rowY, rowW, st, lim, nFar; unsigned long long nearM, dropM; signed char mk[64]; };   // dropM: HELDDROP2
 volatile LONG c_mkEyeK[4] = {}, c_mkEyeFail = 0;   // MKEYE2: draws per kind (1 one-piece rows, 2 batch rows, 3 viewport), fallbacks
 char g_mkEyeDiag[320] = "";                        // MKEYE2: the first marker's placement check
 MkPlan g_mkPlan = {};   // kind 1 = one piece (rows 6 / 7), 2 = batch, 3 = whole draw moved by the viewport (glow paste)
@@ -1677,14 +1799,105 @@ bool mk_cam_centre(const M44& M, float C[3])
     }
     return true;
 }
+// DETCALLOUT 2026-10-12 (JJ: detective mode's scan box "should be locked on to the drones as they move around"): the game
+// places the box at the scanned object's screen point but makes no projection call we can hook (capmk 23:03:51: Canvas.Project
+// projected only the 118 m objective). Its world point is found from the picture, as Batman City's AIMDEPTH does for its aim
+// reticles: a one-thread compute pass marches the HEAD-FREE camera's ray through the box (kScanN geometric distances) and
+// returns the first sample at or behind the LEFT eye's depth (the depth buffer holds the left eye at HUD time; its own
+// view x lens, from the shown pair). Read back three passes later, never waited on. The distance, not the point, is kept,
+// and applied to the current frame's ray, so a moving drone keeps its box. The depth convention (inverted or not) comes from
+// the eye's own matrix: the sign of the device-depth change between a near and a far sample.
+constexpr int kScanN = 96;
+constexpr float kScanSpan = 250.0f;   // last sample = g_scanMin x kScanSpan
+struct ScanRay { float c[3], d[3]; M44 vp; bool ok; } g_scanRay = {};
+float g_scanDist = 0.0f;              // last answer: distance along the ray (game units); 0 = none yet
+float g_scanRaw = -1.0f;              // DETCALLOUT diag: hit index of the last answer (-1 none, 999 sky)
+ID3D11DeviceContext* g_mkCtx = nullptr;   // the context mk_frame_start runs on (the HUD sheet clear)
+ID3D11ComputeShader* g_scanCs = nullptr; ID3D11Buffer* g_scanCb = nullptr; ID3D11Buffer* g_scanOut = nullptr;
+ID3D11UnorderedAccessView* g_scanUav = nullptr; ID3D11Buffer* g_scanStage[4] = {}; float g_scanStageMin[4] = {};
+unsigned g_scanK = 0; bool g_scanFailed = false; float g_scanSignDbg = 0.0f; UINT g_scanRwDbg = 0, g_scanRhDbg = 0;
+bool scan_ensure(ID3D11Device* dev)
+{
+    if (g_scanCs) return true;
+    if (g_scanFailed) return false;
+    static const char cs[] =
+        // DC1 run 7: the march on the graphics card (geometric steps, then 12 halvings between the last step in front and the
+        // first behind: the distance to ~0.002 % instead of the 6 % step)
+        "Texture2D<float> D : register(t0);\n"
+        "cbuffer C : register(b0) { float4 P; float4 Cm; float4 Dr; float4 M0; float4 M1; float4 M2; float4 M3; };\n"
+        "RWBuffer<uint> R : register(u0);\n"
+        "bool beyond(float t) {\n"
+        "  float3 w = Cm.xyz + Dr.xyz * t;\n"
+        "  float4 c = w.x * M0 + w.y * M1 + w.z * M2 + M3;\n"
+        "  if (c.w <= 1e-3) return false;\n"
+        "  float2 n = c.xy / c.w;\n"
+        "  float2 px = float2((n.x * 0.5 + 0.5) * P.x, (0.5 - n.y * 0.5) * P.y);\n"
+        "  if (px.x < 0 || px.y < 0 || px.x >= P.x || px.y >= P.y) return false;\n"
+        "  float dd = D.Load(int3(int2(px), 0));\n"
+        "  return P.w * (c.z / c.w - dd) >= 0;\n"
+        "}\n"
+        "float tAt(float i) { return Cm.w * pow(Dr.w, i / (P.z - 1)); }\n"
+        "[numthreads(1, 1, 1)] void main() {\n"
+        "  uint hit = 0xFFFF; float a = 0, b = 0;\n"
+        "  for (uint i = 0; i < (uint)P.z; ++i) { float t = tAt((float)i); if (beyond(t)) { hit = i; b = t; a = i > 0 ? tAt((float)i - 1) : t; break; } }\n"
+        "  float dist = 0;\n"
+        "  if (hit != 0xFFFF) { for (uint k = 0; k < 12; ++k) { float m = 0.5 * (a + b); if (beyond(m)) b = m; else a = m; } dist = b; }\n"
+        "  R[0] = hit; R[1] = asuint(dist);\n"
+        "}\n";
+    using CompileFn = HRESULT(WINAPI*)(LPCVOID, SIZE_T, LPCSTR, const D3D_SHADER_MACRO*, ID3DInclude*, LPCSTR, LPCSTR, UINT, UINT, ID3DBlob**, ID3DBlob**);
+    HMODULE m = LoadLibraryW(L"d3dcompiler_47.dll");
+    CompileFn compile = m ? (CompileFn)GetProcAddress(m, "D3DCompile") : nullptr;
+    ID3DBlob* b = nullptr; ID3DBlob* err = nullptr;
+    bool ok = compile && SUCCEEDED(compile(cs, sizeof(cs) - 1, "akn_scandepth", nullptr, nullptr, "main", "cs_5_0", 0, 0, &b, &err)) && b &&
+              SUCCEEDED(dev->CreateComputeShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &g_scanCs));
+    if (b) b->Release();
+    if (err) { logf("DETCALLOUT: depth shader: %s", (const char*)err->GetBufferPointer()); err->Release(); }
+    D3D11_BUFFER_DESC cd{ 7 * 16, D3D11_USAGE_DEFAULT, D3D11_BIND_CONSTANT_BUFFER, 0, 0, 0 };
+    D3D11_BUFFER_DESC od{ 32, D3D11_USAGE_DEFAULT, D3D11_BIND_UNORDERED_ACCESS, 0, 0, 0 };   // hit + 7 diagnostic words
+    D3D11_BUFFER_DESC sd{ 32, D3D11_USAGE_STAGING, 0, D3D11_CPU_ACCESS_READ, 0, 0 };
+    ok = ok && SUCCEEDED(dev->CreateBuffer(&cd, nullptr, &g_scanCb)) && SUCCEEDED(dev->CreateBuffer(&od, nullptr, &g_scanOut));
+    if (ok)
+    {
+        D3D11_UNORDERED_ACCESS_VIEW_DESC ud{}; ud.Format = DXGI_FORMAT_R32_UINT; ud.ViewDimension = D3D11_UAV_DIMENSION_BUFFER; ud.Buffer.NumElements = 8;
+        ok = SUCCEEDED(dev->CreateUnorderedAccessView(g_scanOut, &ud, &g_scanUav));
+    }
+    for (int i = 0; i < 4 && ok; ++i) ok = SUCCEEDED(dev->CreateBuffer(&sd, nullptr, &g_scanStage[i]));
+    if (!ok) { g_scanFailed = true; logf("DETCALLOUT: depth pass setup FAILED - the scan callout stays on the HUD sheet"); return false; }
+    logf("DETCALLOUT: depth pass ready");
+    return true;
+}
+float scan_sample_dist(float minD, int i) { return minD * powf(kScanSpan, (float)i / (float)(kScanN - 1)); }
+void scan_pass(ID3D11DeviceContext* c, const M44& vp);   // DETCALLOUT: defined at the end (calls the original, unhooked context functions)
 // the HUD frame's markers: centres (HUD-sheet NDC) for the piece routing + each eye's mapping. False = not available.
+// HUDREC 2026-10-14 (JJ: the compass box and the distance marker still flicker to another place, DLSS on or off; "if we can't fix it
+// this time, then we're just going to leave it"): every HUD frame's marker numbers in a ring of 400 (~8 s), written to
+// akn\hudrec_<tag>.txt by the panel capture - JJ presses capture right after a flicker and the frames before it are on file.
+struct HudRec { ULONGLONG t; LONG seq; int n; float c[2], c1[2], w[3], e0[2], e1[2], xf[4]; LONG routed, eyePieces, flat, missReach, missNone, held, drop, tagLost; int heldNow, det; };
+HudRec g_hrec[400]; volatile LONG g_hrecN = 0;
 bool mk_eye_frame()
 {
     using MapFn = int (*)(float*); static MapFn p_map = nullptr; static bool s_tried = false;
     if (!s_tried) { HMODULE m = GetModuleHandleW(L"dinput8.dll"); p_map = m ? (MapFn)GetProcAddress(m, "akvr_hud_layout_map") : nullptr; s_tried = m != nullptr; }
     float xf[4] = {};
     if (!p_map || !p_map(xf)) { InterlockedIncrement(&c_mkEyeNoMap); return false; }
+    g_mkHeldNow = 0;   // HELDDROP
+    {   // MAPCONT 2026-10-14 (RB13 00:56:18: at a detective exit the marker point jumped (0.002 -0.082) -> (-0.166 0.053) for ONE HUD
+        // frame while its world point and the game's layout point stayed put = the HUD layout map (AKVR's shrink / move of the HUD
+        // movie) changed for that frame). A new map must hold 3 HUD frames before markers use it; until then the last one is used.
+        static float s_acc[4] = {}; static bool s_have = false; static float s_cand[4] = {}; static int s_run = 0;
+        auto same = [](const float* a, const float* b) { for (int k = 0; k < 4; ++k) if (fabsf(a[k] - b[k]) > 0.004f) return false; return true; };
+        if (!s_have || same(xf, s_acc) || !g_mkCont) { memcpy(s_acc, xf, sizeof(s_acc)); s_have = true; s_run = 0; }
+        else
+        {
+            s_run = same(xf, s_cand) ? s_run + 1 : 1; memcpy(s_cand, xf, sizeof(s_cand));
+            if (g_recOn && g_mkContLines < 60) { InterlockedIncrement(&g_mkContLines); logf("MAPCONT: HUD layout map %.4f %.4f %.4f %.4f -> %.4f %.4f %.4f %.4f (frame %d of 3)", s_acc[0], s_acc[1], s_acc[2], s_acc[3], xf[0], xf[1], xf[2], xf[3], s_run); }
+            if (s_run >= 3) { memcpy(s_acc, xf, sizeof(s_acc)); s_run = 0; InterlockedIncrement(&c_mkContTake); }
+            else { memcpy(xf, s_acc, sizeof(s_acc)); InterlockedIncrement(&c_mkContHeld); g_mkHeldNow = 1; }
+        }
+    }
     mk_lag_measure();   // MKLAG
+    g_mkScanIdx = -1;   // DETCALLOUT: set again below when the callout's marker is placed
+    g_scanWok = 0;      // SCANLINE: no box point this frame yet
     McPt pts[16], oth[16]; int n = 0, no = 0; M44 bvp, ev[2]; bool ok = false;
     float ax[9] = {}; bool axOk = false;   // MKFACE: the game camera's right picks "right" only
     AcquireSRWLockShared(&g_mcLock);
@@ -1692,13 +1905,109 @@ bool mk_eye_frame()
     ok = g_mcPubOk && g_mcPubBvpOk;
     if (ok) { bvp = g_mcPubBVP; ev[0] = g_mcPubVP[0]; ev[1] = g_mcPubVP[1]; }
     const int sb = g_mcStampBuf[g_mcCur] == g_pairStamp ? g_mcCur : g_mcStampBuf[g_mcCur ^ 1] == g_pairStamp ? (g_mcCur ^ 1) : g_mcCur;
+    const int stampHit = g_mcStampBuf[g_mcCur] == g_pairStamp ? 1 : g_mcStampBuf[g_mcCur ^ 1] == g_pairStamp ? 2 : 0;   // MKJUMP: 1 newest, 2 older, 0 none matched
     n = g_mcN[sb]; for (int i = 0; i < n; ++i) pts[i] = g_mcPts[sb][i];
     no = g_mcN[sb ^ 1]; for (int i = 0; i < no; ++i) oth[i] = g_mcPts[sb ^ 1][i];   // MKLAG: the other kept frame
     ReleaseSRWLockShared(&g_mcLock);
+    {   // MKCARRY2 2026-10-13 (JJ: "a duplicate copy of the distance marker and its surrounding box flickering off to the side every
+        // three or four seconds"; NOTES MKGLOW: ~9 % of seconds with no matched marker point = the whole marker flat on the HUD sheet
+        // that frame): a HUD frame with no projected marker points keeps the game's last ones for 250 ms - the pieces (still marked
+        // as marker pieces) are placed by the last world point instead of falling back to the flat HUD
+        static McPt s_last[16]; static int s_lastN = 0; static ULONGLONG s_lastAt = 0; const ULONGLONG nowT = GetTickCount64();
+        if (n > 0) { for (int i = 0; i < n && i < 16; ++i) s_last[i] = pts[i]; s_lastN = n < 16 ? n : 16; s_lastAt = nowT; }
+        else if (g_mkCarry2 && s_lastN > 0 && nowT - s_lastAt < 250) { n = s_lastN; for (int i = 0; i < n; ++i) pts[i] = s_last[i]; InterlockedIncrement(&c_mkCarry2); }
+    }
+    {   // MKCONT 2026-10-14 (JJ: "the distance marker still flickers over to a copy"; FLATREC 00:5x: at a detective exit the frame's
+        // only projected point was (-0.166 0.053) instead of the marker's (0.002 -0.082) for ONE frame - another object's Canvas.Project
+        // answer; every marker piece snapped to it = the marker at another place and size). Each marker keeps its world point: a point
+        // whose world position matches none of the last accepted ones (300 units) must persist 3 HUD frames before it replaces them;
+        // until then the last accepted points are used (as the game's own HUD keeps a marker where it was). Command "mkcont 0|1".
+        static McPt s_acc[16]; static int s_accN = 0; static ULONGLONG s_accAt = 0; static McPt s_cand[16]; static int s_candN = 0, s_candRun = 0;
+        const ULONGLONG nowT = GetTickCount64();
+        auto sameW = [](const McPt& a, const McPt& b) { const float dx = a.w[0] - b.w[0], dy = a.w[1] - b.w[1], dz = a.w[2] - b.w[2]; return dx * dx + dy * dy + dz * dz < 300.0f * 300.0f; };
+        if (g_mkCont && n > 0)
+        {
+            bool allKnown = s_accN > 0;
+            for (int i = 0; i < n && allKnown; ++i) { bool k = false; for (int j = 0; j < s_accN && !k; ++j) k = sameW(pts[i], s_acc[j]); allKnown = k; }
+            if (s_accN == 0 || allKnown || nowT - s_accAt > 250) { s_accN = n < 16 ? n : 16; for (int i = 0; i < s_accN; ++i) s_acc[i] = pts[i]; s_accAt = nowT; s_candN = 0; s_candRun = 0; }
+            else
+            {   // a new world point: count how long the SAME new set persists
+                bool same = s_candN == n; for (int i = 0; i < n && same; ++i) same = sameW(pts[i], s_cand[i]);
+                s_candRun = same ? s_candRun + 1 : 1; s_candN = n < 16 ? n : 16; for (int i = 0; i < s_candN; ++i) s_cand[i] = pts[i];
+                if (s_candRun >= 3) { s_accN = s_candN; for (int i = 0; i < s_accN; ++i) s_acc[i] = s_cand[i]; s_accAt = nowT; s_candN = 0; s_candRun = 0; InterlockedIncrement(&c_mkContTake); }
+                else
+                {
+                    InterlockedIncrement(&c_mkContHeld); g_mkHeldNow = 1;
+                    if (g_recOn && g_mkContLines < 60) { InterlockedIncrement(&g_mkContLines); logf("MKCONT: new point %.3f %.3f (world %.0f %.0f %.0f) held back (frame %d of 3) - kept %.3f %.3f (world %.0f %.0f %.0f)", pts[0].r[0], pts[0].r[1], pts[0].w[0], pts[0].w[1], pts[0].w[2], s_candRun, s_acc[0].r[0], s_acc[0].r[1], s_acc[0].w[0], s_acc[0].w[1], s_acc[0].w[2]); }
+                    n = s_accN; for (int i = 0; i < n; ++i) pts[i] = s_acc[i];
+                }
+            }
+        }
+    }
     if (!ok) { InterlockedIncrement(&c_mkEyeNoView); return false; }
     M44 inv; if (!inv44(bvp, inv)) { InterlockedIncrement(&c_mkEyeNoView); return false; }
     const float sx = 1.0f + xf[0], sy = 1.0f + xf[1];
     if (fabsf(sx) < 1e-4f || fabsf(sy) < 1e-4f) { InterlockedIncrement(&c_mkEyeNoMap); return false; }
+    int scanPt = -1;   // DETCALLOUT: the scan box this frame (AKVR: its point on the HUD sheet) -> ray, depth pass, marker
+    g_scanRay.ok = false;
+    if (g_scanOn && g_hudTex)
+    {
+        using ScFn = int (*)(int, int, float*); static ScFn p_sc = nullptr; static bool s_scTried = false;
+        if (!s_scTried) { HMODULE hm = GetModuleHandleW(L"dinput8.dll"); p_sc = hm ? (ScFn)GetProcAddress(hm, "akvr_scan_callout") : nullptr; s_scTried = hm != nullptr; }
+        D3D11_TEXTURE2D_DESC hd{}; g_hudTex->GetDesc(&hd);
+        float c2[2];
+        if (p_sc && p_sc((int)hd.Width, (int)hd.Height, c2))
+        {
+            InterlockedIncrement(&c_scanSeen);
+            const float R[2] = { c2[0] * sx + xf[2], c2[1] * sy + xf[3] };   // sheet -> the game's own layout (head-free view NDC)
+            // SCANPROJ: the object the game projected to the box's screen point (this pair's frame, else the other kept one)
+            bool exact = false;
+            if (g_scanExact && n < 16)
+            {
+                float bd = 0.06f * 0.06f; int bi = -1, bs = -1;
+                float nd = 1e9f; int nn = 0; float nr[2] = {}; float nw[3] = {};   // SCANPROJ diag: the nearest point whatever its distance
+                AcquireSRWLockShared(&g_mcLock);
+                for (int f = 0; f < 2; ++f)
+                {
+                    const int s = (g_spStampBuf[g_spCur] == g_pairStamp) == (f == 0) ? g_spCur : (g_spCur ^ 1);
+                    for (int i = 0; i < g_spN[s]; ++i) { const float dx = g_spPts[s][i].r[0] - R[0], dy = g_spPts[s][i].r[1] - R[1], d2 = dx * dx + dy * dy; ++nn; if (d2 < nd) { nd = d2; nr[0] = g_spPts[s][i].r[0]; nr[1] = g_spPts[s][i].r[1]; for (int k = 0; k < 3; ++k) nw[k] = g_spPts[s][i].w[k]; } if (d2 < bd) { bd = d2; bi = i; bs = s; } }
+                    if (bi >= 0) break;
+                }
+                _snprintf_s(g_scanNearDiag, sizeof(g_scanNearDiag), _TRUNCATE, "projected points %d, nearest %.3f at %.3f %.3f (world %.0f %.0f %.0f) vs box layout %.3f %.3f", nn, nn ? sqrtf(nd) : -1.0f, nr[0], nr[1], nw[0], nw[1], nw[2], R[0], R[1]);
+                if (bi >= 0) { for (int k = 0; k < 3; ++k) pts[n].w[k] = g_spPts[bs][bi].w[k]; }
+                ReleaseSRWLockShared(&g_mcLock);
+                if (bi >= 0)
+                {   // SCANHUD 2026-10-13 (JJ: "the lines and the box should all be at HUD depth for detective mode"): no world marker any
+                    // more - the box stays a HUD piece (marker sheet) and AKVR moves it on the HUD plane to where the object is seen
+                    for (int k = 0; k < 3; ++k) g_scanWpub[k] = pts[n].w[k];
+                    g_scanSheet[0] = c2[0]; g_scanSheet[1] = c2[1]; g_scanWok = 1;
+                    exact = true; InterlockedIncrement(&c_scanExact); InterlockedIncrement(&c_scanPlaced); g_scanMatchD = sqrtf(bd);
+                }
+            }
+            float C[3], P[3]; bool rok = !exact && mk_cam_centre(bvp, C);   // the depth march only without a projected point
+            if (rok)
+            {
+                float h[4]; for (int k = 0; k < 4; ++k) h[k] = R[0] * inv.m[0][k] + R[1] * inv.m[1][k] + 0.5f * inv.m[2][k] + inv.m[3][k];
+                rok = fabsf(h[3]) > 1e-12f;
+                if (rok) for (int k = 0; k < 3; ++k) P[k] = h[k] / h[3];
+            }
+            float d[3] = {}, dl = 0.0f;
+            if (rok) { for (int k = 0; k < 3; ++k) d[k] = P[k] - C[k]; dl = sqrtf(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]); rok = dl > 1e-3f; }
+            if (rok)
+            {
+                for (int k = 0; k < 3; ++k) d[k] /= dl;
+                AcquireSRWLockShared(&g_mcLock); float f3[3] = { g_mcPubAx[0], g_mcPubAx[1], g_mcPubAx[2] }; const bool fok = g_mcPubAxOk != 0; ReleaseSRWLockShared(&g_mcLock);
+                if (fok && d[0] * f3[0] + d[1] * f3[1] + d[2] * f3[2] < 0.0f) for (int k = 0; k < 3; ++k) d[k] = -d[k];   // in front of the camera
+                for (int k = 0; k < 3; ++k) { g_scanRay.c[k] = C[k]; g_scanRay.d[k] = d[k]; }
+                g_scanRay.vp = ev[0]; g_scanRay.ok = true;
+                if (g_scanDist > 0.0f)
+                {   // SCANHUD: the depth march's point, exported the same way (no world marker)
+                    for (int k = 0; k < 3; ++k) g_scanWpub[k] = C[k] + d[k] * g_scanDist;
+                    g_scanSheet[0] = c2[0]; g_scanSheet[1] = c2[1]; g_scanWok = 1; InterlockedIncrement(&c_scanPlaced);
+                }
+            }
+        }
+    }
     int m = 0;
     for (int i = 0; i < n && m < 8; ++i)
     {
@@ -1751,8 +2060,57 @@ bool mk_eye_frame()
             for (int k = 0; k < 3; ++k) { d.w[k] = W[k]; }
             d.c[0] = (R[0] - xf[2]) / sx; d.c[1] = (R[1] - xf[3]) / sy;
         }
-        const float fsx = g_mkGameP.m[0][0] != 0.0f ? cb[3] / g_mkGameP.m[0][0] : 0.0f, fsy = g_mkGameP.m[1][1] != 0.0f ? cb[3] / g_mkGameP.m[1][1] : 0.0f;   // world units per layout NDC unit at W
+        float fsx = g_mkGameP.m[0][0] != 0.0f ? cb[3] / g_mkGameP.m[0][0] : 0.0f, fsy = g_mkGameP.m[1][1] != 0.0f ? cb[3] / g_mkGameP.m[1][1] : 0.0f;   // world units per layout NDC unit at W
         if (fsx == 0.0f || fsy == 0.0f) continue;
+        // MKFACEPOS 2026-10-11 (JJ: the markers "sit solidly on their intended world objects but they are angled straight out
+        // towards the rest of the HUD. They should be angled towards the camera (not head tracking though). We fixed this in
+        // Arkham City"): City's MARKERFACE (batman_city markers.cpp upright_card). The upright card faced the camera's HEADING,
+        // so a marker above, below or to the side was seen at a slant, like the flat HUD. Now the card tilts to face the GAME
+        // camera's POSITION (head-free: head moves change nothing, only camera moves turn it); its right edge stays level (no
+        // roll), up = normal x right. Size: fitted so the game camera sees exactly the game's layout at W (first order). The
+        // fit uses a roll-free frame (forward = the camera's aim, right = level): AKN's head-free camera still carries the head
+        // ROLL (MKREC 045423), and fitting from its matrix would make the size follow head tilts.
+        if (g_mkFacePos && axOk)
+        {
+            float C[3];
+            const float fl = sqrtf(ax[0] * ax[0] + ax[1] * ax[1] + ax[2] * ax[2]), fh = sqrtf(ax[0] * ax[0] + ax[1] * ax[1]);
+            if (mk_cam_centre(bvp, C) && fl > 1e-4f && fh > 0.2f * fl)
+            {
+                float n[3] = { C[0] - W[0], C[1] - W[1], C[2] - W[2] };
+                const float nl = sqrtf(n[0] * n[0] + n[1] * n[1] + n[2] * n[2]), nh = sqrtf(n[0] * n[0] + n[1] * n[1]);
+                if (nl > 1.0f && nh > 0.2f * nl)   // not with the camera almost straight above / below the marker
+                {
+                    for (int k = 0; k < 3; ++k) n[k] /= nl;
+                    const float gr[3] = { sgr * ax[3], sgr * ax[4], sgr * ax[5] };   // the game view's right (sign only)
+                    float rt[3] = { -n[1] * nl / nh, n[0] * nl / nh, 0.0f };
+                    if (rt[0] * gr[0] + rt[1] * gr[1] < 0.0f) { rt[0] = -rt[0]; rt[1] = -rt[1]; }
+                    float u[3] = { n[1] * rt[2] - n[2] * rt[1], n[2] * rt[0] - n[0] * rt[2], n[0] * rt[1] - n[1] * rt[0] };
+                    if (u[2] < 0.0f) { u[0] = -u[0]; u[1] = -u[1]; u[2] = -u[2]; }
+                    // roll-free game camera: forward f, level right r0, up u0
+                    const float f[3] = { ax[0] / fl, ax[1] / fl, ax[2] / fl };
+                    float r0[3] = { f[1] / (fh / fl), -f[0] / (fh / fl), 0.0f };
+                    if (r0[0] * gr[0] + r0[1] * gr[1] < 0.0f) { r0[0] = -r0[0]; r0[1] = -r0[1]; }
+                    float u0[3] = { r0[1] * f[2] - r0[2] * f[1], r0[2] * f[0] - r0[0] * f[2], r0[0] * f[1] - r0[1] * f[0] };
+                    if (u0[2] < 0.0f) { u0[0] = -u0[0]; u0[1] = -u0[1]; u0[2] = -u0[2]; }
+                    const float d[3] = { W[0] - C[0], W[1] - C[1], W[2] - C[2] };
+                    const float X = d[0] * r0[0] + d[1] * r0[1] + d[2] * r0[2], Y = d[0] * u0[0] + d[1] * u0[1] + d[2] * u0[2], Z = d[0] * f[0] + d[1] * f[1] + d[2] * f[2];
+                    if (Z > 1.0f)
+                    {   // layout NDC change per world unit along the card's right / up at W (x = P00 X / Z, y = P11 Y / Z)
+                        const float p00 = fabsf(g_mkGameP.m[0][0]), p11 = fabsf(g_mkGameP.m[1][1]);
+                        const float rf = rt[0] * f[0] + rt[1] * f[1] + rt[2] * f[2], uf = u[0] * f[0] + u[1] * f[1] + u[2] * f[2];
+                        const float dx = p00 * ((rt[0] * r0[0] + rt[1] * r0[1] + rt[2] * r0[2]) * Z - X * rf) / (Z * Z);
+                        const float dy = p11 * ((u[0] * u0[0] + u[1] * u0[1] + u[2] * u0[2]) * Z - Y * uf) / (Z * Z);
+                        if (dx > 1e-9f && dy > 1e-9f)
+                        {
+                            for (int k = 0; k < 3; ++k) { cn[k] = n[k]; crt[k] = rt[k]; cup[k] = u[k]; }
+                            fsx = 1.0f / dx; fsy = 1.0f / dy;
+                            if (m == 0) { g_mkCardN[0] = cn[0]; g_mkCardN[1] = cn[1]; g_mkCardN[2] = cn[2]; }
+                            InterlockedIncrement(&c_mkFaced);
+                        }
+                    }
+                }
+            }
+        }
         for (int k = 0; k < 3; ++k) { g_mkCardD[m].ax[k] = sx * fsx * crt[k]; g_mkCardD[m].ay[k] = sy * fsy * cup[k]; }   // MKCARD: per unit of sheet NDC
         {   // MKGS: a sheet point (x, y) -> layout (sx x + bx, sy y + by) -> on the card: W + (layout - R) scaled along right / up
             // -> each eye's clip position: linear in (x, y, 1)
@@ -1844,9 +2202,69 @@ bool mk_eye_frame()
                 if (InterlockedDecrement(&g_mkRecFrames) <= 0) { fclose(g_mkRecF); g_mkRecF = nullptr; logf("MKREC: done"); }
             }
         }
+        if (i == scanPt)
+        {   // DETCALLOUT
+            g_mkScanIdx = m; InterlockedIncrement(&c_scanPlaced);
+            for (int k = 0; k < 3; ++k) g_scanWpub[k] = W[k]; g_scanWok = 1;   // SCANLINE: AKVR draws the line to here
+            float pe[2][3] = {};
+            for (int e = 0; e < 2; ++e) { float c4[4]; for (int k = 0; k < 4; ++k) c4[k] = W[0] * ev[e].m[0][k] + W[1] * ev[e].m[1][k] + W[2] * ev[e].m[2][k] + ev[e].m[3][k];
+                                          pe[e][2] = c4[3]; if (fabsf(c4[3]) > 1e-3f) { pe[e][0] = c4[0] / c4[3]; pe[e][1] = c4[1] / c4[3]; } }
+            float rb[2] = {}; if (cb[3] > 1e-3f) { rb[0] = cb[0] / cb[3]; rb[1] = cb[1] / cb[3]; }
+            _snprintf_s(g_scanDiag, sizeof(g_scanDiag), _TRUNCATE, "marker %d: sheet %.3f %.3f, layout %.3f %.3f, head-free view puts W at %.3f %.3f (w %.0f) | W %.0f %.0f %.0f | left eye %.3f %.3f (w %.0f) right eye %.3f %.3f | card scale %.1f %.1f",
+                        m, g_mkC[m][0], g_mkC[m][1], R[0], R[1], rb[0], rb[1], cb[3], W[0], W[1], W[2], pe[0][0], pe[0][1], pe[0][2], pe[1][0], pe[1][1], fsx, fsy);
+        }
+        if (m == 0)
+        {   // MKPLACE 2026-10-13 (JJ: the distance marker flickers "to another location for one frame"; not reproduced with the fake headset's
+            // still head): where the first marker's world point lands in each eye this HUD frame; a frame far off the line of the two before
+            // (a jump that comes straight back) is counted and logged - separates our placement from compositing / timing in the headset
+            static float s_p[2][2][2] = {}; static int s_pn = 0;
+            float now[2][2] = {}; bool okp = true;
+            for (int e = 0; e < 2 && okp; ++e) { float c4[4]; for (int k = 0; k < 4; ++k) c4[k] = W[0] * ev[e].m[0][k] + W[1] * ev[e].m[1][k] + W[2] * ev[e].m[2][k] + ev[e].m[3][k]; if (c4[3] <= 1e-3f) okp = false; else { now[e][0] = c4[0] / c4[3]; now[e][1] = c4[1] / c4[3]; } }
+            if (okp)
+            {
+                if (s_pn >= 2)
+                    for (int e = 0; e < 2; ++e)
+                    {
+                        // the LAST frame against the line between the one before it and this one: a one-frame outlier (out and straight back);
+                        // a turn starting or stopping bends the path but does not leave one frame off both neighbours
+                        const float mx = 0.5f * (s_p[0][e][0] + now[e][0]), my = 0.5f * (s_p[0][e][1] + now[e][1]), dx = s_p[1][e][0] - mx, dy = s_p[1][e][1] - my;
+                        const float sx = now[e][0] - s_p[0][e][0], sy = now[e][1] - s_p[0][e][1];
+                        if (dx * dx + dy * dy > 0.03f * 0.03f && dx * dx + dy * dy > 0.25f * (sx * sx + sy * sy)) { InterlockedIncrement(&c_mkPlaceJump); if (g_mkPlaceLines < 200) { InterlockedIncrement(&g_mkPlaceLines); logf("MKPLACE one-frame outlier eye %d: %.3f %.3f between %.3f %.3f and %.3f %.3f | W %.0f %.0f %.0f | HUD seq %ld", e, s_p[1][e][0], s_p[1][e][1], s_p[0][e][0], s_p[0][e][1], now[e][0], now[e][1], W[0], W[1], W[2], g_hudSeq - 1); } break; }
+                    }
+                for (int e = 0; e < 2; ++e) { s_p[0][e][0] = s_p[1][e][0]; s_p[0][e][1] = s_p[1][e][1]; s_p[1][e][0] = now[e][0]; s_p[1][e][1] = now[e][1]; }
+                if (s_pn < 2) ++s_pn;
+            }
+            else s_pn = 0;
+        }
         ++m;
     }
+    {   // MKJUMP 2026-10-13 (JJ: "the occasional flickering of the distance marker to another location for one frame"; MKCARRY2 never
+        // fired = the lists were never empty): every HUD frame whose list of projected marker points differs from the last one
+        // (count, or a point moved > 200 units) is logged with both lists and which kept game frame matched the pair's stamp
+        static McPt s_pv[16]; static int s_pn = 0; static LONG s_lines = 0;
+        bool ch = n != s_pn;
+        for (int i = 0; i < n && !ch; ++i) { float bd = 1e30f; for (int j = 0; j < s_pn; ++j) { const float dx = pts[i].w[0] - s_pv[j].w[0], dy = pts[i].w[1] - s_pv[j].w[1], dz = pts[i].w[2] - s_pv[j].w[2], d2 = dx * dx + dy * dy + dz * dz; if (d2 < bd) bd = d2; } if (bd > 200.0f * 200.0f) ch = true; }
+        if (ch && s_lines < 400)
+        {
+            ++s_lines; char a[600] = ""; int o = 0;
+            o += _snprintf_s(a + o, sizeof(a) - o, _TRUNCATE, "MKJUMP: points %d -> %d (pair stamp matched %s, markers placed %d) | now:", s_pn, n, stampHit == 1 ? "newest" : stampHit == 2 ? "older" : "NONE", m);
+            for (int i = 0; i < n && i < 5; ++i) o += _snprintf_s(a + o, sizeof(a) - o, _TRUNCATE, " W %.0f %.0f %.0f R %.3f %.3f;", pts[i].w[0], pts[i].w[1], pts[i].w[2], pts[i].r[0], pts[i].r[1]);
+            o += _snprintf_s(a + o, sizeof(a) - o, _TRUNCATE, " | before:");
+            for (int i = 0; i < s_pn && i < 5; ++i) o += _snprintf_s(a + o, sizeof(a) - o, _TRUNCATE, " W %.0f %.0f %.0f R %.3f %.3f;", s_pv[i].w[0], s_pv[i].w[1], s_pv[i].w[2], s_pv[i].r[0], s_pv[i].r[1]);
+            logf("%s", a);
+        }
+        s_pn = n < 16 ? n : 16; for (int i = 0; i < s_pn; ++i) s_pv[i] = pts[i];
+    }
     g_mkCN = m; InterlockedIncrement(&c_mkEyeFrames); InterlockedAdd(&c_mkEyeMarkers, m);
+    {   // HUDREC: this HUD frame
+        HudRec& r = g_hrec[(InterlockedIncrement(&g_hrecN) - 1) % 400];
+        r.t = GetTickCount64(); r.seq = g_hudSeq; r.n = m; r.c[0] = m ? g_mkC[0][0] : 0; r.c[1] = m ? g_mkC[0][1] : 0; r.c1[0] = m > 1 ? g_mkC[1][0] : 0; r.c1[1] = m > 1 ? g_mkC[1][1] : 0;
+        for (int k = 0; k < 3; ++k) r.w[k] = n > 0 ? pts[0].w[k] : 0;
+        r.e0[0] = g_mkF0[0][0][0]; r.e0[1] = g_mkF0[0][0][1]; r.e1[0] = g_mkF0[0][1][0]; r.e1[1] = g_mkF0[0][1][1];
+        for (int k = 0; k < 4; ++k) r.xf[k] = xf[k];
+        r.routed = g_mkRoutedLast; r.eyePieces = c_mkEyePieces; r.flat = c_mkFlat; r.missReach = c_mkMissReach; r.missNone = c_mkMissNone; r.held = c_mkContHeld; r.drop = c_mkHeldDrop; r.tagLost = c_mkTagLost;
+        r.heldNow = g_mkHeldNow; r.det = akn_detective_active();
+    }
     g_mkCardDN = m; g_mkCardEv[0] = ev[0]; g_mkCardEv[1] = ev[1];   // MKCARD
     g_mkLagPOk = false;   // MKLAG / MKREC: this frame's first piece comes next
     return true;
@@ -1872,7 +2290,7 @@ void mk_frame_start()
     for (auto& d : g_mkDrawn) d = MkDrawn{};   // MKDRAWN: this HUD frame's drawn marker pieces
     ++g_mkHudFrame;   // MKGLOW5: marks older than 30 HUD frames no longer route a paste
     if (!p_mkCentresTried) { HMODULE m = GetModuleHandleW(L"dinput8.dll"); p_mkCentres = m ? (MkCentresFn)GetProcAddress(m, "akvr_marker_centres") : nullptr; p_mkCentresTried = m != nullptr; }
-    g_mkLastMk = -1;
+    g_mkLastMk = -1; g_mkScanIdx = -1;
     if (g_mkEye && g_mkEyeRTV[0] && g_mkEyeRTV[1]) { if (!mk_eye_frame()) g_mkCN = 0; return; }   // MKEYE: this frame's own points
     float xy[16] = {}; const int n = p_mkCentres ? p_mkCentres(xy, 8) : 0;
     g_mkCN = n < 0 ? 0 : n > 8 ? 8 : n;
@@ -1911,6 +2329,7 @@ bool hud_ready(ID3D11DeviceContext* c)
         if (g_hudDSV && o_ClrDSV) o_ClrDSV(c, g_hudDSV, D3D11_CLEAR_DEPTH | D3D11_CLEAR_STENCIL, 1.0f, 0);   // HUDDSV
         if (g_mkRTV) { o_ClearRTV ? o_ClearRTV(c, g_mkRTV, z) : c->ClearRenderTargetView(g_mkRTV, z); }   // MARKSHEET
         for (int e = 0; e < 2; ++e) if (g_mkEyeRTV[e]) { o_ClearRTV ? o_ClearRTV(c, g_mkEyeRTV[e], z) : c->ClearRenderTargetView(g_mkEyeRTV[e], z); }   // MKEYE
+        g_mkCtx = c;   // DETCALLOUT
         mk_frame_start();
     }
     return true;
@@ -2017,6 +2436,9 @@ void d0_mv_scan_cs(ID3D11DeviceContext* c, int w)
     ID3D11UnorderedAccessView* uv[4] = {}; c->CSGetUnorderedAccessViews(0, 4, uv);
     for (int i = 0; i < 4; ++i) if (uv[i]) { ID3D11Resource* r = nullptr; uv[i]->GetResource(&r); d0_mv_note("CS output", nm, i, r, w); if (r) r->Release(); uv[i]->Release(); }
 }
+void scan_copy_depth(ID3D11DeviceContext* c, bool deferred, ID3D11Resource* r);   // DETCALLOUT (end of file)
+void probe_copy_smaa(ID3D11DeviceContext* c, bool deferred, ID3D11Resource* r);   // DEPTHPROBE (end of file)
+void depth_probe_after(ID3D11DeviceContext* c);
 // DLSS D1: the game's SMAA is replaced - its edge pass hands us the depth (input 1) and is skipped with the weights
 // pass; the neighbourhood pass becomes a plain copy (input -> output)
 bool dlss_draw_skip(ID3D11DeviceContext* c, bool deferred)
@@ -2029,7 +2451,7 @@ bool dlss_draw_skip(ID3D11DeviceContext* c, bool deferred)
     if (crc == 0x067FF80Fu)
     {
         ID3D11ShaderResourceView* sv = nullptr; c->PSGetShaderResources(1, 1, &sv);
-        if (sv) { ID3D11Resource* r = nullptr; sv->GetResource(&r); if (r) { akn_dlss_note_depth(w, r); r->Release(); } sv->Release(); }
+        if (sv) { ID3D11Resource* r = nullptr; sv->GetResource(&r); if (r) { akn_dlss_note_depth(w, r); if (w == 0) { scan_copy_depth(c, deferred, r); if (g_depthProbe > 0) probe_copy_smaa(c, deferred, r); } r->Release(); } sv->Release(); }   // DETCALLOUT: the depth is only whole here
         return true;
     }
     return crc == 0x2F55F98Eu;
@@ -2261,6 +2683,7 @@ void STDMETHODCALLTYPE hk_Blend(ID3D11DeviceContext* c, ID3D11BlendState* bs, co
 }
 void STDMETHODCALLTYPE hk_OMSetRT(ID3D11DeviceContext* c, UINT n, ID3D11RenderTargetView* const* v, ID3D11DepthStencilView* d)
 {
+    if (g_vwRes) vw_rtvs(c, v, n, false);   // VOLWATCH
     xe_rtvs(v, n, d, false);
     if (tl_inEyeRender && !g_dev) { c->GetDevice(&g_dev); g_gameCtx = c; logf("game device %p (from the render thread's context %p)", (void*)g_dev, (void*)c); }
     if (c != g_gameCtx) { o_OMSetRT(c, n, v, d); return; }   // another device (Virtual Desktop's compositor, AKVR's own): not ours
@@ -2416,8 +2839,41 @@ void xe_srvs(ID3D11ShaderResourceView* const* v, UINT n, bool deferred)
     const int eye = xe_eye(deferred); if (eye < 0) return;
     for (UINT i = 0; i < n && i < 32; ++i) if (v[i]) { ID3D11Resource* r = nullptr; v[i]->GetResource(&r); if (r) { xe_note(r, eye, false); r->Release(); } }
 }
+// DETCALLOUT (DC1 run 4, 03:36: the DLSS-path "depth" read 1.0 at every sample even right after the left eye's render): the
+// depth buffers the game binds during the LEFT eye's render, counted; the scan pass reads the most-bound one (the scene depth)
+SRWLOCK g_scanDsLock = SRWLOCK_INIT;
+struct ScanDs { ID3D11Resource* r; LONG n; UINT w, h; DXGI_FORMAT f; UINT bind; };
+ScanDs g_scanDs[8] = {}; int g_scanDsN = 0;
+void scan_note_dsv(ID3D11DepthStencilView* d, bool deferred)
+{
+    if (!d || !g_scanOn || xe_eye(deferred) != 0) return;
+    ID3D11Resource* r = nullptr; d->GetResource(&r); if (!r) return;
+    AcquireSRWLockExclusive(&g_scanDsLock);
+    int k = 0; for (; k < g_scanDsN; ++k) if (g_scanDs[k].r == r) { ++g_scanDs[k].n; break; }
+    if (k == g_scanDsN && g_scanDsN < 8)
+    {
+        ScanDs& e = g_scanDs[g_scanDsN++]; e = ScanDs{ r, 1, 0, 0, DXGI_FORMAT_UNKNOWN, 0 };
+        ID3D11Texture2D* t = nullptr; if (SUCCEEDED(r->QueryInterface(__uuidof(ID3D11Texture2D), (void**)&t)) && t) { D3D11_TEXTURE2D_DESC td; t->GetDesc(&td); e.w = td.Width; e.h = td.Height; e.f = td.Format; e.bind = td.BindFlags; t->Release(); }
+    }
+    ReleaseSRWLockExclusive(&g_scanDsLock);
+    r->Release();
+}
+// the most-bound depth buffer of the last left-eye render that can be read (SHADER_RESOURCE), then the table starts again
+ID3D11Resource* scan_take_dsv(UINT& w, UINT& h, int& fmt, LONG& binds)
+{
+    ID3D11Resource* best = nullptr; w = h = 0; fmt = 0; binds = 0;
+    AcquireSRWLockExclusive(&g_scanDsLock);
+    for (int k = 0; k < g_scanDsN; ++k)
+        if ((g_scanDs[k].bind & D3D11_BIND_SHADER_RESOURCE) && g_scanDs[k].n > binds) { best = g_scanDs[k].r; binds = g_scanDs[k].n; w = g_scanDs[k].w; h = g_scanDs[k].h; fmt = (int)g_scanDs[k].f; }
+    static int s_log = 0;
+    if (s_log < 3 && g_scanDsN) { ++s_log; for (int k = 0; k < g_scanDsN; ++k) logf("DETCALLOUT: left-eye depth buffer %p %ux%u format %d bind 0x%x, bound %ld x%s", (void*)g_scanDs[k].r, g_scanDs[k].w, g_scanDs[k].h, (int)g_scanDs[k].f, g_scanDs[k].bind, g_scanDs[k].n, g_scanDs[k].r == best ? " <- used" : ""); }
+    g_scanDsN = 0;
+    ReleaseSRWLockExclusive(&g_scanDsLock);
+    return best;
+}
 void xe_rtvs(ID3D11RenderTargetView* const* v, UINT n, ID3D11DepthStencilView* d, bool deferred)
 {
+    scan_note_dsv(d, deferred);   // DETCALLOUT
     if (g_xeye <= 0) return;
     const int eye = xe_eye(deferred); if (eye < 0) return;
     for (UINT i = 0; v && i < n && i < 8; ++i) if (v[i]) { ID3D11Resource* r = nullptr; v[i]->GetResource(&r); if (r) { xe_note(r, eye, true); r->Release(); } }
@@ -2544,10 +3000,12 @@ void STDMETHODCALLTYPE hkd_PSSamp(ID3D11DeviceContext* c, UINT s0, UINT n, ID3D1
 void STDMETHODCALLTYPE hk_PSSRV(ID3D11DeviceContext* c, UINT s0, UINT n, ID3D11ShaderResourceView* const* v) { xe_srvs(v, n, false); if (tl_inEyeRender) h_views_read(v, n); o_PSSRV(c, s0, n, v); }
 void STDMETHODCALLTYPE hk_VSSRV(ID3D11DeviceContext* c, UINT s0, UINT n, ID3D11ShaderResourceView* const* v) { xe_srvs(v, n, false); if (tl_inEyeRender) h_views_read(v, n); o_VSSRV(c, s0, n, v); }
 void STDMETHODCALLTYPE hk_CSSRV(ID3D11DeviceContext* c, UINT s0, UINT n, ID3D11ShaderResourceView* const* v) { xe_srvs(v, n, false); if (tl_inEyeRender) h_views_read(v, n); o_CSSRV(c, s0, n, v); }
-void STDMETHODCALLTYPE hk_CSUAV(ID3D11DeviceContext* c, UINT s0, UINT n, ID3D11UnorderedAccessView* const* u, const UINT* ic) { xe_uavs(u, n, false); if (tl_inEyeRender) h_uavs(u, n); o_CSUAV(c, s0, n, u, ic); }
+void STDMETHODCALLTYPE hk_CSUAV(ID3D11DeviceContext* c, UINT s0, UINT n, ID3D11UnorderedAccessView* const* u, const UINT* ic) { xe_uavs(u, n, false); if (g_vwRes) vw_uavs(c, u, n, false); if (tl_inEyeRender) h_uavs(u, n); o_CSUAV(c, s0, n, u, ic); }
 void STDMETHODCALLTYPE hk_ClrUAVu(ID3D11DeviceContext* c, ID3D11UnorderedAccessView* u, const UINT v[4]) { if (tl_inEyeRender && u && h_on()) { ID3D11Resource* r = nullptr; u->GetResource(&r); if (r) { h_write(r); r->Release(); } } o_ClrUAVu(c, u, v); }
 void STDMETHODCALLTYPE hk_ClrUAVf(ID3D11DeviceContext* c, ID3D11UnorderedAccessView* u, const FLOAT v[4]) { if (tl_inEyeRender && u && h_on()) { ID3D11Resource* r = nullptr; u->GetResource(&r); if (r) { h_write(r); r->Release(); } } o_ClrUAVf(c, u, v); }
+void scan_clear_copy(ID3D11DeviceContext* c, bool deferred, ID3D11DepthStencilView* d, UINT f);   // DETCALLOUT (end of file)
 void STDMETHODCALLTYPE hk_ClrDSV(ID3D11DeviceContext* c, ID3D11DepthStencilView* d, UINT f, FLOAT z, UINT8 st) {
+    if (tl_inEyeRender && tl_eye_render == 0 && d) scan_clear_copy(c, false, d, f);   // DETCALLOUT: the world's depth before a mid-render clear
     if (g_hudDsvOn && g_hudDSV && d && d == g_hudGameDsv && !tl_inEyeRender && c == g_gameCtx && (g_hudPhase || g_hudAll)) { o_ClrDSV(c, g_hudDSV, f, z, st); return; }   // HUDDSV
     if (tl_inEyeRender && d && h_on()) { ID3D11Resource* r = nullptr; d->GetResource(&r); if (r) { h_write(r); r->Release(); } } o_ClrDSV(c, d, f, z, st); }
 void hist_end_render(int eye)
@@ -2708,6 +3166,119 @@ ID3D11Buffer* make_buf(ID3D11DeviceContext* c, UINT size, UINT bind)
     D3D11_BUFFER_DESC d{}; d.ByteWidth = size; d.Usage = D3D11_USAGE_DEFAULT; d.BindFlags = bind;
     ID3D11Buffer* b = nullptr; dev->CreateBuffer(&d, nullptr, &b); dev->Release(); return b;
 }
+// RAINLIGHT 2026-10-14 (JJ: in the flat game the rain is brighter near bright lights - the moon, volumetric beams; in the headset
+// "this brighter area is offset to where it should be, and ... a section of it is being masked by something large moving in and out").
+// The simulation (a96594b16ceb399b) lights each drop by projecting it to the screen and sampling the eye's light picture (t2):
+// clip = (pos - cb0[10]) x cb0[6..9]. NEARRAIN2 puts the head-free game camera in cb0[10] but rows 6..9 are still the EYE's
+// view x lens, so every drop read the light picture at a spot shifted by the head / eye offset. Fix: row 9 += (C_hf - C_eye) x rows 6..8
+// (C_eye = the original cb0[10]), computed on the graphics card by a 1-thread compute pass into the patched copy. "rainlight 0|1".
+using DispFnD = void(STDMETHODCALLTYPE*)(ID3D11DeviceContext*, UINT, UINT, UINT); extern DispFnD od_Disp;   // (defined with the deferred hooks)
+volatile LONG g_rainLight = 1, c_rainLight = 0; bool g_rlFailed = false;
+// RAINLIGHT2 2026-10-14 (JJ on RAINRELIGHT: "Left and right eyes are not fusing for the bright rain" - own lighting per eye = different
+// drop colours per eye). Fake 01:3x: each eye's own step put its bright rain off its own beam too (right eye: right of the beam, left
+// eye: left of it) = the light picture t2 the step samples is the PREVIOUS render's = the OTHER eye's (left renders last). The step runs
+// once (RAINONCE, in the right eye's render, first) and now samples t2 with the view x lens of the eye that drew it: the last published
+// LEFT eye (g_mcPubVP[0], unjittered): cb0 rows 6..8 = its rows 0..2, row 9 = C x rows 0..2 + row 3 (C = the camera in row 10). One colour
+// per drop for both eyes (fuses), lit where the light picture really is. "rainlight2 0|1".
+volatile LONG g_rainLight2 = 1, c_rainLight2 = 0; ID3D11Buffer* g_rl2Up = nullptr;
+// RAINLIGHT3 2026-10-14 (JJ on RAINLIGHT2: "fine at first, but then when you turn the camera towards the brighter part, the rain will
+// disappear from that brighter area entirely ... connected to the camera somehow"): the view x lens was read when the step was RECORDED
+// (worker threads), not when it runs - a different frame than the light picture while the camera / head moves. Now the left eye's
+// view x lens goes into a GPU buffer on the render thread when its picture is finished (g_rl3VP, immediate context), and a 1-thread
+// pass builds rows 6..9 from it when the step RUNS (same order as the picture). RAINLIGHT2's CPU copy stays as the fallback.
+ID3D11Buffer* g_rl3VP = nullptr; ID3D11ComputeShader* g_rl3Cs = nullptr; ID3D11Buffer* g_rl3Out = nullptr; ID3D11UnorderedAccessView* g_rl3Uav = nullptr; bool g_rl3Failed = false; volatile LONG c_rl3 = 0, g_rl3Have = 0;
+void rain_vp_publish(ID3D11DeviceContext* c, const M44& L)
+{   // render thread, immediate context, right after the left eye's picture
+    if (!g_rainLight2) return;
+    if (!g_rl3VP) { ID3D11Device* dev = nullptr; c->GetDevice(&dev); if (!dev) return; D3D11_BUFFER_DESC d{ 64, D3D11_USAGE_DEFAULT, D3D11_BIND_CONSTANT_BUFFER, 0, 0, 0 }; dev->CreateBuffer(&d, nullptr, &g_rl3VP); dev->Release(); if (!g_rl3VP) return; }
+    c->UpdateSubresource(g_rl3VP, 0, nullptr, &L.m[0][0], 0, 0); g_rl3Have = 1;
+}
+bool rain_l3_setup(ID3D11DeviceContext* c)
+{
+    if (g_rl3Cs) return true; if (g_rl3Failed) return false;
+    ID3D11Device* dev = nullptr; c->GetDevice(&dev); if (!dev) return false;
+    static const char cs[] =
+        "cbuffer V : register(b0) { float4 m[4]; };\n"
+        "cbuffer H : register(b1) { float4 hf; };\n"
+        "RWBuffer<uint> R : register(u0);\n"
+        "[numthreads(1, 1, 1)] void main() {\n"
+        "  float4 r3 = hf.x * m[0] + hf.y * m[1] + hf.z * m[2] + m[3];\n"
+        "  [unroll] for (uint k = 0; k < 3; ++k) { R[k * 4] = asuint(m[k].x); R[k * 4 + 1] = asuint(m[k].y); R[k * 4 + 2] = asuint(m[k].z); R[k * 4 + 3] = asuint(m[k].w); }\n"
+        "  R[12] = asuint(r3.x); R[13] = asuint(r3.y); R[14] = asuint(r3.z); R[15] = asuint(r3.w);\n"
+        "}\n";
+    using CompileFn = HRESULT(WINAPI*)(LPCVOID, SIZE_T, LPCSTR, const D3D_SHADER_MACRO*, ID3DInclude*, LPCSTR, LPCSTR, UINT, UINT, ID3DBlob**, ID3DBlob**);
+    HMODULE m = LoadLibraryW(L"d3dcompiler_47.dll");
+    CompileFn compile = m ? (CompileFn)GetProcAddress(m, "D3DCompile") : nullptr;
+    ID3DBlob* b = nullptr; ID3DBlob* err = nullptr;
+    bool ok = compile && SUCCEEDED(compile(cs, sizeof(cs) - 1, "akn_rainlight3", nullptr, nullptr, "main", "cs_5_0", 0, 0, &b, &err)) && b &&
+              SUCCEEDED(dev->CreateComputeShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &g_rl3Cs));
+    if (b) b->Release();
+    if (err) { logf("RAINLIGHT3: shader: %s", (const char*)err->GetBufferPointer()); err->Release(); }
+    D3D11_BUFFER_DESC od{ 64, D3D11_USAGE_DEFAULT, D3D11_BIND_UNORDERED_ACCESS, 0, 0, 0 };
+    ok = ok && SUCCEEDED(dev->CreateBuffer(&od, nullptr, &g_rl3Out));
+    if (ok) { D3D11_UNORDERED_ACCESS_VIEW_DESC ud{}; ud.Format = DXGI_FORMAT_R32_UINT; ud.ViewDimension = D3D11_UAV_DIMENSION_BUFFER; ud.Buffer.NumElements = 16;
+              ok = SUCCEEDED(dev->CreateUnorderedAccessView(g_rl3Out, &ud, &g_rl3Uav)); }
+    dev->Release();
+    if (!ok) { g_rl3Failed = true; if (g_rl3Cs) { g_rl3Cs->Release(); g_rl3Cs = nullptr; } logf("RAINLIGHT3: setup FAILED - the recorded copy is used"); return false; }
+    logf("RAINLIGHT3: ready");
+    return true;
+}
+// RAINRELIGHT 2026-10-14 (JJ: the bright rain round the moon / light beams is "offset to where it should be" with "something large moving
+// in and out"; fake 01:3x: with the step run in each eye the left eye's bright rain moved back into the beam). The simulation lights each
+// drop from the light picture of the eye that runs it; RAINONCE ran it in the right eye only, so the left eye showed the right eye's
+// lighting (~14 deg off, Batman from the right eye's view cutting through it). The left eye now runs the step again with the time step
+// cb0[13].x = 0 (positions, age and wrap unchanged; cb0[13].y, the streak length, kept) = same drops, its own lighting. "rainrelight 0|1".
+volatile LONG g_rainRelight = 0, c_rainRelit = 0, c_rainRelightSkip = 0; thread_local bool tl_rainRelight = false; ID3D11Buffer* g_rlZero = nullptr;
+ID3D11ComputeShader* g_rlCs = nullptr; ID3D11Buffer* g_rlCb = nullptr; ID3D11Buffer* g_rlOut = nullptr; ID3D11UnorderedAccessView* g_rlUav = nullptr;
+bool rain_light_setup(ID3D11DeviceContext* c)
+{
+    if (g_rlCs) return true; if (g_rlFailed) return false;
+    ID3D11Device* dev = nullptr; c->GetDevice(&dev); if (!dev) return false;
+    static const char cs[] =
+        "cbuffer O : register(b0) { float4 r[11]; };\n"
+        "cbuffer H : register(b1) { float4 hf; };\n"
+        "RWBuffer<uint> R : register(u0);\n"
+        "[numthreads(1, 1, 1)] void main() {\n"
+        "  float3 d = hf.xyz - r[10].xyz;\n"
+        "  float4 o = r[9] + d.x * r[6] + d.y * r[7] + d.z * r[8];\n"
+        "  R[0] = asuint(o.x); R[1] = asuint(o.y); R[2] = asuint(o.z); R[3] = asuint(o.w);\n"
+        "}\n";
+    using CompileFn = HRESULT(WINAPI*)(LPCVOID, SIZE_T, LPCSTR, const D3D_SHADER_MACRO*, ID3DInclude*, LPCSTR, LPCSTR, UINT, UINT, ID3DBlob**, ID3DBlob**);
+    HMODULE m = LoadLibraryW(L"d3dcompiler_47.dll");
+    CompileFn compile = m ? (CompileFn)GetProcAddress(m, "D3DCompile") : nullptr;
+    ID3DBlob* b = nullptr; ID3DBlob* err = nullptr;
+    bool ok = compile && SUCCEEDED(compile(cs, sizeof(cs) - 1, "akn_rainlight", nullptr, nullptr, "main", "cs_5_0", 0, 0, &b, &err)) && b &&
+              SUCCEEDED(dev->CreateComputeShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &g_rlCs));
+    if (b) b->Release();
+    if (err) { logf("RAINLIGHT: shader: %s", (const char*)err->GetBufferPointer()); err->Release(); }
+    D3D11_BUFFER_DESC cd{ 16, D3D11_USAGE_DEFAULT, D3D11_BIND_CONSTANT_BUFFER, 0, 0, 0 };
+    D3D11_BUFFER_DESC od{ 16, D3D11_USAGE_DEFAULT, D3D11_BIND_UNORDERED_ACCESS, 0, 0, 0 };
+    ok = ok && SUCCEEDED(dev->CreateBuffer(&cd, nullptr, &g_rlCb)) && SUCCEEDED(dev->CreateBuffer(&od, nullptr, &g_rlOut));
+    if (ok) { D3D11_UNORDERED_ACCESS_VIEW_DESC ud{}; ud.Format = DXGI_FORMAT_R32_UINT; ud.ViewDimension = D3D11_UAV_DIMENSION_BUFFER; ud.Buffer.NumElements = 4;
+              ok = SUCCEEDED(dev->CreateUnorderedAccessView(g_rlOut, &ud, &g_rlUav)); }
+    dev->Release();
+    if (!ok) { g_rlFailed = true; if (g_rlCs) { g_rlCs->Release(); g_rlCs = nullptr; } logf("RAINLIGHT: setup FAILED - rain lighting left as it was"); return false; }
+    logf("RAINLIGHT: ready");
+    return true;
+}
+// the patched copy's row 9, from the game's original cb0 (b0) and the head-free camera position; the game's compute state is put back
+void rain_light_patch(ID3D11DeviceContext* c, ID3D11Buffer* orig, const float pos[3])
+{
+    if (!g_rainLight || !od_Disp || !rain_light_setup(c)) return;
+    const float hf[4] = { pos[0], pos[1], pos[2], 1.0f };
+    c->UpdateSubresource(g_rlCb, 0, nullptr, hf, 0, 0);
+    ID3D11ComputeShader* oCs = nullptr; ID3D11ClassInstance* oCi[8] = {}; UINT oCiN = 8; c->CSGetShader(&oCs, oCi, &oCiN);
+    ID3D11Buffer* oCb[2] = {}; c->CSGetConstantBuffers(0, 2, oCb);
+    ID3D11UnorderedAccessView* oUav = nullptr; c->CSGetUnorderedAccessViews(0, 1, &oUav);
+    ID3D11Buffer* cbs[2] = { orig, g_rlCb }; const UINT keep = (UINT)-1;
+    c->CSSetShader(g_rlCs, nullptr, 0); c->CSSetConstantBuffers(0, 2, cbs); c->CSSetUnorderedAccessViews(0, 1, &g_rlUav, &keep);
+    od_Disp(c, 1, 1, 1);
+    c->CSSetShader(oCs, oCi, oCiN); c->CSSetConstantBuffers(0, 2, oCb); c->CSSetUnorderedAccessViews(0, 1, &oUav, &keep);
+    if (oCs) oCs->Release(); for (UINT i = 0; i < oCiN && i < 8; ++i) if (oCi[i]) oCi[i]->Release(); for (auto* x : oCb) if (x) x->Release(); if (oUav) oUav->Release();
+    const D3D11_BOX bx{ 0, 0, 0, 16, 1, 1 };
+    c->CopySubresourceRegion(g_farCopy, 0, 9 * 16, 0, 0, g_rlOut, 0, &bx);
+    InterlockedIncrement(&c_rainLight);
+}
 // before the rain simulation dispatch: returns the original cb0 (to put back) or null
 ID3D11Buffer* rain_cb_pre(ID3D11DeviceContext* c)
 {
@@ -2736,7 +3307,43 @@ ID3D11Buffer* rain_cb_pre(ID3D11DeviceContext* c)
     const bool nearToo = g_nearRain && frameBase && g_farRow == 11;
     D3D11_BOX bx{ nearToo ? 0u : 16u, 0, 0, 28, 1, 1 };   // row 10 xyzw (+ row 11 xyz), or row 11 xyz only
     c->CopySubresourceRegion(g_farCopy, 0, (UINT)g_farRow * 16 - (nearToo ? 16 : 0), 0, 0, g_farVec, 0, &bx);
-    if (nearToo) InterlockedIncrement(&c_nearPatched);
+    if (nearToo)
+    {
+        InterlockedIncrement(&c_nearPatched);
+        bool done2 = false;
+        if (g_rainLight2 && g_rl3Have && g_rl3VP && !tl_rainRelight && d.ByteWidth >= 10 * 16 && od_Disp && rain_l3_setup(c) && rain_light_setup(c))
+        {   // RAINLIGHT3: rows 6..9 built on the graphics card when the step runs, from the left eye's view x lens of the picture it reads
+            const float hf[4] = { pos[0], pos[1], pos[2], 1.0f };
+            c->UpdateSubresource(g_rlCb, 0, nullptr, hf, 0, 0);
+            ID3D11ComputeShader* oCs = nullptr; ID3D11ClassInstance* oCi[8] = {}; UINT oCiN = 8; c->CSGetShader(&oCs, oCi, &oCiN);
+            ID3D11Buffer* oCb[2] = {}; c->CSGetConstantBuffers(0, 2, oCb);
+            ID3D11UnorderedAccessView* oUav = nullptr; c->CSGetUnorderedAccessViews(0, 1, &oUav);
+            ID3D11Buffer* cbs[2] = { g_rl3VP, g_rlCb }; const UINT keep = (UINT)-1;
+            c->CSSetShader(g_rl3Cs, nullptr, 0); c->CSSetConstantBuffers(0, 2, cbs); c->CSSetUnorderedAccessViews(0, 1, &g_rl3Uav, &keep);
+            od_Disp(c, 1, 1, 1);
+            c->CSSetShader(oCs, oCi, oCiN); c->CSSetConstantBuffers(0, 2, oCb); c->CSSetUnorderedAccessViews(0, 1, &oUav, &keep);
+            if (oCs) oCs->Release(); for (UINT i = 0; i < oCiN && i < 8; ++i) if (oCi[i]) oCi[i]->Release(); for (auto* x : oCb) if (x) x->Release(); if (oUav) oUav->Release();
+            const D3D11_BOX b64{ 0, 0, 0, 64, 1, 1 }; c->CopySubresourceRegion(g_farCopy, 0, 6 * 16, 0, 0, g_rl3Out, 0, &b64);
+            done2 = true; InterlockedIncrement(&c_rl3); InterlockedIncrement(&c_rainLight2);
+        }
+        if (!done2 && g_rainLight2 && g_mcPubOk && !tl_rainRelight && d.ByteWidth >= 10 * 16)
+        {   // RAINLIGHT2: the left eye's view x lens (it drew the light picture this step reads)
+            M44 L; AcquireSRWLockShared(&g_mcLock); L = g_mcPubVP[0]; ReleaseSRWLockShared(&g_mcLock);
+            float r[16];
+            for (int k = 0; k < 3; ++k) for (int j = 0; j < 4; ++j) r[k * 4 + j] = L.m[k][j];
+            for (int j = 0; j < 4; ++j) r[12 + j] = pos[0] * L.m[0][j] + pos[1] * L.m[1][j] + pos[2] * L.m[2][j] + L.m[3][j];
+            if (!g_rl2Up) g_rl2Up = make_buf(c, 64, 0);
+            if (g_rl2Up) { c->UpdateSubresource(g_rl2Up, 0, nullptr, r, 0, 0); const D3D11_BOX b64{ 0, 0, 0, 64, 1, 1 }; c->CopySubresourceRegion(g_farCopy, 0, 6 * 16, 0, 0, g_rl2Up, 0, &b64); done2 = true; InterlockedIncrement(&c_rainLight2); }
+        }
+        if (!done2) rain_light_patch(c, cb, pos);   // RAINLIGHT
+    }
+    if (tl_rainRelight)
+    {   // RAINRELIGHT: time step 0 for this run
+        if (!g_rlZero) g_rlZero = make_buf(c, 16, 0);
+        if (g_rlZero && d.ByteWidth >= 14 * 16) { const D3D11_BOX zb{ 0, 0, 0, 4, 1, 1 }; c->CopySubresourceRegion(g_farCopy, 0, 13 * 16, 0, 0, g_rlZero, 0, &zb); InterlockedIncrement(&c_rainRelit); }
+        else { tl_rainRelight = false; c->CSSetConstantBuffers(0, 1, &cb); cb->Release(); InterlockedIncrement(&c_rainRelightSkip); return (ID3D11Buffer*)1; }   // cannot hold the drops: skip
+        tl_rainRelight = false;
+    }
     if (g_cbSnapPWant)
     {
         if (!g_cbSnapP) g_cbSnapP = make_buf(c, d.ByteWidth, 0);
@@ -2798,7 +3405,11 @@ bool rain_skip(ID3D11DeviceContext* c, bool deferred = false)
     if (w < 2 && (g_rainOnce & (1 << k)))
     {   // RAINPAIR
         const LONG pr = g_rainPair;
-        if (InterlockedExchange(&g_rainRan[k], pr) == pr) { InterlockedIncrement(&c_rainSkip); return true; }
+        if (InterlockedExchange(&g_rainRan[k], pr) == pr)
+        {   // RAINRELIGHT 2026-10-14: the second eye runs the step again with time step 0 - drops stay put, lit from this eye's own view
+            if (k == 0 && g_rainRelight && !g_rainPause && deferred) { tl_rainSim = true; tl_rainRelight = true; return false; }
+            InterlockedIncrement(&c_rainSkip); return true;
+        }
     }
     if (g_rainPause && k == 0) return true;   // RAINPAUSE: no simulation step at all - the rain hangs still
     if (k == 0) tl_rainSim = true;   // FARRAIN2: the caller patches cb0 around this dispatch
@@ -2808,7 +3419,6 @@ using DispatchIndFn = void(STDMETHODCALLTYPE*)(ID3D11DeviceContext*, ID3D11Buffe
 DispatchIndFn o_DispatchInd = nullptr;
 void STDMETHODCALLTYPE hk_DispatchInd(ID3D11DeviceContext* c, ID3D11Buffer* b, UINT o) { if (rain_skip(c)) return; o_DispatchInd(c, b, o); }
 // deferred-context detours (own originals: a different function table)
-using DispFnD = void(STDMETHODCALLTYPE*)(ID3D11DeviceContext*, UINT, UINT, UINT);
 using DispIndFnD = void(STDMETHODCALLTYPE*)(ID3D11DeviceContext*, ID3D11Buffer*, UINT);
 using DrawFnD = void(STDMETHODCALLTYPE*)(ID3D11DeviceContext*, UINT, UINT);
 using DrawIdxFnD = void(STDMETHODCALLTYPE*)(ID3D11DeviceContext*, UINT, UINT, INT);
@@ -2817,6 +3427,8 @@ using DrawIFnD = void(STDMETHODCALLTYPE*)(ID3D11DeviceContext*, UINT, UINT, UINT
 using ExecFn = void(STDMETHODCALLTYPE*)(ID3D11DeviceContext*, ID3D11CommandList*, BOOL);
 using ClrFnD = void(STDMETHODCALLTYPE*)(ID3D11DeviceContext*, ID3D11RenderTargetView*, const FLOAT*);
 ClrFnD od_Clr = nullptr;
+ClearDSVFn od_ClrDSV = nullptr;   // DETCALLOUT: deferred depth clears
+void STDMETHODCALLTYPE hkd_ClrDSV(ID3D11DeviceContext* c, ID3D11DepthStencilView* d, UINT f, FLOAT z, UINT8 st) { if (g_eyeNow == 0 && d) scan_clear_copy(c, true, d, f); od_ClrDSV(c, d, f, z, st); }
 void d0_clear(ID3D11DeviceContext* c, ID3D11RenderTargetView* v, bool deferred);   // DLSS D0, below
 void STDMETHODCALLTYPE hkd_Clr(ID3D11DeviceContext* c, ID3D11RenderTargetView* v, const FLOAT* col) { d0_clear(c, v, true); od_Clr(c, v, col); }
 using SrvFnD = void(STDMETHODCALLTYPE*)(ID3D11DeviceContext*, UINT, UINT, ID3D11ShaderResourceView* const*);
@@ -2830,6 +3442,7 @@ void STDMETHODCALLTYPE hkd_CSSRV(ID3D11DeviceContext* c, UINT s0, UINT n, ID3D11
 extern ID3D11RenderTargetView* g_hudRTV;
 void STDMETHODCALLTYPE hkd_RT(ID3D11DeviceContext* c, UINT n, ID3D11RenderTargetView* const* v, ID3D11DepthStencilView* d)
 {
+    if (g_vwRes) vw_rtvs(c, v, n, true);   // VOLWATCH
     xe_rtvs(v, n, d, true);
     if (g_eyeNow < 0 && n && n <= 8 && v && v[0] && g_bb && (g_hudStat > 0 || g_hudDef))
     {   // HUDTRACE: a recorded (deferred) window-buffer bind outside the eye renders - the immediate redirect never sees it
@@ -2845,7 +3458,7 @@ void STDMETHODCALLTYPE hkd_RT(ID3D11DeviceContext* c, UINT n, ID3D11RenderTarget
     }
     od_RT(c, n, v, d);
 }
-void STDMETHODCALLTYPE hkd_CSUAV(ID3D11DeviceContext* c, UINT s0, UINT n, ID3D11UnorderedAccessView* const* u, const UINT* ic) { xe_uavs(u, n, true); od_CSUAV(c, s0, n, u, ic); }
+void STDMETHODCALLTYPE hkd_CSUAV(ID3D11DeviceContext* c, UINT s0, UINT n, ID3D11UnorderedAccessView* const* u, const UINT* ic) { xe_uavs(u, n, true); if (g_vwRes) vw_uavs(c, u, n, true); od_CSUAV(c, s0, n, u, ic); }
 DispFnD od_Disp = nullptr; DispIndFnD od_DispInd = nullptr; DrawFnD od_Draw = nullptr; DrawIdxFnD od_DrawIdx = nullptr; DrawIIFnD od_DrawII = nullptr; DrawIFnD od_DrawI = nullptr; ExecFn o_Exec = nullptr;
 bool skip_vs_d(ID3D11DeviceContext* c);   // below
 void rain_depth_post(ID3D11DeviceContext* c);   // RAINDEPTH, below
@@ -2854,28 +3467,136 @@ void STDMETHODCALLTYPE hkd_Disp(ID3D11DeviceContext* c, UINT x, UINT y, UINT z)
     ++c_defDisp; tl_rainSim = false; d0_dispatch(c, true);
     if (dlss_dispatch_replace(c, true)) return;   // DLSS D1
     if (rain_skip(c, true)) return;
-    if (tl_rainSim) { tl_rainSim = false; ID3D11Buffer* ob = rain_cb_pre(c); od_Disp(c, x, y, z); rain_cb_post(c, ob); return; }
+    if (tl_rainSim) { tl_rainSim = false; const bool rl = tl_rainRelight; ID3D11Buffer* ob = rain_cb_pre(c); if (ob == (ID3D11Buffer*)1 || (rl && !ob)) { tl_rainRelight = false; InterlockedIncrement(&c_rainRelightSkip); return; } od_Disp(c, x, y, z); rain_cb_post(c, ob); return; }   // RAINRELIGHT
     od_Disp(c, x, y, z);
 }
 void STDMETHODCALLTYPE hkd_DispInd(ID3D11DeviceContext* c, ID3D11Buffer* b, UINT o)
 {
     ++c_defDisp; tl_rainSim = false;
     if (rain_skip(c, true)) return;
-    if (tl_rainSim) { tl_rainSim = false; ID3D11Buffer* ob = rain_cb_pre(c); od_DispInd(c, b, o); rain_cb_post(c, ob); return; }
+    if (tl_rainSim) { tl_rainSim = false; const bool rl = tl_rainRelight; ID3D11Buffer* ob = rain_cb_pre(c); if (ob == (ID3D11Buffer*)1 || (rl && !ob)) { tl_rainRelight = false; InterlockedIncrement(&c_rainRelightSkip); return; } od_DispInd(c, b, o); rain_cb_post(c, ob); return; }   // RAINRELIGHT
     od_DispInd(c, b, o);
+}
+// RAINMASK 2026-10-14 (JJ: with DLSS off the bright rain in the light beam stays; with DLSS it fades away as the camera turns toward it):
+// our DLSS motion vectors are camera-only, so the falling drops reproject wrongly and DLSS averages them out, worst on a bright background.
+// The rain draw (kRainVs) is drawn a second time into a per-eye R8 mask (same target size, same depth test, a pixel shader returning 1),
+// cleared at each eye render's start, and handed to DLSS as its "bias current colour" mask = trust this frame's pixels there. "rainmask 0|1".
+volatile LONG g_rainMask = 1, c_rainMask = 0; thread_local bool tl_rainMaskNow = false; thread_local int tl_rainMaskEye = -1;
+ID3D11Texture2D* g_rmTex[2] = {}; ID3D11RenderTargetView* g_rmRtv[2] = {}; ID3D11PixelShader* g_rmPs = nullptr; bool g_rmFailed = false; volatile LONG g_rmUsed[2] = {};
+bool rain_mask_ready(ID3D11DeviceContext* c, int eye, UINT w, UINT h)
+{
+    if (eye < 0 || eye > 1 || g_rmFailed) return false;
+    ID3D11Device* dev = nullptr; c->GetDevice(&dev); if (!dev) return false;
+    bool ok = true;
+    if (!g_rmPs)
+    {
+        static const char ps[] = "float4 main() : SV_Target { return float4(1, 1, 1, 1); }\n";
+        using CompileFn = HRESULT(WINAPI*)(LPCVOID, SIZE_T, LPCSTR, const D3D_SHADER_MACRO*, ID3DInclude*, LPCSTR, LPCSTR, UINT, UINT, ID3DBlob**, ID3DBlob**);
+        HMODULE m = LoadLibraryW(L"d3dcompiler_47.dll"); CompileFn compile = m ? (CompileFn)GetProcAddress(m, "D3DCompile") : nullptr;
+        ID3DBlob* b = nullptr; ID3DBlob* err = nullptr;
+        ok = compile && SUCCEEDED(compile(ps, sizeof(ps) - 1, "akn_rainmask", nullptr, nullptr, "main", "ps_5_0", 0, 0, &b, &err)) && b && SUCCEEDED(dev->CreatePixelShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &g_rmPs));
+        if (b) b->Release(); if (err) err->Release();
+        if (!ok) { g_rmFailed = true; dev->Release(); logf("RAINMASK: shader FAILED - off"); return false; }
+    }
+    if (g_rmTex[eye]) { D3D11_TEXTURE2D_DESC d{}; g_rmTex[eye]->GetDesc(&d); if (d.Width != w || d.Height != h) { g_rmRtv[eye]->Release(); g_rmRtv[eye] = nullptr; g_rmTex[eye]->Release(); g_rmTex[eye] = nullptr; } }
+    if (!g_rmTex[eye])
+    {
+        D3D11_TEXTURE2D_DESC d{}; d.Width = w; d.Height = h; d.MipLevels = 1; d.ArraySize = 1; d.Format = DXGI_FORMAT_R8_UNORM; d.SampleDesc.Count = 1; d.Usage = D3D11_USAGE_DEFAULT; d.BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
+        ok = SUCCEEDED(dev->CreateTexture2D(&d, nullptr, &g_rmTex[eye])) && SUCCEEDED(dev->CreateRenderTargetView(g_rmTex[eye], nullptr, &g_rmRtv[eye]));
+        if (ok) logf("RAINMASK: eye %d mask %ux%u", eye, w, h); else { g_rmFailed = true; logf("RAINMASK: mask FAILED - off"); }
+    }
+    dev->Release();
+    return ok;
+}
+// render thread, immediate context, at each eye render's start
+void rain_mask_clear(ID3D11DeviceContext* c, int eye)
+{
+    g_rmUsed[eye & 1] = 0;
+    if (eye >= 0 && eye <= 1 && g_rmRtv[eye]) { const FLOAT z[4] = {}; c->ClearRenderTargetView(g_rmRtv[eye], z); }
+}
+// right after the rain draw, same context: the same draw into this eye's mask
+template <class F> void rain_mask_draw(ID3D11DeviceContext* c, F draw)
+{
+    tl_rainMaskNow = false;
+    const int eye = tl_rainMaskEye; if (!g_rainMask || eye < 0 || eye > 1 || akn_dlss_mode() <= 0) return;
+    ID3D11RenderTargetView* rt[8] = {}; ID3D11DepthStencilView* ds = nullptr; c->OMGetRenderTargets(8, rt, &ds);
+    if (rt[0])
+    {
+        ID3D11Resource* r = nullptr; rt[0]->GetResource(&r); D3D11_TEXTURE2D_DESC d{}; ID3D11Texture2D* t = nullptr;
+        if (r && SUCCEEDED(r->QueryInterface(__uuidof(ID3D11Texture2D), (void**)&t)) && t) { t->GetDesc(&d); t->Release(); }
+        if (r) r->Release();
+        if (d.Width && rain_mask_ready(c, eye, d.Width, d.Height))
+        {
+            ID3D11PixelShader* ops = nullptr; ID3D11ClassInstance* oci[8] = {}; UINT ocn = 8; c->PSGetShader(&ops, oci, &ocn);
+            ID3D11BlendState* obs = nullptr; FLOAT obf[4]; UINT om = 0; c->OMGetBlendState(&obs, obf, &om);
+            c->OMSetRenderTargets(1, &g_rmRtv[eye], ds); c->PSSetShader(g_rmPs, nullptr, 0); c->OMSetBlendState(nullptr, nullptr, 0xFFFFFFFF);
+            draw();
+            c->OMSetRenderTargets(8, rt, ds); c->PSSetShader(ops, oci, ocn); c->OMSetBlendState(obs, obf, om);
+            if (ops) ops->Release(); for (UINT i = 0; i < ocn && i < 8; ++i) if (oci[i]) oci[i]->Release(); if (obs) obs->Release();
+            g_rmUsed[eye] = 1; InterlockedIncrement(&c_rainMask);
+        }
+    }
+    for (auto* x : rt) if (x) x->Release(); if (ds) ds->Release();
 }
 void STDMETHODCALLTYPE hkd_Draw(ID3D11DeviceContext* c, UINT n, UINT s0) { ++c_defDraw; d0_draw(c, true); if (dlss_draw_skip(c, true)) return; if (skip_vs_d(c)) return; od_Draw(c, n, s0); rain_depth_post(c); }
 void STDMETHODCALLTYPE hkd_DrawIdx(ID3D11DeviceContext* c, UINT n, UINT s0, INT b0) { ++c_defDraw; d0_draw(c, true); if (dlss_draw_skip(c, true)) return; if (skip_vs_d(c)) return; od_DrawIdx(c, n, s0, b0); rain_depth_post(c); }
-void STDMETHODCALLTYPE hkd_DrawII(ID3D11DeviceContext* c, UINT a, UINT n, UINT b, INT d, UINT e) { ++c_defDraw; if (skip_vs_d(c)) return; od_DrawII(c, a, n, b, d, e); rain_depth_post(c); }
-void STDMETHODCALLTYPE hkd_DrawI(ID3D11DeviceContext* c, UINT a, UINT n, UINT b, UINT e) { ++c_defDraw; if (skip_vs_d(c)) return; od_DrawI(c, a, n, b, e); rain_depth_post(c); }
+void STDMETHODCALLTYPE hkd_DrawII(ID3D11DeviceContext* c, UINT a, UINT n, UINT b, INT d, UINT e) { ++c_defDraw; if (skip_vs_d(c)) return; od_DrawII(c, a, n, b, d, e); if (tl_rainMaskNow) rain_mask_draw(c, [&] { od_DrawII(c, a, n, b, d, e); }); rain_depth_post(c); }
+void STDMETHODCALLTYPE hkd_DrawI(ID3D11DeviceContext* c, UINT a, UINT n, UINT b, UINT e) { ++c_defDraw; if (skip_vs_d(c)) return; od_DrawI(c, a, n, b, e); if (tl_rainMaskNow) rain_mask_draw(c, [&] { od_DrawI(c, a, n, b, e); }); rain_depth_post(c); }
 void STDMETHODCALLTYPE hk_Exec(ID3D11DeviceContext* c, ID3D11CommandList* l, BOOL r) { InterlockedIncrement(&c_execCL); o_Exec(c, l, r); }
 // PANELTEST: open/close AKVR's VR panel from the test script (exactly as the double stick click), log its state
 using PanelSetFn = void(*)(int); using PanelStateFn = unsigned long long(*)();
 PanelSetFn p_panelSet = nullptr; PanelStateFn p_panelState = nullptr;
 void panel_link() { if (!p_panelSet) { HMODULE m = GetModuleHandleW(L"dinput8.dll"); if (m) { p_panelSet = (PanelSetFn)GetProcAddress(m, "akvr_panel_set"); p_panelState = (PanelStateFn)GetProcAddress(m, "akvr_panel_state"); } } }
 void akvr_panel_cmd(int on) { panel_link(); if (p_panelSet) p_panelSet(on); else logf("VR panel: AKVR export missing"); }
+void smoke_light_pre(ID3D11DeviceContext* c); void smoke_light_post(ID3D11DeviceContext* c);   // SMOKELIGHT (below)
+// VOLCB 2026-10-14 (JJ: in the flat game the smoke "stays consistently dark when you look up and down"; in VR it brightens looking up):
+// the grid is rebuilt in each eye's render (VOLWATCH) - for WHICH camera? When the grid's compute pass runs (immediate context, output =
+// the watched grid), its constant buffers 0..3 are read back once per eye and logged, beside this eye's view x lens, the head-free game
+// camera x lens and both inverses, so the rows can be matched to a camera.
+volatile LONG g_vcDumps = 0;
+void vol_cb_dump(ID3D11DeviceContext* c)
+{
+    if (!g_vwRes || g_vcDumps >= 2 || GetTickCount64() > g_vwUntil) return;
+    ID3D11UnorderedAccessView* uu[8] = {}; c->CSGetUnorderedAccessViews(0, 8, uu);
+    bool hit = false;
+    for (auto* u : uu) if (u) { ID3D11Resource* r = nullptr; u->GetResource(&r); if (r == g_vwRes) hit = true; if (r) r->Release(); u->Release(); }
+    if (!hit) return;
+    const int eye = tl_inEyeRender ? tl_eye_render : -1;
+    InterlockedIncrement(&g_vcDumps);
+    ID3D11Device* dev = nullptr; c->GetDevice(&dev); if (!dev) return;
+    ID3D11Buffer* cbs[4] = {}; c->CSGetConstantBuffers(0, 4, cbs);
+    logf("VOLCB: grid pass in eye %d - its constants follow", eye);
+    for (int k = 0; k < 4; ++k)
+    {
+        if (!cbs[k]) continue;
+        D3D11_BUFFER_DESC d{}; cbs[k]->GetDesc(&d);
+        D3D11_BUFFER_DESC sd{ d.ByteWidth, D3D11_USAGE_STAGING, 0, D3D11_CPU_ACCESS_READ, 0, 0 };
+        ID3D11Buffer* st = nullptr;
+        if (SUCCEEDED(dev->CreateBuffer(&sd, nullptr, &st)) && st)
+        {
+            c->CopyResource(st, cbs[k]);
+            D3D11_MAPPED_SUBRESOURCE m{};
+            if (SUCCEEDED(c->Map(st, 0, D3D11_MAP_READ, 0, &m)))
+            {
+                const float* f = (const float*)m.pData; const UINT rows = d.ByteWidth / 16;
+                logf("VOLCB: cb%d %u bytes", k, d.ByteWidth);
+                for (UINT i = 0; i < rows && i < 64; ++i) if (f[i * 4] || f[i * 4 + 1] || f[i * 4 + 2] || f[i * 4 + 3]) logf("VOLCB:   cb%d[%u] %.6g %.6g %.6g %.6g", k, i, f[i * 4], f[i * 4 + 1], f[i * 4 + 2], f[i * 4 + 3]);
+                c->Unmap(st, 0);
+            }
+            st->Release();
+        }
+        cbs[k]->Release();
+    }
+    dev->Release();
+    auto dumpM = [](const char* what, const M44& M) { for (int i = 0; i < 4; ++i) logf("VOLCB: %s row %d %.6g %.6g %.6g %.6g", what, i, M.m[i][0], M.m[i][1], M.m[i][2], M.m[i][3]); };
+    dumpM("eye view", g_rendV); dumpM("eye lens", g_rendP);
+    M44 vp = mul44(g_rendV, g_rendP); dumpM("eye view x lens", vp);
+    M44 inv; if (inv44(vp, inv)) dumpM("eye view x lens INVERSE", inv);
+    if (g_mcPubBvpOk) { dumpM("head-free camera x lens", g_mcPubBVP); M44 bi; if (inv44(g_mcPubBVP, bi)) dumpM("head-free camera x lens INVERSE", bi); }
+}
 void STDMETHODCALLTYPE hk_Dispatch(ID3D11DeviceContext* c, UINT x, UINT y, UINT z)
 {
+    if (g_vwRes) vol_cb_dump(c);   // VOLCB
     d0_dispatch(c, false);
     if (dlss_dispatch_replace(c, false)) return;   // DLSS D1: SMAA neighbourhood -> copy
     if (rain_skip(c)) return;
@@ -2889,7 +3610,7 @@ void STDMETHODCALLTYPE hk_Dispatch(ID3D11DeviceContext* c, UINT x, UINT y, UINT 
             u[i]->Release();
         }
     }
-    o_Dispatch(c, x, y, z);
+    smoke_light_pre(c); o_Dispatch(c, x, y, z); smoke_light_post(c);
 }
 void STDMETHODCALLTYPE hk_OMRTUAV(ID3D11DeviceContext* c, UINT n, ID3D11RenderTargetView* const* v, ID3D11DepthStencilView* d, UINT us, UINT un, ID3D11UnorderedAccessView* const* u, const UINT* ic)
 {
@@ -3095,7 +3816,7 @@ bool ring_next(ID3D11DeviceContext* c, CbRing& r, UINT size, UINT rowsSize, ID3D
     copy = r.b[i]; rows = r.rows[i];
     return copy && rows;
 }
-CbRing g_rdRing[2], g_glRing[2];
+CbRing g_rdRing[2], g_glRing[2]; using LdFn = int(*)(const void*);
 thread_local ID3D11Buffer* tl_rdOrig = nullptr;
 // SUITGLOSS3 2026-10-09 (JJ chose it in the panel): AK's character pixel shaders take gloss / rim from the camera's AIM:
 // they read the view buffer's direction rows cb1[11..13] but never its position row cb1[14] (AKVR flags them at creation,
@@ -3105,28 +3826,115 @@ thread_local ID3D11Buffer* tl_rdOrig = nullptr;
 volatile LONG g_gloss = 1, c_glossDraws = 0;
 
 thread_local ID3D11Buffer* tl_glOrig = nullptr;
-using CamDirFn = int(*)(const void*); CamDirFn p_camDir = nullptr; bool p_camDirTried = false;
+using CamDirFn = int(*)(const void*); CamDirFn p_camDir = nullptr; CamDirFn p_lightDir = nullptr; volatile LONG c_lightDir = 0; bool p_camDirTried = false;   // LIGHTDIR
 ID3D11Buffer* make_buf(ID3D11DeviceContext* c, UINT size, UINT bind);
+// SMOKELIGHT 2026-10-14 (JJ: the smoke brightens looking up, darkens looking down - in the flat game it stays dark; VOLCB: the light grid
+// (3D, ~84x92x64, R8G8B8A8) is built per eye with that eye's own view x lens - no camera mix-up; its view buffer also carries the camera's
+// forward axis (cb1[24].xyz, w = view depth offset), a typical shortcut for light scattering = follows the HEAD in VR). Test switch, like
+// SUITGLOSS3: the grid pass gets a cb1 copy whose row 24.xyz is the head-free game camera's forward. "smokelight 0|1" (default 0, panel A/B).
+volatile LONG g_smokeLight = 1, c_smokeLight = 0; CbRing g_slRing; ID3D11Buffer* tl_slOrig = nullptr;   // 1 = LIGHTDIR (head-free light rows for flagged pixel shaders, default), 2 = + the forward-row experiment, 0 = off
+bool smoke_grid_pass(ID3D11DeviceContext* c)
+{
+    ID3D11UnorderedAccessView* uu[8] = {}; c->CSGetUnorderedAccessViews(0, 8, uu);
+    bool hit = false;
+    for (auto* u : uu) if (u)
+    {
+        if (!hit) { ID3D11Resource* r = nullptr; u->GetResource(&r);
+            ID3D11Texture3D* t3 = nullptr; if (r && SUCCEEDED(r->QueryInterface(__uuidof(ID3D11Texture3D), (void**)&t3)) && t3) { D3D11_TEXTURE3D_DESC d{}; t3->GetDesc(&d); hit = d.Depth == 64 && d.Format == DXGI_FORMAT_R8G8B8A8_UNORM && d.Width < 400 && d.Height < 400; t3->Release(); }
+            if (r) r->Release(); }
+        u->Release();
+    }
+    return hit;
+}
+void smoke_light_pre(ID3D11DeviceContext* c)
+{
+    if (g_smokeLight < 2 || !tl_inEyeRender || !g_rendBaseOk || !smoke_grid_pass(c)) return;
+    ID3D11Buffer* cb = nullptr; c->CSGetConstantBuffers(1, 1, &cb);
+    if (!cb) return;
+    D3D11_BUFFER_DESC d{}; cb->GetDesc(&d);
+    if (d.ByteWidth < 25 * 16) { cb->Release(); return; }
+    ID3D11Buffer* copy = nullptr; ID3D11Buffer* rbuf = nullptr;
+    if (!ring_next(c, g_slRing, d.ByteWidth, 16, copy, rbuf)) { cb->Release(); return; }
+    const float f[4] = { g_rendBase[3], g_rendBase[4], g_rendBase[5], 0.0f };
+    c->UpdateSubresource(rbuf, 0, nullptr, f, 0, 0);
+    c->CopyResource(copy, cb);
+    const D3D11_BOX bx{ 0, 0, 0, 12, 1, 1 };   // xyz only - w (the depth offset) stays the game's
+    c->CopySubresourceRegion(copy, 0, 24 * 16, 0, 0, rbuf, 0, &bx);
+    c->CSSetConstantBuffers(1, 1, &copy);
+    tl_slOrig = cb;
+    InterlockedIncrement(&c_smokeLight);
+}
+void smoke_light_post(ID3D11DeviceContext* c) { if (tl_slOrig) { c->CSSetConstantBuffers(1, 1, &tl_slOrig); tl_slOrig->Release(); tl_slOrig = nullptr; } }
+// SPRITEFRAME: the frame particle cards are built in (SPRITEAXES) and - LIGHTFRAME 2026-10-14 - their camera-relative lights are turned in.
+// T[comp][axis], axes 0 right, 1 up, 2 forward (UE3 view order). spriteaxes 2 = upright (world vertical, level heading), 1 = head-free camera.
+void sprite_frame(float T[3][3])
+{
+    for (int k = 0; k < 3; ++k) for (int a = 0; a < 3; ++a) T[k][a] = g_mkVbase.m[k][a];
+    if (g_spriteAxes == 2 || g_spriteAxes == 3 || g_spriteAxes == 4 || g_spriteAxes == 5)
+    {   // SPRITEUP: up = world vertical, right = the camera's right made level, forward = level heading
+        const float upz = T[2][1] >= 0.0f ? 1.0f : -1.0f;
+        float r[3] = { T[0][0], T[1][0], 0.0f }; float rl = sqrtf(r[0] * r[0] + r[1] * r[1]);
+        if (rl > 1e-3f)
+        {
+            r[0] /= rl; r[1] /= rl;
+            const float u[3] = { 0.0f, 0.0f, upz };
+            float f[3] = { r[1] * u[2] - r[2] * u[1], r[2] * u[0] - r[0] * u[2], r[0] * u[1] - r[1] * u[0] };   // right x up
+            if (f[0] * T[0][2] + f[1] * T[1][2] + f[2] * T[2][2] < 0.0f && f[0] * T[0][2] + f[1] * T[1][2] < 0.0f) { f[0] = -f[0]; f[1] = -f[1]; f[2] = -f[2]; }
+            for (int k = 0; k < 3; ++k) { T[k][0] = r[k]; T[k][1] = u[k]; T[k][2] = f[k]; }
+            if (g_spriteAxes == 4)
+            {   // SPRITESTEEP 2026-10-14 (JJ: upright is the most stable but "very skewed" close up looking straight up; tilting with the stick
+                // looks better but the colours come and go a little): upright up to 40 deg of camera pitch (stick, head-free), then tilting in
+                // smoothly so the cards face you fully at straight up / down
+                float cz = g_mkVbase.m[2][2]; if (cz > 1.0f) cz = 1.0f; if (cz < -1.0f) cz = -1.0f;
+                const float a = asinf(cz), lim = 0.6981317f;   // 40 deg
+                const float t = a > lim ? (a - lim) * (1.5707963f / (1.5707963f - lim)) : a < -lim ? (a + lim) * (1.5707963f / (1.5707963f - lim)) : 0.0f;
+                if (t != 0.0f)
+                {
+                    const float st = sinf(t) * upz, ct = cosf(t);
+                    float f2[3] = { f[0] * ct, f[1] * ct, f[2] * ct + st };
+                    const float u2[3] = { f2[1] * r[2] - f2[2] * r[1], f2[2] * r[0] - f2[0] * r[2], f2[0] * r[1] - f2[1] * r[0] };   // forward x right
+                    const float s2 = (u2[2] * upz >= 0.0f) ? 1.0f : -1.0f;
+                    for (int k = 0; k < 3; ++k) { T[k][1] = u2[k] * s2; T[k][2] = f2[k]; }
+                }
+            }
+            if (g_spriteAxes == 3 && g_rendVPok)
+            {   // SPRITEPITCH 2026-10-14 (JJ: "turn on x-axis rotation on them again so that they face the camera when you look up at them"):
+                // tilt about the level right axis to the elevation of where this eye looks (stick + head pitch; both eyes share it), no roll
+                float ez = g_rendV.m[2][2]; if (ez > 0.995f) ez = 0.995f; if (ez < -0.995f) ez = -0.995f;   // eye forward, world z (UE3 view column 2 = forward)
+                const float h = sqrtf(1.0f - ez * ez);
+                float f2[3] = { f[0] * h, f[1] * h, f[2] * h + upz * ez };
+                const float u2[3] = { f2[1] * r[2] - f2[2] * r[1], f2[2] * r[0] - f2[0] * r[2], f2[0] * r[1] - f2[1] * r[0] };   // forward x right
+                float s2 = (u2[2] * upz >= 0.0f) ? 1.0f : -1.0f;
+                for (int k = 0; k < 3; ++k) { T[k][1] = u2[k] * s2; T[k][2] = f2[k]; }
+            }
+        }
+    }
+}
 void gloss_pre(ID3D11DeviceContext* c, int eye)
 {
-    if (!g_gloss || eye < 0 || eye > 1 || !g_mkBaseOk) return;
-    if (!p_camDirTried) { HMODULE m = GetModuleHandleW(L"dinput8.dll"); p_camDir = m ? (CamDirFn)GetProcAddress(m, "akvr_shader_camdir") : nullptr; p_camDirTried = m != nullptr; }
+    if ((!g_gloss && g_smokeLight < 1) || eye < 0 || eye > 1 || !g_mkBaseOk) return;
+    if (!p_camDirTried) { HMODULE m = GetModuleHandleW(L"dinput8.dll"); p_camDir = m ? (CamDirFn)GetProcAddress(m, "akvr_shader_camdir") : nullptr; p_lightDir = m ? (CamDirFn)GetProcAddress(m, "akvr_shader_lightdir") : nullptr; p_camDirTried = m != nullptr; }
     if (!p_camDir) return;
     ID3D11PixelShader* ps = nullptr; c->PSGetShader(&ps, nullptr, nullptr);
-    const bool dir = ps && p_camDir(ps); if (ps) ps->Release();
-    if (!dir) return;
+    const bool dir = g_gloss && ps && p_camDir(ps); const bool ld = g_smokeLight >= 1 && ps && p_lightDir && p_lightDir(ps); if (ps) ps->Release();   // LIGHTDIR
+    if (!dir && !ld) return;
     ID3D11Buffer* cb = nullptr; c->PSGetConstantBuffers(1, 1, &cb);
     if (!cb) return;
     D3D11_BUFFER_DESC d{}; cb->GetDesc(&d);
     if (d.ByteWidth < 432) { cb->Release(); return; }   // rows 0..26 at least
     ID3D11Buffer* copy = nullptr; ID3D11Buffer* rbuf = nullptr;   // PERFRING
-    if (!ring_next(c, g_glRing[eye], d.ByteWidth, 48, copy, rbuf)) { cb->Release(); return; }
-    float rows[12];   // row k = world axis k in view space (the game's own layout, proven 2026-10-09)
+    if (!ring_next(c, g_glRing[eye], d.ByteWidth, 96, copy, rbuf)) { cb->Release(); return; }
+    float rows[24];   // 0..11: rows 11..13 = world axis k in view space (the game's own layout, proven 2026-10-09); 12..23: rows 15..17 = the inverse
     for (int k = 0; k < 3; ++k) { for (int j = 0; j < 3; ++j) rows[k * 4 + j] = g_mkVbase.m[k][j]; rows[k * 4 + 3] = 0.0f; }
+    // LIGHTFRAME 2026-10-14 (FXCB 03:40, 3 captures at 3 stick pitches: cb0[25] = (0, 0.5, 0) every time = the lights are fixed CAMERA-relative
+    // directions, made for a card that faces the camera; with upright cards (SPRITEUP) they must turn with the CARD's frame, not the camera's)
+    float LT[3][3]; sprite_frame(LT);
+    if (g_lightLag && g_spriteAxes != 2) { const M44& Lv = g_mkVbaseHist[(g_mkHistHead - (g_lightLag & 3)) & 3]; for (int k = 0; k < 3; ++k) for (int a = 0; a < 3; ++a) LT[k][a] = Lv.m[k][a]; }   // LIGHTLAG (head-free cards only)
+    for (int k = 0; k < 3; ++k) { for (int j = 0; j < 3; ++j) rows[12 + k * 4 + j] = LT[j][k]; rows[12 + k * 4 + 3] = 0.0f; }   // LIGHTDIR (cb1[15] = column 0 of rows 11..13, proven by VOLCB)
     c->UpdateSubresource(rbuf, 0, nullptr, rows, 0, 0);
     c->CopyResource(copy, cb);
-    D3D11_BOX bx{ 0, 0, 0, 48, 1, 1 };
-    c->CopySubresourceRegion(copy, 0, 11 * 16, 0, 0, rbuf, 0, &bx);
+    if (dir) { D3D11_BOX bx{ 0, 0, 0, 48, 1, 1 }; c->CopySubresourceRegion(copy, 0, 11 * 16, 0, 0, rbuf, 0, &bx); }
+    if (ld && d.ByteWidth >= 18 * 16) { D3D11_BOX bx{ 48, 0, 0, 96, 1, 1 }; c->CopySubresourceRegion(copy, 0, 15 * 16, 0, 0, rbuf, 0, &bx); InterlockedIncrement(&c_lightDir); }
     c->PSSetConstantBuffers(1, 1, &copy);
     tl_glOrig = cb;   // put back after the draw (gloss_post)
     InterlockedIncrement(&c_glossDraws);
@@ -3167,8 +3975,176 @@ void rain_depth_pre(ID3D11DeviceContext* c, int eye)
     tl_rdOrig = cb;   // put back after the draw (rain_depth_post)
     InterlockedIncrement(&c_rainDepth);
 }
+// SPRITEAXES 2026-10-14 (JJ: the chimney smoke "sprites ... show up differently in the left and right eyes" and rotate when he rolls his
+// head; playbook FAIL-STR-023 / ch14 #per-view-decisions: orient billboards once, for both eyes, from one reference view). AK's particle
+// sprite vertex shaders spread each card along camera right / up from two cb0 rows (AKVR finds the rows per shader, akvr_vs_sprite_rows).
+// Per draw those two rows are turned from this eye's camera frame into the head-free game camera's frame (Q = eye view x head-free
+// view^T, 3x3, on the graphics card from the game's own values) in a copy of cb0: both eyes get the same card, no head roll. "spriteaxes 0|1".
+volatile LONG c_charFace = 0; volatile LONG g_spriteAxes = 2, c_spriteAxes = 0; CbRing g_sp1Ring[2]; thread_local ID3D11Buffer* tl_sp1Orig = nullptr;   // SPRITEFACE: 5 (default) = each card upright, facing the head-free camera POSITION   // SPRITESTEEP: 4 (default) = upright, tilting in past 40 deg of camera pitch   // SPRITEPITCH: 3 (default) = tilt to where the eye looks, no roll   // SPRITEUP 2026-10-14 (JJ: "still tilting ... when you look up at it. It should just be completely facing outwards, perfectly vertical"): 2 = upright cards (world vertical + the camera's heading), 1 = the head-free camera's own axes   // JJ 2026-10-14: "I want always upright" (default 2)
+CbRing g_spRing[2]; thread_local ID3D11Buffer* tl_spOrig = nullptr;
+ID3D11ComputeShader* g_spCs = nullptr; ID3D11Buffer* g_spCb = nullptr; ID3D11Buffer* g_spOut = nullptr; ID3D11UnorderedAccessView* g_spUav = nullptr; bool g_spFailed = false;
+using SpRowsFn = int(*)(const void*, int*); SpRowsFn p_spRows = nullptr; bool p_spRowsTried = false;
+bool sprite_setup(ID3D11DeviceContext* c)
+{
+    if (g_spCs) return true; if (g_spFailed) return false;
+    ID3D11Device* dev = nullptr; c->GetDevice(&dev); if (!dev) return false;
+    static const char cs[] =
+        "cbuffer O : register(b0) { float4 r[64]; };\n"
+        "cbuffer Q : register(b1) { float4 q0; float4 q1; float4 q2; uint4 rows; };\n"
+        "RWBuffer<uint> R : register(u0);\n"
+        "float3 turn(float3 a) { return a.x * q0.xyz + a.y * q1.xyz + a.z * q2.xyz; }\n"
+        "[numthreads(1, 1, 1)] void main() {\n"
+        "  float4 a = r[rows.x], b = r[rows.y];\n"
+        "  float3 ta = turn(a.xyz), tb = turn(b.xyz);\n"
+        "  R[0] = asuint(ta.x); R[1] = asuint(ta.y); R[2] = asuint(ta.z); R[3] = asuint(a.w);\n"
+        "  R[4] = asuint(tb.x); R[5] = asuint(tb.y); R[6] = asuint(tb.z); R[7] = asuint(b.w);\n"
+        "}\n";
+    using CompileFn = HRESULT(WINAPI*)(LPCVOID, SIZE_T, LPCSTR, const D3D_SHADER_MACRO*, ID3DInclude*, LPCSTR, LPCSTR, UINT, UINT, ID3DBlob**, ID3DBlob**);
+    HMODULE m = LoadLibraryW(L"d3dcompiler_47.dll"); CompileFn compile = m ? (CompileFn)GetProcAddress(m, "D3DCompile") : nullptr;
+    ID3DBlob* bl = nullptr; ID3DBlob* err = nullptr;
+    bool ok = compile && SUCCEEDED(compile(cs, sizeof(cs) - 1, "akn_spriteaxes", nullptr, nullptr, "main", "cs_5_0", 0, 0, &bl, &err)) && bl &&
+              SUCCEEDED(dev->CreateComputeShader(bl->GetBufferPointer(), bl->GetBufferSize(), nullptr, &g_spCs));
+    if (bl) bl->Release();
+    if (err) { logf("SPRITEAXES: shader: %s", (const char*)err->GetBufferPointer()); err->Release(); }
+    D3D11_BUFFER_DESC cd{ 64, D3D11_USAGE_DEFAULT, D3D11_BIND_CONSTANT_BUFFER, 0, 0, 0 };
+    D3D11_BUFFER_DESC od{ 32, D3D11_USAGE_DEFAULT, D3D11_BIND_UNORDERED_ACCESS, 0, 0, 0 };
+    ok = ok && SUCCEEDED(dev->CreateBuffer(&cd, nullptr, &g_spCb)) && SUCCEEDED(dev->CreateBuffer(&od, nullptr, &g_spOut));
+    if (ok) { D3D11_UNORDERED_ACCESS_VIEW_DESC ud{}; ud.Format = DXGI_FORMAT_R32_UINT; ud.ViewDimension = D3D11_UAV_DIMENSION_BUFFER; ud.Buffer.NumElements = 8; ok = SUCCEEDED(dev->CreateUnorderedAccessView(g_spOut, &ud, &g_spUav)); }
+    dev->Release();
+    if (!ok) { g_spFailed = true; if (g_spCs) { g_spCs->Release(); g_spCs = nullptr; } logf("SPRITEAXES: setup FAILED - off"); return false; }
+    logf("SPRITEAXES: ready");
+    return true;
+}
+// VOLWATCH 2026-10-14 (JJ: the smoke "goes bright when you look up at it and dark when you look down" - only the smoke, before today's
+// fixes too): the sprite shader takes light from a screen-space 3D grid (t1, sampled at this eye's screen spot + depth slice). If the pass
+// that fills it works for another camera than the eye drawing the smoke, the smoke reads the wrong cells. Armed by the panel capture: the
+// grid the next sprite draw reads is noted, and for 0.2 s every compute pass / draw that WRITES it is logged with its shader, eye and
+// render, beside the eyes that read it.
+ID3D11Resource* g_vwRes = nullptr; volatile LONG g_vwArm = 0, g_vwLines = 0; ULONGLONG g_vwUntil = 0;
+void vw_log_write(ID3D11DeviceContext* c, ID3D11Resource* r, bool compute, bool deferred)
+{
+    if (!r || r != g_vwRes || GetTickCount64() > g_vwUntil || g_vwLines >= 80) return;
+    unsigned long long h = 0;
+    if (compute) { ID3D11ComputeShader* cs = nullptr; c->CSGetShader(&cs, nullptr, nullptr); if (cs) { h = sh_hash_c(cs); cs->Release(); } }
+    else { ID3D11PixelShader* ps = nullptr; c->PSGetShader(&ps, nullptr, nullptr); if (ps) { h = sh_hash_c(ps); ps->Release(); } }
+    const int eye = deferred ? (int)g_eyeNow : (tl_inEyeRender ? tl_eye_render : -1);
+    InterlockedIncrement(&g_vwLines);
+    logf("VOLWATCH: %s %016llx (bound now: %s) WRITES the smoke's light grid - eye %d (-1 = outside the eye renders), %s context, render stamp %llu",
+         compute ? "compute shader" : "pixel shader", h, compute ? "as its output" : "as a target", eye, deferred ? "recorded" : "immediate", (unsigned long long)tl_renderStamp);
+}
+void vw_uavs(ID3D11DeviceContext* c, ID3D11UnorderedAccessView* const* u, UINT n, bool deferred)
+{
+    if (!g_vwRes || !u) return;
+    for (UINT i = 0; i < n && i < 8; ++i) if (u[i]) { ID3D11Resource* r = nullptr; u[i]->GetResource(&r); if (r) { vw_log_write(c, r, true, deferred); r->Release(); } }
+}
+void vw_rtvs(ID3D11DeviceContext* c, ID3D11RenderTargetView* const* v, UINT n, bool deferred)
+{
+    if (!g_vwRes || !v) return;
+    for (UINT i = 0; i < n && i < 8; ++i) if (v[i]) { ID3D11Resource* r = nullptr; v[i]->GetResource(&r); if (r) { vw_log_write(c, r, false, deferred); r->Release(); } }
+}
+void vw_note_reader(ID3D11DeviceContext* c, int eye)
+{   // at a sprite draw (SPRITEAXES found its shader): which grid it reads
+    if (!g_vwArm && !g_vwRes) return;
+    ID3D11ShaderResourceView* sv = nullptr; c->VSGetShaderResources(1, 1, &sv);
+    if (!sv) return;
+    ID3D11Resource* r = nullptr; sv->GetResource(&r); sv->Release();
+    if (!r) return;
+    if (g_vwArm && !g_vwRes)
+    {
+        g_vwArm = 0; g_vwRes = r; r->AddRef(); g_vwUntil = GetTickCount64() + 200; g_vwLines = 0;
+        D3D11_RESOURCE_DIMENSION dim; r->GetType(&dim); UINT w = 0, h = 0, dd = 0; int fmt = 0;
+        ID3D11Texture3D* t3 = nullptr; if (SUCCEEDED(r->QueryInterface(__uuidof(ID3D11Texture3D), (void**)&t3)) && t3) { D3D11_TEXTURE3D_DESC d{}; t3->GetDesc(&d); w = d.Width; h = d.Height; dd = d.Depth; fmt = (int)d.Format; t3->Release(); }
+        logf("VOLWATCH: the smoke reads light grid %p (%ux%ux%u format %d, kind %d) - watching its writers for 0.2 s", (void*)r, w, h, dd, fmt, (int)dim);
+    }
+    static LONGLONG s_last = -1;
+    if (r == g_vwRes && GetTickCount64() <= g_vwUntil && (LONGLONG)tl_renderStamp * 2 + eye != s_last && g_vwLines < 80)
+    { s_last = (LONGLONG)tl_renderStamp * 2 + eye; InterlockedIncrement(&g_vwLines); logf("VOLWATCH: smoke drawn READING the grid - eye %d, render stamp %llu", eye, (unsigned long long)tl_renderStamp); }
+    r->Release();
+    if (g_vwRes && GetTickCount64() > g_vwUntil + 1000) { g_vwRes->Release(); g_vwRes = nullptr; }   // done
+}
+void sprite_pre(ID3D11DeviceContext* c, int eye, bool deferred)
+{
+    if (!g_spriteAxes || eye < 0 || eye > 1 || !g_mkBaseOk || !g_rendVPok) return;
+    if (!p_spRowsTried) { HMODULE m = GetModuleHandleW(L"dinput8.dll"); p_spRows = m ? (SpRowsFn)GetProcAddress(m, "akvr_vs_sprite_rows") : nullptr; p_spRowsTried = m != nullptr; }
+    if (!p_spRows) return;
+    ID3D11VertexShader* vs = nullptr; c->VSGetShader(&vs, nullptr, nullptr);
+    int rows[3] = { -1, -1, -1 }; const bool sp = vs && p_spRows(vs, rows); if (vs) vs->Release();
+    if (!sp || rows[0] < 0 || rows[1] < 0 || rows[0] > 63 || rows[1] > 63) return;
+    vw_note_reader(c, eye);   // VOLWATCH
+    ID3D11Buffer* cb = nullptr; c->VSGetConstantBuffers(0, 1, &cb);
+    if (!cb) return;
+    D3D11_BUFFER_DESC d{}; cb->GetDesc(&d);
+    const UINT need = (UINT)((rows[0] > rows[1] ? rows[0] : rows[1]) + 1) * 16;
+    if (d.ByteWidth < need || !sprite_setup(c)) { cb->Release(); return; }
+    const UINT csWidth = d.ByteWidth < 1024 ? d.ByteWidth : 1024;   // the pass reads rows 0..63 at most
+    (void)csWidth;
+    ID3D11Buffer* copy = nullptr; ID3D11Buffer* rbuf = nullptr;
+    if (!ring_next(c, g_spRing[eye], d.ByteWidth, 16, copy, rbuf)) { cb->Release(); return; }
+    // Q (row-vector): world vector a -> a . Meye . Mhf^T (into the eye's view frame, back out through the head-free camera's)
+    float T[3][3]; sprite_frame(T);   // SPRITEUP / SPRITEAXES: the card frame
+    float Q[3][3];
+    for (int i = 0; i < 3; ++i) for (int j = 0; j < 3; ++j) { double v = 0; for (int k = 0; k < 3; ++k) v += (double)g_rendV.m[i][k] * (double)T[j][k]; Q[i][j] = (float)v; }
+    struct { float q[3][4]; UINT rows[4]; } qc = {};
+    for (int i = 0; i < 3; ++i) { for (int j = 0; j < 3; ++j) qc.q[i][j] = Q[i][j]; qc.q[i][3] = 0.0f; }
+    qc.rows[0] = (UINT)rows[0]; qc.rows[1] = (UINT)rows[1];
+    c->UpdateSubresource(g_spCb, 0, nullptr, &qc, 0, 0);
+    ID3D11ComputeShader* oCs = nullptr; ID3D11ClassInstance* oCi[8] = {}; UINT oCiN = 8; c->CSGetShader(&oCs, oCi, &oCiN);
+    ID3D11Buffer* oCb[2] = {}; c->CSGetConstantBuffers(0, 2, oCb);
+    ID3D11UnorderedAccessView* oUav = nullptr; c->CSGetUnorderedAccessViews(0, 1, &oUav);
+    ID3D11Buffer* cbs[2] = { cb, g_spCb }; const UINT keep = (UINT)-1;
+    c->CSSetShader(g_spCs, nullptr, 0); c->CSSetConstantBuffers(0, 2, cbs); c->CSSetUnorderedAccessViews(0, 1, &g_spUav, &keep);
+    if (deferred) { if (od_Disp) od_Disp(c, 1, 1, 1); } else c->Dispatch(1, 1, 1);
+    c->CSSetShader(oCs, oCi, oCiN); c->CSSetConstantBuffers(0, 2, oCb); c->CSSetUnorderedAccessViews(0, 1, &oUav, &keep);
+    if (oCs) oCs->Release(); for (UINT i = 0; i < oCiN && i < 8; ++i) if (oCi[i]) oCi[i]->Release(); for (auto* x : oCb) if (x) x->Release(); if (oUav) oUav->Release();
+    c->CopyResource(copy, cb);
+    const D3D11_BOX b0{ 0, 0, 0, 16, 1, 1 }, b1{ 16, 0, 0, 32, 1, 1 };
+    c->CopySubresourceRegion(copy, 0, (UINT)rows[0] * 16, 0, 0, g_spOut, 0, &b0);
+    c->CopySubresourceRegion(copy, 0, (UINT)rows[1] * 16, 0, 0, g_spOut, 0, &b1);
+    if (g_spriteAxes == 5 && rows[2] > 0 && rows[2] < 64 && (UINT)(rows[2] + 1) * 16 <= d.ByteWidth && g_rendBaseOk)
+    {   // SPRITEFACE 2026-10-14 (JJ: turning the camera with the stick swings every card about its vertical axis, "facing away from it"):
+        // the shader's own mode W = upright cards that face the camera POSITION (cross with world up); weights (0, 0, 0, 1), and the view
+        // buffer's camera point cb1[8] (translated world, the eye at 0) moved to the head-free camera: C_hf - C_eye -> both eyes alike
+        ID3D11Buffer* wb = nullptr; ID3D11Buffer* wrow = nullptr;
+        static CbRing s_wRing[2];
+        if (ring_next(c, s_wRing[eye], 16, 16, wb, wrow))
+        {
+            const float wts[4] = { 0.0f, 0.0f, 0.0f, 1.0f };
+            c->UpdateSubresource(wrow, 0, nullptr, wts, 0, 0);
+            const D3D11_BOX b16{ 0, 0, 0, 16, 1, 1 };
+            c->CopySubresourceRegion(copy, 0, (UINT)rows[2] * 16, 0, 0, wrow, 0, &b16);
+        }
+        ID3D11Buffer* cb1 = nullptr; c->VSGetConstantBuffers(1, 1, &cb1);
+        if (cb1)
+        {
+            D3D11_BUFFER_DESC d1{}; cb1->GetDesc(&d1);
+            ID3D11Buffer* c1 = nullptr; ID3D11Buffer* r1 = nullptr;
+            if (d1.ByteWidth >= 9 * 16 && ring_next(c, g_sp1Ring[eye], d1.ByteWidth, 16, c1, r1))
+            {
+                const M44& V = g_rendV; float e[3];
+                for (int k = 0; k < 3; ++k) e[k] = -(V.m[3][0] * V.m[k][0] + V.m[3][1] * V.m[k][1] + V.m[3][2] * V.m[k][2]);   // this eye's world position
+                // CHARFACE 2026-10-14 (JJ: "they should keep facing my character instead"): the point the cards face = Batman (AKVR's skeleton
+                // lookup, akvr_character_pos); the head-free camera when he is not found (Batmobile, menus)
+                using CharFn = int(*)(float*, float*); static CharFn p_char = nullptr; static bool s_ct = false;
+                if (!s_ct) { HMODULE m = GetModuleHandleW(L"dinput8.dll"); p_char = m ? (CharFn)GetProcAddress(m, "akvr_character_pos") : nullptr; s_ct = m != nullptr; }
+                float tgt[3] = { g_rendBase[0], g_rendBase[1], g_rendBase[2] }; float org[3];
+                if (p_char && p_char(org, nullptr)) { tgt[0] = org[0]; tgt[1] = org[1]; tgt[2] = org[2]; InterlockedIncrement(&c_charFace); }
+                const float p8[4] = { tgt[0] - e[0], tgt[1] - e[1], tgt[2] - e[2], 1.0f };
+                c->UpdateSubresource(r1, 0, nullptr, p8, 0, 0);
+                c->CopyResource(c1, cb1);
+                const D3D11_BOX b16{ 0, 0, 0, 16, 1, 1 };
+                c->CopySubresourceRegion(c1, 0, 8 * 16, 0, 0, r1, 0, &b16);
+                c->VSSetConstantBuffers(1, 1, &c1);
+                tl_sp1Orig = cb1;   // put back after the draw
+            }
+            else cb1->Release();
+        }
+    }
+    c->VSSetConstantBuffers(0, 1, &copy);
+    tl_spOrig = cb;   // put back after the draw (rain_depth_post)
+    InterlockedIncrement(&c_spriteAxes);
+}
 void gloss_post(ID3D11DeviceContext* c);
-void rain_depth_post(ID3D11DeviceContext* c) { gloss_post(c); if (tl_rdOrig) { c->VSSetConstantBuffers(0, 1, &tl_rdOrig); tl_rdOrig->Release(); tl_rdOrig = nullptr; } }
+void rain_depth_post(ID3D11DeviceContext* c) { gloss_post(c); if (tl_sp1Orig) { c->VSSetConstantBuffers(1, 1, &tl_sp1Orig); tl_sp1Orig->Release(); tl_sp1Orig = nullptr; }   /* SPRITEFACE */ if (tl_spOrig) { c->VSSetConstantBuffers(0, 1, &tl_spOrig); tl_spOrig->Release(); tl_spOrig = nullptr; }   /* SPRITEAXES */ if (tl_rdOrig) { c->VSSetConstantBuffers(0, 1, &tl_rdOrig); tl_rdOrig->Release(); tl_rdOrig = nullptr; } }
 volatile LONG g_rainDrawDump = 0;   // RAINVP 2026-10-08 (JJ: paused / isolated rain looks flat): the rain draw's VS cb0 per eye
 ID3D11Buffer* g_rdSnap[2] = {}; UINT g_rdSize[2] = {}; volatile LONG g_rdHave[2] = {};
 UINT read_buf(ID3D11DeviceContext* c, ID3D11Buffer* b, std::vector<uint8_t>& out);
@@ -3197,9 +4173,59 @@ volatile LONG g_rainView = 0;   // RAINVIEW 2026-10-08 (JJ: the panel's "hide th
 constexpr unsigned long long kRainVs = 0xf50d1365e929b3a0ull;   // the world rain draw (run 32 bisection; geo-11 era name)
 ID3D11Buffer* make_buf(ID3D11DeviceContext* c, UINT size, UINT bind);
 UINT read_buf(ID3D11DeviceContext* c, ID3D11Buffer* b, std::vector<uint8_t>& out);
+// FXCB 2026-10-14 (DIAGKIT; JJ: the smoke still changes colour when the game camera pitches with the stick; flat game steady): with an
+// effect selected in the panel's "find a broken effect" stepper, a capture also records the constants that effect is given - its pixel
+// shader's cb0..cb2 at its first draw in the next left- and right-eye renders (copied on the recording context, read back after the eye
+// render) - plus every camera AKN knows (eye view, game view, game camera with head, head-free camera now and 1..3 frames back).
+volatile unsigned long long g_fxWatch = 0;   // FXCB: an effect watched without hiding it ("fxwatch <hash>", 0 = the stepper's); default = AK's sprite smoke PS
+volatile LONG g_fxcbArm = 0; struct FxCb { ID3D11Buffer* st[3]; UINT bytes[3]; int eye; }; FxCb g_fxcb[2] = {}; volatile LONG g_fxcbHave[2] = {};
+void fxcb_note(ID3D11DeviceContext* c, int eye)
+{   // a draw of the selected effect: copy its pixel shader constants (once per eye per capture)
+    if (!g_fxcbArm || eye < 0 || eye > 1 || g_fxcbHave[eye] || !g_dev) return;
+    if (InterlockedExchange(&g_fxcbHave[eye], 1)) return;
+    ID3D11Buffer* cbs[3] = {}; c->PSGetConstantBuffers(0, 3, cbs);
+    FxCb& f = g_fxcb[eye]; f.eye = eye;
+    for (int k = 0; k < 3; ++k)
+    {
+        f.st[k] = nullptr; f.bytes[k] = 0;
+        if (!cbs[k]) continue;
+        D3D11_BUFFER_DESC d{}; cbs[k]->GetDesc(&d);
+        D3D11_BUFFER_DESC sd{ d.ByteWidth, D3D11_USAGE_STAGING, 0, D3D11_CPU_ACCESS_READ, 0, 0 };
+        if (SUCCEEDED(g_dev->CreateBuffer(&sd, nullptr, &f.st[k])) && f.st[k]) { c->CopyResource(f.st[k], cbs[k]); f.bytes[k] = d.ByteWidth; }
+        cbs[k]->Release();
+    }
+}
+void fxcb_end(int eye)
+{   // render thread, after the eye render: the copies have run
+    if (eye < 0 || eye > 1 || g_fxcbHave[eye] != 1 || !g_dev) return;
+    g_fxcbHave[eye] = 2;
+    ID3D11DeviceContext* ic = nullptr; g_dev->GetImmediateContext(&ic); if (!ic) return;
+    FxCb& f = g_fxcb[eye];
+    logf("FXCB: eye %d - constants of the selected effect (pixel shader %016llx)", eye, (unsigned long long)(g_skipPs ? g_skipPs : g_fxWatch));
+    for (int k = 0; k < 3; ++k)
+    {
+        if (!f.st[k]) continue;
+        D3D11_MAPPED_SUBRESOURCE m{};
+        if (SUCCEEDED(ic->Map(f.st[k], 0, D3D11_MAP_READ, 0, &m)))
+        {
+            const float* v = (const float*)m.pData; const UINT rows = f.bytes[k] / 16;
+            for (UINT i = 0; i < rows && i < 64; ++i) if (v[i * 4] || v[i * 4 + 1] || v[i * 4 + 2] || v[i * 4 + 3]) logf("FXCB:   eye %d cb%d[%u] %.6g %.6g %.6g %.6g", eye, k, i, v[i * 4], v[i * 4 + 1], v[i * 4 + 2], v[i * 4 + 3]);
+            ic->Unmap(f.st[k], 0);
+        }
+        f.st[k]->Release(); f.st[k] = nullptr;
+    }
+    ic->Release();
+    auto dumpM = [eye](const char* what, const M44& M) { for (int i = 0; i < 4; ++i) logf("FXCB:   eye %d %s row %d %.6g %.6g %.6g %.6g", eye, what, i, M.m[i][0], M.m[i][1], M.m[i][2], M.m[i][3]); };
+    dumpM("eye view", g_rendV);
+    if (g_mkGameOk) dumpM("game view (as the game made it)", g_mkGameV);
+    dumpM("game camera with head", g_mkVfull);
+    dumpM("head-free camera now", g_mkVbase);
+    for (int b = 1; b <= 3; ++b) { char w[48]; _snprintf_s(w, sizeof(w), _TRUNCATE, "head-free camera %d back", b); dumpM(w, g_mkVbaseHist[(g_mkHistHead - b) & 3]); }
+    if (g_fxcbHave[0] == 2 && g_fxcbHave[1] == 2) { g_fxcbArm = 0; g_fxcbHave[0] = g_fxcbHave[1] = 0; logf("FXCB: done"); }
+}
 bool ps_note_skip(ID3D11DeviceContext* c, bool deferred)   // DETECTIVE: PS inventory / skip in the eye renders
 {
-    if ((!g_psInv && !g_skipPs && !g_detVigSkip) || !p_shHash || (deferred ? g_eyeNow < 0 : !tl_inEyeRender)) return false;
+    if (!p_shHash || (deferred ? g_eyeNow < 0 : !tl_inEyeRender)) return false;   // DETHOLD: detection always runs (was only with detvig / psinv / skipps)
     ID3D11PixelShader* ps = nullptr; c->PSGetShader(&ps, nullptr, nullptr);
     unsigned long long h = 0;
     if (ps)
@@ -3208,7 +4234,13 @@ bool ps_note_skip(ID3D11DeviceContext* c, bool deferred)   // DETECTIVE: PS inve
         if (e.obj == ps) h = e.h; else { h = sh_hash_c(ps); e.h = h; e.obj = ps; }
         ps->Release();
     }
-    if (h == 0xce8b103bb56ebabeull) { g_detSeenMs = GetTickCount64(); if (g_detVigSkip) return true; }   // DETVIG
+    if (h == 0xce8b103bb56ebabeull)
+    {   // DETVIG; DETHOLD: gaps between sightings while in detective mode
+        const ULONGLONG now = GetTickCount64(), last = g_detSeenMs;
+        if (last && now - last < 5000 && (LONG)(now - last) > g_detGapMax) g_detGapMax = (LONG)(now - last);
+        g_detSeenMs = now; InterlockedIncrement(&c_detSeen);
+        if (g_detVigSkip) return true;
+    }
     if (!h) return false;
     if (g_psInv > 0 && h)
     {
@@ -3216,11 +4248,13 @@ bool ps_note_skip(ID3D11DeviceContext* c, bool deferred)   // DETECTIVE: PS inve
         for (LONG i = 0; i < n && i < 4096; ++i) if (g_psSet[i] == h) { known = true; break; }
         if (!known && n < 4096) { const LONG i = InterlockedIncrement(&g_psN) - 1; if (i < 4096) g_psSet[i] = h; }
     }
+    if (g_fxcbArm && h && h == (g_skipPs ? g_skipPs : g_fxWatch)) fxcb_note(c, deferred ? (int)g_eyeNow : tl_eye_render);   // FXCB
     return g_skipPs && h == g_skipPs;
 }
-extern "C" __declspec(dllexport) int akn_detective_active() { return g_detSeenMs && GetTickCount64() - g_detSeenMs < 300 ? 1 : 0; }   // DETVIG
+extern "C" __declspec(dllexport) int akn_detective_active() { return det_on() ? 1 : 0; }   // DETVIG (DETHOLD: same hold as the view state)
 void ps_inv_end(int eye)
 {
+    if (g_psInv == 1 && eye == 0 && g_fxCollect) { const LONG n = g_psN < 4096 ? g_psN : 4096; for (LONG i = 0; i < n; ++i) g_fxList[i] = g_psSet[i]; g_fxN = n; g_fxIdx = -1; g_skipPs = 0; g_fxCollect = 0; logf("FXSTEP: %ld effects collected", n); }   // DIAGKIT
     if (g_psInv <= 0 || eye != 0) return;
     if (InterlockedDecrement(&g_psInv) > 0) return;
     wchar_t path[MAX_PATH]; GetModuleFileNameW(nullptr, path, MAX_PATH); wchar_t* sl = wcsrchr(path, L'\\'); if (sl) wcscpy_s(sl + 1, MAX_PATH - (sl + 1 - path), L"akn\\ps_inventory.txt");
@@ -3233,18 +4267,20 @@ bool skip_vs_any(ID3D11DeviceContext* c, bool deferred)
 {
     vs_inv_note(c, deferred);
     if (ps_note_skip(c, deferred)) return true;   // (also DETVIG: detective mode's per-eye vignette)
-    if ((!g_skipVs && !g_skipHi && !g_rainView && g_rainDrawDump <= 0 && !g_rainDepth && !g_gloss) || !p_shHash || (deferred ? g_eyeNow < 0 : !tl_inEyeRender)) return false;
+    if ((!g_skipVs && !g_skipHi && !g_rainView && g_rainDrawDump <= 0 && !g_rainDepth && !g_gloss && !g_spriteAxes) || !p_shHash || (deferred ? g_eyeNow < 0 : !tl_inEyeRender)) return false;
     ID3D11VertexShader* vs = nullptr; c->VSGetShader(&vs, nullptr, nullptr);
     unsigned long long h = vs ? sh_hash_c(vs) : 0; if (!h) h = (unsigned long long)(uintptr_t)vs; if (vs) vs->Release();
     if (g_rainDrawDump > 0 && h == kRainVs) rain_draw_snap(c, deferred ? (int)g_eyeNow : tl_eye_render);   // RAINVP
     if (g_rainView == 1 && h == kRainVs) return true;
     if (h == kRainVs) rain_depth_pre(c, deferred ? (int)g_eyeNow : tl_eye_render);   // RAINDEPTH (undone after the draw)
+    if (h == kRainVs && g_rainView != 1) { tl_rainMaskNow = true; tl_rainMaskEye = deferred ? (int)g_eyeNow : tl_eye_render; }   // RAINMASK
     gloss_pre(c, deferred ? (int)g_eyeNow : tl_eye_render);   // SUITGLOSS (undone after the draw)
+    if (h != kRainVs) sprite_pre(c, deferred ? (int)g_eyeNow : tl_eye_render, deferred);   // SPRITEAXES (undone after the draw)
     if (g_rainView == 2 && h != kRainVs) return true;
     return h && (h == g_skipVs || (g_skipHi && h >= g_skipLo && h <= g_skipHi));
 }
-void STDMETHODCALLTYPE hk_DrawII(ID3D11DeviceContext* c, UINT a, UINT n, UINT b, INT d, UINT e) { if (skip_vs(c)) return; inst_draw(c, n, 0); any_draw(c, a, n, 3); o_DrawII(c, a, n, b, d, e); rain_depth_post(c); }
-void STDMETHODCALLTYPE hk_DrawI(ID3D11DeviceContext* c, UINT a, UINT n, UINT b, UINT e) { if (skip_vs(c)) return; inst_draw(c, n, 0); any_draw(c, a, n, 2); o_DrawI(c, a, n, b, e); rain_depth_post(c); }
+void STDMETHODCALLTYPE hk_DrawII(ID3D11DeviceContext* c, UINT a, UINT n, UINT b, INT d, UINT e) { if (skip_vs(c)) return; inst_draw(c, n, 0); any_draw(c, a, n, 3); o_DrawII(c, a, n, b, d, e); if (tl_rainMaskNow) rain_mask_draw(c, [&] { o_DrawII(c, a, n, b, d, e); }); rain_depth_post(c); }
+void STDMETHODCALLTYPE hk_DrawI(ID3D11DeviceContext* c, UINT a, UINT n, UINT b, UINT e) { if (skip_vs(c)) return; inst_draw(c, n, 0); any_draw(c, a, n, 2); o_DrawI(c, a, n, b, e); if (tl_rainMaskNow) rain_mask_draw(c, [&] { o_DrawI(c, a, n, b, e); }); rain_depth_post(c); }
 void STDMETHODCALLTYPE hk_DrawIIInd(ID3D11DeviceContext* c, ID3D11Buffer* b, UINT o) { inst_draw(c, 0, 1); o_DrawIIInd(c, b, o); }
 void STDMETHODCALLTYPE hk_DrawIInd(ID3D11DeviceContext* c, ID3D11Buffer* b, UINT o) { inst_draw(c, 0, 2); o_DrawIInd(c, b, o); }
 ID3D11Buffer* g_mkStage = nullptr;
@@ -3289,9 +4325,254 @@ void mk_dump_draw(ID3D11DeviceContext* c, const char* kind, UINT n)
     for (int r = 5; r < 16 && (UINT)(r * 16) < bw; ++r) k += snprintf(b + k, sizeof(b) - k, " [%.4f %.4f %.4f %.4f]", f[r * 4], f[r * 4 + 1], f[r * 4 + 2], f[r * 4 + 3]);
     logf("%s", b);
 }
+// HUDSIG 2026-10-13 (JJ: main menu "black box overlay covering the menu items and Batman"; the bat transition "needs to be full
+// field of view and closer to the camera, same as all the other mods"): which HUD draws make them is unknown, and the bats are too
+// short to capture by hand. Every HUD-sheet draw kind (vertex + pixel shader, texture size) is logged when first seen, when it comes
+// back after 1.5 s away, and when it goes (how long, how many draws, its viewport) - the transitions show up as kinds that live
+// only for their second or two. Command "hudsig 0|1" (default on, at most 800 lines).
+struct HudSig { unsigned long long vs, ps; UINT w, h; ULONGLONG first, last; LONG n, idxMin, idxMax; float vpW, vpH; bool active; };
+HudSig g_hsig[512] = {}; LONG g_hsigN = 0; SRWLOCK g_hsigLock = SRWLOCK_INIT;   // (g_hudSigOn / g_hsigLines: with the DETCALLOUT globals)
+// HUDRING 2026-10-13 (JJ: bat transitions "full field of view and closer"; the main menu "black box"): the bats last about a
+// second, too short for a capture by hand. The finished HUD sheet is copied into a ring of 12 (every 3rd stereo frame, ~0.7 s),
+// and AKVR asks for a dump at each screen change (akn_hudring_dump): 0.4 s later the ring is written oldest first at half size
+// over grey (black shows) as akning<n>_<k>_<ms>.bmp. At most 12 dumps per session; "hudring 0|1" (default on in this test build).
+constexpr int kHrN = 24;   // RINGEVERY 2026-10-13: every HUD frame (was every third of 12 - a one-frame flicker fell between)
+ID3D11Texture2D* g_hrTex[kHrN] = {}; ID3D11Texture2D* g_hrMk[kHrN] = {}; ID3D11Texture2D* g_hrMkR[kHrN] = {}; UINT g_hrX0 = 0, g_hrY0 = 0; ULONGLONG g_hrT[kHrN] = {}; int g_hrHead = 0, g_hrFill = 0, g_hrFrame = 0;   // RINGBOTH: + right eye's layer, middle 60 % crop
+// (g_hrOn / g_hrDumps / g_hrDumpAt / g_hrWhy: with the DETCALLOUT globals)
+// EYERING 2026-10-14 (JJ: "the entire fov seems to rescale briefly when entering and exiting detective mode"): per finished pair,
+// the left eye's world picture (middle 60 %) and both eyes' lens numbers (projection m00 m11 + off-centre m20 m21), kept beside the HUD
+// ring and written with it: a lens change = ours, a steady lens with a scaled picture = the game's own screen effect
+ID3D11Texture2D* g_erTex[kHrN] = {}; float g_erLens[kHrN][8] = {}; ULONGLONG g_erT[kHrN] = {}; int g_erHead = 0, g_erFill = 0; M44 g_erP[2] = {};
+void eye_ring_note(ID3D11DeviceContext* c)
+{
+    if (!g_hrOn || !g_pair || !g_dev) return;
+    D3D11_TEXTURE2D_DESC d{}; g_pair->GetDesc(&d); const UINT ew = d.Width / 2;
+    const UINT w = (ew * 6 / 10) & ~1u, h = (d.Height * 6 / 10) & ~1u;
+    if (g_erTex[0]) { D3D11_TEXTURE2D_DESC o{}; g_erTex[0]->GetDesc(&o); if (o.Width != w || o.Height != h || o.Format != d.Format) { for (auto& t : g_erTex) if (t) { t->Release(); t = nullptr; } g_erFill = 0; } }
+    if (!g_erTex[0])
+    {
+        D3D11_TEXTURE2D_DESC rd = d; rd.Width = w; rd.Height = h; rd.Usage = D3D11_USAGE_DEFAULT; rd.BindFlags = 0; rd.CPUAccessFlags = 0; rd.MiscFlags = 0; rd.MipLevels = 1; rd.ArraySize = 1;
+        for (auto& t : g_erTex) if (FAILED(g_dev->CreateTexture2D(&rd, nullptr, &t))) { for (auto& u : g_erTex) if (u) { u->Release(); u = nullptr; } logf("EYERING: create FAILED"); g_erFill = 0; return; }
+        logf("EYERING: ring of %d left-eye pictures %ux%u format %d", kHrN, w, h, (int)d.Format);
+    }
+    const UINT x0 = (ew - w) / 2, y0 = (d.Height - h) / 2; const D3D11_BOX bx{ x0, y0, 0, x0 + w, y0 + h, 1 };
+    c->CopySubresourceRegion(g_erTex[g_erHead], 0, 0, 0, 0, g_pair, 0, &bx);
+    float* L = g_erLens[g_erHead];
+    L[0] = g_erP[0].m[0][0]; L[1] = g_erP[0].m[1][1]; L[2] = g_erP[0].m[2][0]; L[3] = g_erP[0].m[2][1];
+    L[4] = g_erP[1].m[0][0]; L[5] = g_erP[1].m[1][1]; L[6] = g_erP[1].m[2][0]; L[7] = g_erP[1].m[2][1];
+    g_erT[g_erHead] = GetTickCount64(); g_erHead = (g_erHead + 1) % kHrN; if (g_erFill < kHrN) ++g_erFill;
+}
+void eye_ring_write(ID3D11DeviceContext* c, int dn, ULONGLONG tNew)
+{
+    const int n = g_erFill; if (!n) return;
+    char keep[16]; strcpy_s(keep, g_capTag); strncpy_s(g_capTag, g_hrWhy, _TRUNCATE);
+    for (int k = 0; k < n; ++k)
+    {
+        const int slot = (g_erHead - n + k + 2 * kHrN) % kHrN; const float* L = g_erLens[slot];
+        const int ms = (int)((LONGLONG)tNew - (LONGLONG)g_erT[slot]);
+        wchar_t nm[64]; swprintf_s(nm, L"ring%02d_%02d_%04dms_eyeL", dn, k, ms); save_bmp(c, g_erTex[slot], 0, -1, nm);
+        logf("EYERING dump %d frame %d (%d ms before the newest HUD frame): left lens %.5f %.5f off %.5f %.5f | right lens %.5f %.5f off %.5f %.5f", dn, k, ms, L[0], L[1], L[2], L[3], L[4], L[5], L[6], L[7]);
+    }
+    strcpy_s(g_capTag, keep);
+}
+void hud_ring_write(ID3D11DeviceContext* c)
+{
+    const int n = g_hrFill; if (!n || !g_dev) return;
+    const int dn = InterlockedIncrement(&g_hrDumps);
+    D3D11_TEXTURE2D_DESC d{}; g_hrTex[0]->GetDesc(&d);
+    D3D11_TEXTURE2D_DESC sd = d; sd.Usage = D3D11_USAGE_STAGING; sd.BindFlags = 0; sd.CPUAccessFlags = D3D11_CPU_ACCESS_READ; sd.MiscFlags = 0;
+    ID3D11Texture2D* st = nullptr; if (FAILED(g_dev->CreateTexture2D(&sd, nullptr, &st)) || !st) return;
+    const bool bgra = d.Format == DXGI_FORMAT_B8G8R8A8_UNORM || d.Format == DXGI_FORMAT_B8G8R8A8_UNORM_SRGB;
+    const int w = (int)d.Width / 2, h = (int)d.Height / 2, row = (w * 3 + 3) & ~3;
+    const ULONGLONG tNew = g_hrT[(g_hrHead + kHrN - 1) % kHrN];
+    for (int k2 = 0; k2 < 3 * n; ++k2)
+    {
+        const int k = k2 / 3, which = k2 % 3; ID3D11Texture2D* const* ring = which == 2 ? g_hrMkR : which ? g_hrMk : g_hrTex;   // RINGEVERY / RINGBOTH: HUD sheet + both eyes' marker layers
+        const int slot = (g_hrHead - n + k + 2 * kHrN) % kHrN;
+        if (!ring[slot]) continue;
+        c->CopyResource(st, ring[slot]);
+        D3D11_MAPPED_SUBRESOURCE m{};
+        if (FAILED(c->Map(st, 0, D3D11_MAP_READ, 0, &m))) continue;
+        wchar_t fn[MAX_PATH]; swprintf_s(fn, L"%sring%02d_%02d_%04dms_%S_%s.bmp", g_dir, dn, k, (int)(tNew - g_hrT[slot]), g_hrWhy, which == 2 ? L"mkR" : which ? L"mkL" : L"hud");
+        if (FILE* f = _wfopen(fn, L"wb"))
+        {
+            BITMAPFILEHEADER fh{}; BITMAPINFOHEADER ih{};
+            fh.bfType = 0x4D42; fh.bfOffBits = sizeof(fh) + sizeof(ih); fh.bfSize = fh.bfOffBits + row * h;
+            ih.biSize = sizeof(ih); ih.biWidth = w; ih.biHeight = h; ih.biPlanes = 1; ih.biBitCount = 24;
+            fwrite(&fh, sizeof(fh), 1, f); fwrite(&ih, sizeof(ih), 1, f);
+            uint8_t* line = (uint8_t*)calloc(row, 1);
+            for (int y = h - 1; y >= 0; --y)
+            {
+                const uint8_t* src = (const uint8_t*)m.pData + (size_t)(y * 2) * m.RowPitch;
+                for (int x = 0; x < w; ++x)
+                {
+                    const uint8_t* q = src + x * 8; const int a = q[3];
+                    int r = bgra ? q[2] : q[0], g = q[1], b = bgra ? q[0] : q[2];
+                    // premultiplied sheet over grey 96: c + 96 * (1 - a)
+                    r = r + 96 * (255 - a) / 255; g = g + 96 * (255 - a) / 255; b = b + 96 * (255 - a) / 255;
+                    line[x * 3] = (uint8_t)(b > 255 ? 255 : b); line[x * 3 + 1] = (uint8_t)(g > 255 ? 255 : g); line[x * 3 + 2] = (uint8_t)(r > 255 ? 255 : r);
+                }
+                fwrite(line, row, 1, f);
+            }
+            free(line); fclose(f);
+        }
+        c->Unmap(st, 0);
+    }
+    st->Release();
+    eye_ring_write(c, dn, tNew);   // EYERING
+    logf("HUDRING dump %d (%s): %d sheets over the last %llu ms", dn, g_hrWhy, n, n > 1 ? tNew - g_hrT[(g_hrHead - n + 2 * kHrN) % kHrN] : 0ull);
+}
+void hud_ring_frame(ID3D11DeviceContext* c)   // at a stereo frame's start: the previous HUD sheet is complete
+{
+    if (!g_hrOn || !g_hudTex || !g_dev || g_hrDumps >= 12) return;
+    D3D11_TEXTURE2D_DESC d{}; g_hudTex->GetDesc(&d);
+    if (d.SampleDesc.Count != 1 || !(d.Format == DXGI_FORMAT_R8G8B8A8_UNORM || d.Format == DXGI_FORMAT_R8G8B8A8_UNORM_SRGB || d.Format == DXGI_FORMAT_R8G8B8A8_TYPELESS ||
+        d.Format == DXGI_FORMAT_B8G8R8A8_UNORM || d.Format == DXGI_FORMAT_B8G8R8A8_UNORM_SRGB)) return;
+    if (g_hrTex[0]) { D3D11_TEXTURE2D_DESC o{}; g_hrTex[0]->GetDesc(&o); if (o.Width != ((d.Width * 6 / 10) & ~1u) || o.Height != ((d.Height * 6 / 10) & ~1u) || o.Format != d.Format) { for (auto& t : g_hrTex) if (t) { t->Release(); t = nullptr; } for (auto& t : g_hrMk) if (t) { t->Release(); t = nullptr; } for (auto& t : g_hrMkR) if (t) { t->Release(); t = nullptr; } g_hrFill = 0; } }
+    if (!g_hrTex[0])
+    {
+        D3D11_TEXTURE2D_DESC rd = d; rd.Usage = D3D11_USAGE_DEFAULT; rd.BindFlags = 0; rd.CPUAccessFlags = 0; rd.MiscFlags = 0; rd.MipLevels = 1; rd.ArraySize = 1;
+        rd.Width = (d.Width * 6 / 10) & ~1u; rd.Height = (d.Height * 6 / 10) & ~1u; g_hrX0 = (d.Width - rd.Width) / 2; g_hrY0 = (d.Height - rd.Height) / 2;   // RINGBOTH
+        for (auto& t : g_hrTex) if (FAILED(g_dev->CreateTexture2D(&rd, nullptr, &t))) { for (auto& u : g_hrTex) if (u) { u->Release(); u = nullptr; } g_hrOn = 0; logf("HUDRING: ring textures FAILED - off"); return; }
+        if (g_mkEyeTex[0]) { D3D11_TEXTURE2D_DESC md{}; g_mkEyeTex[0]->GetDesc(&md); if (md.Width == d.Width && md.Height == d.Height && md.Format == d.Format) { for (auto& t : g_hrMk) if (FAILED(g_dev->CreateTexture2D(&rd, nullptr, &t))) t = nullptr; for (auto& t : g_hrMkR) if (FAILED(g_dev->CreateTexture2D(&rd, nullptr, &t))) t = nullptr; } }
+        logf("HUDRING: ring of %d HUD sheets %ux%u format %d, every frame, with the left marker layer %d", kHrN, d.Width, d.Height, (int)d.Format, g_hrMk[0] ? 1 : 0);
+    }
+    {   // DETRING 2026-10-13 (JJ, watching the fake run: "i saw the distance marker flicker to the wrong location when you exited detective
+        // mode"): the ring is written 0.5 s after detective mode switches on or off - the HUD sheet frames around the switch
+        static int s_det = -1; const ULONGLONG ds = g_detSeenMs; const int d = ds && GetTickCount64() - ds < 80 ? 1 : 0;   // RINGRAW 2026-10-14: the composite itself (no 600 ms hold) - the real exit
+        if (false && s_det >= 0 && d != s_det && !g_hrDumpAt && g_hrDumps < 12) { strcpy_s(g_hrWhy, d ? "detective_on" : "detective_off"); g_hrDumpAt = (LONGLONG)GetTickCount64() + 200; logf("DETRING: detective %s (right eye's view state swapped now) - HUD sheet ring written in 0.2 s", d ? "on" : "off"); }
+        s_det = d;
+    }
+    const LONGLONG at = g_hrDumpAt;
+    if (at && (LONGLONG)GetTickCount64() >= at) { g_hrDumpAt = 0; hud_ring_write(c); g_hrFill = 0; }
+    ++g_hrFrame;
+    {   D3D11_TEXTURE2D_DESC o{}; g_hrTex[0]->GetDesc(&o); const D3D11_BOX bx{ g_hrX0, g_hrY0, 0, g_hrX0 + o.Width, g_hrY0 + o.Height, 1 };
+        c->CopySubresourceRegion(g_hrTex[g_hrHead], 0, 0, 0, 0, g_hudTex, 0, &bx); g_hrT[g_hrHead] = GetTickCount64();
+        if (g_hrMk[g_hrHead] && g_mkEyeTex[0]) c->CopySubresourceRegion(g_hrMk[g_hrHead], 0, 0, 0, 0, g_mkEyeTex[0], 0, &bx);
+        if (g_hrMkR[g_hrHead] && g_mkEyeTex[1]) c->CopySubresourceRegion(g_hrMkR[g_hrHead], 0, 0, 0, 0, g_mkEyeTex[1], 0, &bx); }
+    g_hrHead = (g_hrHead + 1) % kHrN; if (g_hrFill < kHrN) ++g_hrFill;
+}
+// BLACKHUNT 2026-10-13 (JJ: the menus' "black box overlay covering the menu items and Batman"; ring dump 2: an opaque black 16:9
+// band on the HUD sheet in the save-select menu): find its draw - each HUD-sheet draw in turn is dropped (HUDSKIPIDX) for 2 frames
+// and the sheet's opaque-black share measured (64 x 64 samples); HUDSKIPIDX logs the dropped draw's shaders + texture. Started by
+// AKVR's capture in a menu / the pause screen (command "blackhunt").
+ID3D11Texture2D* g_bhStage = nullptr;
+float sheet_black(ID3D11DeviceContext* c)
+{
+    D3D11_TEXTURE2D_DESC d{}; g_hudTex->GetDesc(&d);
+    if (g_bhStage) { D3D11_TEXTURE2D_DESC o{}; g_bhStage->GetDesc(&o); if (o.Width != d.Width || o.Height != d.Height || o.Format != d.Format) { g_bhStage->Release(); g_bhStage = nullptr; } }
+    if (!g_bhStage) { D3D11_TEXTURE2D_DESC sd = d; sd.Usage = D3D11_USAGE_STAGING; sd.BindFlags = 0; sd.CPUAccessFlags = D3D11_CPU_ACCESS_READ; sd.MiscFlags = 0; sd.MipLevels = 1; sd.ArraySize = 1;
+                      if (FAILED(g_dev->CreateTexture2D(&sd, nullptr, &g_bhStage))) { g_bhStage = nullptr; return -1.0f; } }
+    c->CopyResource(g_bhStage, g_hudTex);
+    D3D11_MAPPED_SUBRESOURCE m{}; if (FAILED(c->Map(g_bhStage, 0, D3D11_MAP_READ, 0, &m))) return -1.0f;
+    int n = 0;
+    for (int gy = 0; gy < 64; ++gy) for (int gx = 0; gx < 64; ++gx)
+    {
+        const uint8_t* q = (const uint8_t*)m.pData + (size_t)((gy + 0.5f) / 64.0f * d.Height) * m.RowPitch + (size_t)((gx + 0.5f) / 64.0f * d.Width) * 4;
+        if (q[3] > 230 && q[0] < 13 && q[1] < 13 && q[2] < 13) ++n;
+    }
+    c->Unmap(g_bhStage, 0);
+    return n / 4096.0f;
+}
+void black_hunt_frame(ID3D11DeviceContext* c)
+{
+    if (g_bhStep < 0 || !g_hudTex || !g_dev) return;
+    if (g_bhWait > 0) { --g_bhWait; return; }
+    const float cov = sheet_black(c);
+    if (g_bhBase < 0.0f)
+    {
+        g_bhBase = cov; g_bhMax = g_hudDrawsLast < 120 ? g_hudDrawsLast : 120;
+        logf("BLACKHUNT start: opaque black %.3f of the sheet, %ld HUD draws per frame - dropping each in turn", cov, g_bhMax);
+        if (g_bhMax <= 0) { g_bhStep = -1; return; }
+    }
+    else
+    {
+        logf("BLACKHUNT drop #%ld: opaque black %.3f (all drawn %.3f)%s", g_bhStep, cov, g_bhBase, cov < g_bhBase * 0.5f ? "  <== THIS DRAW" : "");
+        if (++g_bhStep >= g_bhMax) { g_hsiLo = g_hsiHi = -1; g_bhStep = -1; logf("BLACKHUNT done"); return; }
+    }
+    g_hsiLo = g_hsiHi = g_bhStep; g_hsiLogged = 0; g_bhWait = 2;
+}
+// HUDCOVER 2026-10-13 (REC1: the menus' "black box" = the game's fade to black on the HUD sheet; the bats end fully black too):
+// how much of the sheet's 16:9 band is covered and how dark - 16 rows of the band copied each stereo frame (W x 1 each, into a
+// W x 16 staging ring of 3) and read 2 frames later without waiting. Export akn_hud_cover (AKVR: full-view transitions).
+ID3D11Texture2D* g_hcStage[3] = {}; int g_hcI = 0; volatile float g_hcAlpha = 0.0f, g_hcDark = 1.0f; volatile LONG g_hcOk = 0;
+void hud_cover_frame(ID3D11DeviceContext* c)
+{
+    D3D11_TEXTURE2D_DESC d{}; g_hudTex->GetDesc(&d);
+    if (d.SampleDesc.Count != 1 || d.Width < 64 || d.Height < 64) return;
+    const bool bgra = d.Format == DXGI_FORMAT_B8G8R8A8_UNORM || d.Format == DXGI_FORMAT_B8G8R8A8_UNORM_SRGB;
+    if (!(bgra || d.Format == DXGI_FORMAT_R8G8B8A8_UNORM || d.Format == DXGI_FORMAT_R8G8B8A8_UNORM_SRGB || d.Format == DXGI_FORMAT_R8G8B8A8_TYPELESS)) return;
+    const int k = g_hcI % 3;
+    if (g_hcStage[k]) { D3D11_TEXTURE2D_DESC o{}; g_hcStage[k]->GetDesc(&o); if (o.Width != d.Width || o.Format != d.Format) { g_hcStage[k]->Release(); g_hcStage[k] = nullptr; } }
+    if (!g_hcStage[k]) { D3D11_TEXTURE2D_DESC sd = d; sd.Height = 16; sd.Usage = D3D11_USAGE_STAGING; sd.BindFlags = 0; sd.CPUAccessFlags = D3D11_CPU_ACCESS_READ; sd.MiscFlags = 0; sd.MipLevels = 1; sd.ArraySize = 1;
+                         if (FAILED(g_dev->CreateTexture2D(&sd, nullptr, &g_hcStage[k]))) { g_hcStage[k] = nullptr; return; } }
+    const float bandH = d.Width * 9.0f / 16.0f < d.Height ? d.Width * 9.0f / 16.0f : (float)d.Height, top = 0.5f * (d.Height - bandH);
+    for (UINT r = 0; r < 16; ++r)
+    {
+        const UINT y = (UINT)(top + (r + 0.5f) / 16.0f * bandH);
+        D3D11_BOX b{ 0, y, 0, d.Width, y + 1, 1 };
+        c->CopySubresourceRegion(g_hcStage[k], 0, 0, r, 0, g_hudTex, 0, &b);
+    }
+    ++g_hcI;
+    if (g_hcI < 3) return;
+    const int rd = g_hcI % 3;   // the copy made 2 frames ago
+    D3D11_MAPPED_SUBRESOURCE m{};
+    if (!g_hcStage[rd] || c->Map(g_hcStage[rd], 0, D3D11_MAP_READ, D3D11_MAP_FLAG_DO_NOT_WAIT, &m) != S_OK) return;
+    double a = 0, rgb = 0; int n = 0;
+    for (UINT r = 0; r < 16; ++r) for (UINT x = 8; x < d.Width; x += 16)
+    { const uint8_t* q = (const uint8_t*)m.pData + (size_t)r * m.RowPitch + (size_t)x * 4; a += q[3]; rgb += (q[0] + q[1] + q[2]) / 3.0; ++n; }
+    c->Unmap(g_hcStage[rd], 0);
+    const float al = n ? (float)(a / n / 255.0) : 0.0f;
+    g_hcAlpha = al; g_hcDark = al > 0.01f ? (float)(rgb / n / 255.0) / al : 1.0f; g_hcOk = 1;   // darkness of what covers (premultiplied sheet)
+}
+extern "C" __declspec(dllexport) int akn_hud_cover(float* alpha, float* bright) { if (!g_hcOk || !alpha || !bright) return 0; *alpha = g_hcAlpha; *bright = g_hcDark; return 1; }   // HUDCOVER (AKVR)
+// PARTID (AKVR): a room mark value -> the HUD part index (akvr_captures\partid.txt); -1 = no part id
+int part_of(const float* r4) { for (int c = 0; c < 4; ++c) { const float v = r4[c]; if (v < -0.0019531f + 1e-7f && v > -0.0028f) { const int k = (int)lroundf((-0.0019531250f - v) / 4.0e-7f) - 1; if (k >= 0) return k; } } return -1; }
+void hud_sig_sweep();
+void hud_sig_note(ID3D11DeviceContext* c, LONG idx)
+{
+    if (!p_shHash || g_hsigLines >= 800) return;
+    { static ULONGLONG s_sw = 0; const ULONGLONG t = GetTickCount64(); if (t - s_sw > 1000) { s_sw = t; hud_sig_sweep(); } }   // (the per-second log may not run in menus)
+    ID3D11VertexShader* vs = nullptr; c->VSGetShader(&vs, nullptr, nullptr); const unsigned long long hv = vs ? sh_hash_c(vs) : 0; if (vs) vs->Release();
+    ID3D11PixelShader* ps = nullptr; c->PSGetShader(&ps, nullptr, nullptr); const unsigned long long hp = ps ? sh_hash_c(ps) : 0; if (ps) ps->Release();
+    UINT w = 0, h = 0; ID3D11ShaderResourceView* sv = nullptr; c->PSGetShaderResources(0, 1, &sv);
+    if (sv) { ID3D11Resource* r = nullptr; sv->GetResource(&r); ID3D11Texture2D* t = nullptr; if (r) { r->QueryInterface(__uuidof(ID3D11Texture2D), (void**)&t); r->Release(); }
+              if (t) { D3D11_TEXTURE2D_DESC d{}; t->GetDesc(&d); w = d.Width; h = d.Height; t->Release(); } sv->Release(); }
+    D3D11_VIEWPORT vp{}; UINT nv = 1; c->RSGetViewports(&nv, &vp);
+    const ULONGLONG now = GetTickCount64();
+    AcquireSRWLockExclusive(&g_hsigLock);
+    LONG k = 0; for (; k < g_hsigN; ++k) if (g_hsig[k].vs == hv && g_hsig[k].ps == hp && g_hsig[k].w == w && g_hsig[k].h == h) break;
+    if (k == g_hsigN)
+    {
+        if (g_hsigN < 512) { HudSig& e = g_hsig[g_hsigN++]; e = HudSig{ hv, hp, w, h, now, now, 1, idx, idx, vp.Width, vp.Height, true }; InterlockedIncrement(&g_hsigLines);
+                             logf("HUDSIG new: vs %016llx ps %016llx texture %ux%u | draw #%ld on the sheet, viewport %.0fx%.0f", hv, hp, w, h, idx, vp.Width, vp.Height); }
+    }
+    else
+    {
+        HudSig& e = g_hsig[k];
+        if (!e.active) { InterlockedIncrement(&g_hsigLines); logf("HUDSIG back after %llu ms: vs %016llx ps %016llx texture %ux%u | draw #%ld, viewport %.0fx%.0f", now - e.last, hv, hp, w, h, idx, vp.Width, vp.Height);
+                         e.active = true; e.first = now; e.n = 0; e.idxMin = e.idxMax = idx; }
+        e.last = now; ++e.n; if (idx < e.idxMin) e.idxMin = idx; if (idx > e.idxMax) e.idxMax = idx;
+    }
+    ReleaseSRWLockExclusive(&g_hsigLock);
+}
+void hud_sig_sweep()   // once a second: kinds that stopped
+{
+    const ULONGLONG now = GetTickCount64();
+    AcquireSRWLockExclusive(&g_hsigLock);
+    for (LONG k = 0; k < g_hsigN && g_hsigLines < 800; ++k)
+    {
+        HudSig& e = g_hsig[k];
+        if (!e.active || now - e.last < 1500) continue;
+        e.active = false; InterlockedIncrement(&g_hsigLines);
+        logf("HUDSIG gone: vs %016llx ps %016llx texture %ux%u | shown %llu ms, %ld draws, sheet draws #%ld-#%ld", e.vs, e.ps, e.w, e.h, e.last - e.first, e.n, e.idxMin, e.idxMax);
+    }
+    ReleaseSRWLockExclusive(&g_hsigLock);
+}
 bool hud_skip_draw(ID3D11DeviceContext* c)   // HUDSKIP: only while the HUD sheet is the target
 {
     const LONG idx = InterlockedIncrement(&f_hudIdx) - 1;   // HUDSKIPIDX: this draw's index on the frame's sheet
+    if (g_hudSigOn) hud_sig_note(c, idx);   // HUDSIG
     if (g_hsiLo >= 0 && idx >= g_hsiLo && idx <= g_hsiHi)
     {
         if (g_hsiLo == g_hsiHi && !g_hsiLogged && p_shHash)
@@ -3393,6 +4674,23 @@ void STDMETHODCALLTYPE hk_UpdSub(ID3D11DeviceContext* c, ID3D11Resource* r, UINT
     }
     o_UpdSub(c, r, sub, bx, src, rp, dp);
 }
+// SCANREC 2026-10-13 (JJ: the second line "still there"): which draws go to the scan box's sheet - the box (plus signs) vs the
+// game's own line - by vertex + pixel shader + texture; each kind logged on first sight and at every 300th draw
+struct ScanKind { unsigned long long vs, ps; UINT w, h; LONG n; };
+ScanKind g_scanKinds[24] = {}; LONG g_scanKindN = 0;
+void scan_rec(ID3D11DeviceContext* c, unsigned long long vh, const char* how, int pieces, int scanPieces, float tx, float ty)
+{
+    if (!g_recOn || g_scanRecLines >= 300) return;
+    ID3D11PixelShader* ps = nullptr; c->PSGetShader(&ps, nullptr, nullptr); const unsigned long long hp = ps && p_shHash ? sh_hash_c(ps) : 0; if (ps) ps->Release();
+    UINT w = 0, h = 0; ID3D11ShaderResourceView* sv = nullptr; c->PSGetShaderResources(0, 1, &sv);
+    if (sv) { ID3D11Resource* r = nullptr; sv->GetResource(&r); ID3D11Texture2D* t = nullptr; if (r) { r->QueryInterface(__uuidof(ID3D11Texture2D), (void**)&t); r->Release(); }
+              if (t) { D3D11_TEXTURE2D_DESC d{}; t->GetDesc(&d); w = d.Width; h = d.Height; t->Release(); } sv->Release(); }
+    LONG k = 0; for (; k < g_scanKindN; ++k) if (g_scanKinds[k].vs == vh && g_scanKinds[k].ps == hp && g_scanKinds[k].w == w && g_scanKinds[k].h == h) break;
+    if (k == g_scanKindN) { if (g_scanKindN >= 24) return; g_scanKinds[g_scanKindN++] = ScanKind{ vh, hp, w, h, 0 }; }
+    const LONG n = ++g_scanKinds[k].n;
+    if (n == 1 || n % 300 == 0) { InterlockedIncrement(&g_scanRecLines);
+        logf("SCANREC kind %ld (%s): vs %016llx ps %016llx texture %ux%u | pieces in the draw %d, callout pieces %d, first at %.3f %.3f | seen %ld times", k, how, vh, hp, w, h, pieces, scanPieces, tx, ty, n); }
+}
 // before a HUD draw: is it a marker piece? then draw it into the marker sheet (returns true; mk_route_end puts the
 // HUD sheet back)
 // MKBATCH: 0 = not a marker draw, 1 = routed whole (mk_route_end after the draw), 2 = split (mk_split_draw does it)
@@ -3489,9 +4787,13 @@ void mk_sticky_note(unsigned long long vh)
     for (auto& e : g_mkSticky) { if (e.vh == vh) { e.t = now; return; } if (e.t < o->t) o = &e; }
     o->vh = vh; o->t = now;
 }
+// MKSTICKYOFF 2026-10-13 (HR5; JJ: the distance marker still flickers "to a different location and different size every now and again"):
+// TAGFADE recognises the marker pieces whose mark is scaled by their fade (fake: held 0 in normal play), and in detective mode the only
+// pieces the hold still grabbed (RB7: 18 / 18) carry the ROOM mark, faded = flat HUD pulled onto the marker for a frame. Off by default;
+// command "mksticky 1" restores it.
 bool mk_sticky(unsigned long long vh)
 {
-    if (!vh) return false;
+    if (!vh || !g_mkStickyOn) return false;
     const ULONGLONG now = GetTickCount64();
     for (const auto& e : g_mkSticky) if (e.vh == vh) return now - e.t < 5000;   // MKSTICKY3: 5 s (the text is marked ~1 frame in 7)
     return false;
@@ -3547,6 +4849,18 @@ int mk_route_begin(ID3D11DeviceContext* c, ID3D11DepthStencilView** dsv)
     const float tag = s_tag;
     auto isTag = [&](float v) { return tag != 0.0f && fabsf(v - tag) < 2.0e-4f; };
     auto scanTag = [&](const float* f, int n, int* where) { int h = 0; for (int i = 0; i < n; ++i) if (isTag(f[i])) { if (where && h < 4) where[h] = i; ++h; } return h; };
+    // TAGFADE 2026-10-13 (HR2; JJ: the distance marker's number "in a different location", the box flicking there for a frame): HELDREC
+    // (300 of 300 held pieces, fake run RB6): pieces coloured by their own colour ADD (multiply 0 - glows, the number's glow) carry the mark
+    // SCALED by their own fade: alpha add = mark x alpha multiply, exact (-0.00390625 x 0.23828125 = -0.00093079). The mark is never lost;
+    // the old check wanted it unscaled. A colour row pair (add, multiply) whose alpha add equals mark x alpha multiply is marked too.
+    auto fadedTag = [&](const float* addRow, const float* multRow) { const float ma = multRow[3], aa = addRow[3], want = tag * ma;
+        return g_tagFade && tag != 0.0f && ma > 0.01f && ma < 1.001f && fabsf(want) > 1.0e-7f && fabsf(aa - want) <= 1.0e-7f + 1.0e-4f * fabsf(want); };
+    // DETCALLOUT: pieces of detective mode's scan callout carry their own mark; they all go to the callout's one marker
+    static float s_scanV = 0.0f; static bool s_scanTried = false;
+    if (!s_scanTried) { HMODULE hm = GetModuleHandleW(L"dinput8.dll"); s_scanTried = hm != nullptr; using SvFn = float(*)(); SvFn f = hm ? (SvFn)GetProcAddress(hm, "akvr_scan_tag_value") : nullptr; s_scanV = f ? f() : 0.0f; }
+    // SCANHUD: the callout's pieces go to the MARKER SHEET unmoved (AKVR draws that sheet on the HUD plane, shifted to the object)
+    const int scanMk = g_scanOn && s_scanV != 0.0f && g_mkRTV ? 0 : -1;
+    auto scanHits = [&](const float* f, int n) { int h = 0; if (scanMk >= 0) for (int i = 0; i < n; ++i) if (fabsf(f[i] - s_scanV) < 2.0e-4f) ++h; return h; };
     int psHits = 0, psWhere[4] = { -1, -1, -1, -1 };
     {   ID3D11Buffer* pb = nullptr; c->PSGetConstantBuffers(0, 1, &pb);
         if (pb) { const CbShadow& x = cb_slot(pb); if (x.b == pb) psHits = scanTag(x.m, (int)(x.bytes / 4), psWhere); pb->Release(); } }
@@ -3561,10 +4875,28 @@ int mk_route_begin(ID3D11DeviceContext* c, ID3D11DepthStencilView** dsv)
         int vsWhere[4] = { -1, -1, -1, -1 };
         // not the placement rows 6 / 7 (a position can equal the mark: 94f88871 row 6.w in the MKTAG fake run)
         const int vsHits = scanTag(m, 24, vsWhere) + scanTag(m + 32, (int)(e.bytes / 4) - 32, nullptr);
-        const bool tagged = vsHits > 0;   // MKPSOFF: the PS cb0 can be the previous (marker) draw's, unused by this shader
+        const int sHits = scanHits(m, 24) + scanHits(m + 32, (int)(e.bytes / 4) - 32);   // DETCALLOUT
+        bool faded = false;   // TAGFADE: any (row, row + 1) colour pair outside the placement rows 6 / 7
+        if (vsHits == 0 && sHits == 0) { const int nr = (int)(e.bytes / 16); for (int r = 0; r + 1 < nr && r < 64 && !faded; ++r) if (r != 5 && r != 6 && r != 7) faded = fadedTag(m + r * 4, m + (r + 1) * 4); }
+        if (faded) InterlockedIncrement(&c_mkTagFaded);
+        const bool tagged = vsHits > 0 || sHits > 0 || faded;   // MKPSOFF: the PS cb0 can be the previous (marker) draw's, unused by this shader
         best = nearest(tx, ty, bd);
+        if (sHits > 0)
+        {   // SCANHUD: a callout piece - the whole draw to the marker sheet, unmoved
+            InterlockedIncrement(&c_scanPieces);
+            scan_rec(c, vh, "single", 1, 1, tx, ty);   // SCANREC
+            if (g_recOn && g_scanPieceLines < 400) { InterlockedIncrement(&g_scanPieceLines); logf("SCANPIECE vs %016llx single: r6 %.4f %.4f %.4f %.4f | r7 %.4f %.4f %.4f %.4f | at %.3f %.3f | box layout point %.3f %.3f", vh, m[24], m[25], m[26], m[27], m[28], m[29], m[30], m[31], tx, ty, g_scanSheet[0], g_scanSheet[1]); }   // SCANPIECE
+            ID3D11RenderTargetView* cur = nullptr; c->OMGetRenderTargets(1, &cur, dsv); if (cur) cur->Release();
+            o_OMSetRT(c, 1, &g_mkRTV, *dsv);
+            InterlockedIncrement(&f_mkRouted); InterlockedIncrement(&c_mkRouted);
+            return 1;
+        }
         const bool sticky = !tagged && byTag && best >= 0 && bd <= g_mkStickyReach * g_mkStickyReach && mk_sticky(vh);   // MKSTICKY
         if (sticky) InterlockedIncrement(&c_mkSticky);
+        if (sticky && g_recOn && g_heldLines < 300)   // HELDREC (HR2 measurement): an unmarked piece kept with the marker - what the game did to the mark
+        { InterlockedIncrement(&g_heldLines); logf("HELDREC single vs %016llx t %.3f %.3f d %.3f | r12 %.8f %.8f %.8f %.8f | r13 %.8f %.8f %.8f %.8f | mark %.8f", vh, tx, ty, sqrtf(bd), e.bytes >= 224 ? m[48] : 0.0f, e.bytes >= 224 ? m[49] : 0.0f, e.bytes >= 224 ? m[50] : 0.0f, e.bytes >= 224 ? m[51] : 0.0f, e.bytes >= 224 ? m[52] : 0.0f, e.bytes >= 224 ? m[53] : 0.0f, e.bytes >= 224 ? m[54] : 0.0f, e.bytes >= 224 ? m[55] : 0.0f, tag); }
+        if (tagged && g_recOn && g_markedLines < 120)   // HELDREC: a MARKED piece of the same shaders for comparison
+        { InterlockedIncrement(&g_markedLines); logf("MARKEDREC single vs %016llx t %.3f %.3f | r12 %.8f %.8f %.8f %.8f | r13 %.8f %.8f %.8f %.8f", vh, tx, ty, e.bytes >= 224 ? m[48] : 0.0f, e.bytes >= 224 ? m[49] : 0.0f, e.bytes >= 224 ? m[50] : 0.0f, e.bytes >= 224 ? m[51] : 0.0f, e.bytes >= 224 ? m[52] : 0.0f, e.bytes >= 224 ? m[53] : 0.0f, e.bytes >= 224 ? m[54] : 0.0f, e.bytes >= 224 ? m[55] : 0.0f); }
         const bool route = best >= 0 && (!byTag || tagged || sticky);
         if (route) mk_drawn_add(best, tx, ty);   // MKDRAWN
         if (route) mk_lag_piece(best, tx, ty);   // MKLAG
@@ -3572,6 +4904,21 @@ int mk_route_begin(ID3D11DeviceContext* c, ID3D11DepthStencilView** dsv)
         if (tagged && best >= 0) mk_sticky_note(vh);
         if (g_mkPieces > 0) { InterlockedDecrement(&g_mkPieces); logf("MKPIECE vs %016llx single t %.3f %.3f | tag vs %d (at %d %d) ps %d (at %d) | markers %d (first %.3f %.3f) nearest %d (d %.3f) -> %s", vh, tx, ty, vsHits, vsWhere[0], vsWhere[1], psHits, psWhere[0], g_mkCN, g_mkC[0][0], g_mkC[0][1], best, best >= 0 ? sqrtf(bd) : -1.0f, route ? "MARKER SHEET" : "hud sheet"); }
         if (tagged) InterlockedIncrement(&c_mkTagged);
+        if (!route && best >= 0 && bd < g_flipR * g_flipR)
+        {   // FLIPREC 2026-10-13 (JJ: the distance marker flickers to another place every few s): a piece next to a marker point that
+            // stays on the HUD sheet this frame - its rows 0-5 (where the mark rides) for the root cause
+            InterlockedIncrement(&c_flipSingle);
+            if (g_recOn && g_flipLines < 600) { InterlockedIncrement(&g_flipLines);
+                logf("FLIPREC single vs %016llx t %.3f %.3f d %.3f (reach %.3f) tag %d sticky-shader %d | r6 %.4f %.4f %.4f %.4f | r7 %.4f %.4f %.4f %.4f | colour r12 %.8f %.8f %.8f %.8f | colour r13 %.8f %.8f %.8f %.8f | part %d / %d",
+                     vh, tx, ty, sqrtf(bd), g_mkReach, vsHits, (int)mk_sticky(vh), m[24], m[25], m[26], m[27], m[28], m[29], m[30], m[31], e.bytes >= 224 ? m[48] : 0.0f, e.bytes >= 224 ? m[49] : 0.0f, e.bytes >= 224 ? m[50] : 0.0f, e.bytes >= 224 ? m[51] : 0.0f, e.bytes >= 224 ? m[52] : 0.0f, e.bytes >= 224 ? m[53] : 0.0f, e.bytes >= 224 ? m[54] : 0.0f, e.bytes >= 224 ? m[55] : 0.0f, e.bytes >= 224 ? part_of(m + 48) : -1, e.bytes >= 224 ? part_of(m + 52) : -1); }
+        }
+        if (tagged && !route)
+        {   // MKMISS 2026-10-13 (JJ: the distance marker flickers "to another location for one frame"; MKJUMP: the game's marker point
+            // never changed): a piece carrying the MARKER mark that stays on the flat sheet this HUD frame - no marker placed, or none in reach
+            if (g_mkCN == 0) InterlockedIncrement(&c_mkMissNone); else InterlockedIncrement(&c_mkMissReach);
+            if (g_mkHeldNow && g_mkCont) { InterlockedIncrement(&c_mkHeldDrop); return 4; }   // HELDDROP: left out this frame, never flat
+            if (g_recOn && g_mkMissLines < 300) { InterlockedIncrement(&g_mkMissLines); logf("MKMISS single vs %016llx t %.3f %.3f: markers this HUD frame %d (first %.3f %.3f), nearest %d d %.3f (reach %.3f), HUD seq %ld", vh, tx, ty, g_mkCN, g_mkC[0][0], g_mkC[0][1], best, best >= 0 ? sqrtf(bd) : -1.0f, g_mkReach, g_hudSeq); }
+        }
         if (!route) return 0;
         if (g_mkEye && !g_mkCard && g_mkEyeRTV[0] && best >= 0)
         {   // MKEYE: one piece - its rows 6 / 7 moved per eye (a partly known buffer: the whole draw moved by the viewport)
@@ -3591,6 +4938,8 @@ int mk_route_begin(ID3D11DeviceContext* c, ID3D11DepthStencilView** dsv)
         if (!layOk || e.bytes < bdsc.ByteWidth || bdsc.ByteWidth > kCbShBytes)
         {
             int w[4] = { -1, -1, -1, -1 }; const int vsHits = scanTag(m, (int)(e.bytes / 4), w);
+            // (DETCALLOUT2: a whole draw carrying the callout's mark is NOT routed any more - JJ 2026-10-12: the distance marker's
+            // text "would flip onto that plane": a draw of unknown layout holds other HUD pieces with the callout's)
             // MKGLOW 2026-10-10: a marked draw of a shader that is neither one-piece nor a known batch (c9b47e60 = the glow
             // filter pasting its blurred copy, mark at row 6) is the marker's own: whole draw to the marker sheet
             const bool glow = g_mkCN > 0 && mk_reads_scratch(c);   // MKGLOW2: reads the marker's glow scratch
@@ -3621,7 +4970,7 @@ int mk_route_begin(ID3D11DeviceContext* c, ID3D11DepthStencilView** dsv)
         }
         const int rowX = lay[0], rowY = lay[1], st = lay[2], rowW = lay[5], np = lay[6];
         const int lim = (int)(bdsc.ByteWidth / 16) < lay[3] ? (int)(bdsc.ByteWidth / 16) : lay[3];
-        unsigned long long nearM = 0; int nNear = 0, nFar = 0, nTag = 0, firstNear = -1, nAll = 0; float fx = 0.0f, fy = 0.0f;
+        unsigned long long nearM = 0, scanM = 0, missM = 0; int nNear = 0, nFar = 0, nTag = 0, firstNear = -1, nAll = 0; float fx = 0.0f, fy = 0.0f;
         const bool stickyV = byTag && mk_sticky(vh);   // MKSTICKY
         memset(g_mkPlan.mk, -1, sizeof(g_mkPlan.mk));   // MKEYE: each piece's marker
         for (int k = 0; k < 64; ++k)
@@ -3637,24 +4986,91 @@ int mk_route_begin(ID3D11DeviceContext* c, ID3D11DepthStencilView** dsv)
             bool tagged = false;   // MKPSOFF (see above): only the piece's own rows
             for (int q = 0; q < np && !tagged; ++q)   // colour / uv rows only, not the placement
                 if (lay[7 + q] != rowX && lay[7 + q] != rowY && lay[7 + q] != rowW) tagged = scanTag(m + (lay[7 + q] + k * lay[19 + q]) * 4, 4, nullptr) > 0;
+            for (int q = 0; q < np && !tagged; ++q)   // TAGFADE: (add, multiply) pairs of this piece's colour rows
+                if (lay[7 + q] != rowX && lay[7 + q] != rowY && lay[7 + q] != rowW) { const int r = lay[7 + q] + k * lay[19 + q]; if (r + 1 < lim && r + 1 != rowX && r + 1 != rowY && fadedTag(m + r * 4, m + (r + 1) * 4)) { tagged = true; InterlockedIncrement(&c_mkTagFaded); } }
+            bool sTag = false;   // DETCALLOUT
+            for (int q = 0; q < np && !sTag && scanMk >= 0; ++q)
+                if (lay[7 + q] != rowX && lay[7 + q] != rowY && lay[7 + q] != rowW) sTag = scanHits(m + (lay[7 + q] + k * lay[19 + q]) * 4, 4) > 0;
+            if (g_recOn && sTag && g_scanPieceLines < 400)
+            {   // SCANPIECE 2026-10-13 (the second line: which callout piece is it?): each callout piece of a batch - its placement rows
+                // (6/7-style X / Y of this piece: scale + translation) against the box's own point on the sheet
+                InterlockedIncrement(&g_scanPieceLines);
+                logf("SCANPIECE vs %016llx piece %d of %d: X %.4f %.4f %.4f %.4f | Y %.4f %.4f %.4f %.4f | at %.3f %.3f | box layout point %.3f %.3f", vh, k, nAll + 1,
+                     X[0], X[1], X[2], X[3], Y[0], Y[1], Y[2], Y[3], px, py, g_scanSheet[0], g_scanSheet[1]);
+            }
+            if (sTag) { scanM |= 1ull << k; InterlockedIncrement(&c_scanPieces); continue; }   // SCANHUD: to the marker sheet below
             if (tagged) ++nTag;
-            float d2 = 0.0f; const int b = nearest(px, py, d2);
+            float d2 = 0.0f; int b = nearest(px, py, d2);
             const bool held = !tagged && stickyV && b >= 0 && d2 <= g_mkStickyReach * g_mkStickyReach;   // MKSTICKY2
             if (held) InterlockedIncrement(&c_mkSticky);
+            if ((held || tagged) && g_recOn && (held ? g_heldLines < 300 : g_markedLines < 120))   // HELDREC: held (unmarked) vs marked batch pieces
+            {
+                InterlockedIncrement(held ? &g_heldLines : &g_markedLines);
+                char rows[512] = ""; int o = 0;
+                for (int q = 0; q < np && q < 4; ++q) { const int r = lay[7 + q] + k * lay[19 + q]; if (r < lim && lay[7 + q] != rowX && lay[7 + q] != rowY && lay[7 + q] != rowW) o += _snprintf_s(rows + o, sizeof(rows) - o, _TRUNCATE, " | row %d: %.8f %.8f %.8f %.8f", r, m[r * 4], m[r * 4 + 1], m[r * 4 + 2], m[r * 4 + 3]); }
+                logf("%s batch vs %016llx piece %d, t %.3f %.3f d %.3f%s", held ? "HELDREC" : "MARKEDREC", vh, k, px, py, sqrtf(d2), rows);
+            }
             const bool isNear = b >= 0 && (!byTag || tagged || held);
+            if (!isNear && b >= 0 && d2 < g_flipR * g_flipR)
+            {   // FLIPREC: a batched piece next to a marker point left on the HUD sheet - its colour rows
+                InterlockedIncrement(&c_flipBatch);
+                if (g_recOn && g_flipLines < 600) { InterlockedIncrement(&g_flipLines);
+                    char rows[512] = ""; int o = 0;
+                    for (int q = 0; q < np && q < 4; ++q) { const int r = lay[7 + q] + k * lay[19 + q]; if (r * 4 + 3 < lim * 4 && lay[7 + q] != rowX && lay[7 + q] != rowY && lay[7 + q] != rowW) o += _snprintf_s(rows + o, sizeof(rows) - o, _TRUNCATE, " | row %d: %.8f %.8f %.8f %.8f (part %d)", r, m[r * 4], m[r * 4 + 1], m[r * 4 + 2], m[r * 4 + 3], part_of(m + r * 4)); }
+                    logf("FLIPREC batch vs %016llx piece %d of the draw, t %.3f %.3f d %.3f tag %d held %d%s", vh, k, px, py, sqrtf(d2), (int)tagged, (int)held, rows); }
+            }
             if (isNear) mk_drawn_add(b, px, py);   // MKDRAWN
             if (isNear) mk_lag_piece(b, px, py);   // MKLAG
             if (isNear && g_mkEye) mk_anchor_piece(b, px, py, X, Y);   // MKANCHOR
+            if (tagged && !isNear) missM |= 1ull << k;   // HELDDROP
             if (isNear) { nearM |= 1ull << k; ++nNear; g_mkPlan.mk[k] = (signed char)b; if (firstNear < 0) { firstNear = k; best = b; bd = d2; fx = px; fy = py; } } else ++nFar;
+        }
+        if (scanM && !nearM)
+        {   // SCANHUD: the callout's pieces in a batch - the legacy split: the rest on the HUD sheet, these on the marker sheet
+            const bool all = (int)__popcnt64(scanM) == nAll;
+            scan_rec(c, vh, all ? "batch, all callout" : "batch, split", nAll, (int)__popcnt64(scanM), 0.0f, 0.0f);   // SCANREC
+            ID3D11RenderTargetView* cur = nullptr; c->OMGetRenderTargets(1, &cur, dsv); if (cur) cur->Release();
+            InterlockedIncrement(&f_mkRouted); InterlockedIncrement(&c_mkRouted);
+            if (all) { o_OMSetRT(c, 1, &g_mkRTV, *dsv); return 1; }
+            g_mkSplit.bytes = bdsc.ByteWidth;
+            memcpy(g_mkSplit.hud, m, bdsc.ByteWidth); memcpy(g_mkSplit.mk, m, bdsc.ByteWidth);
+            for (int k = 0; k < 64; ++k)
+            {
+                const int rx = rowX + k * st, ry = rowY + k * st;
+                if (rx >= lim || ry >= lim) break;
+                float* t = (scanM >> k & 1) ? g_mkSplit.hud : g_mkSplit.mk;
+                memset(t + rx * 4, 0, 16); memset(t + ry * 4, 0, 16);
+            }
+            InterlockedIncrement(&c_mkSplit);
+            return 2;
         }
         if (nTag) InterlockedIncrement(&c_mkTagged);
         if (nTag && nNear) mk_sticky_note(vh);   // MKSTICKY
+        if (nTag > 0 && nNear < nTag)
+        {   // MKMISS: marked pieces of a batch left on the flat sheet
+            if (g_mkCN == 0) InterlockedIncrement(&c_mkMissNone); else InterlockedIncrement(&c_mkMissReach);
+            if (g_mkHeldNow && g_mkCont && nNear == 0 && missM && bdsc.ByteWidth <= kCbShBytes)
+            {   // HELDDROP: the batch's other pieces on the HUD sheet as usual, its marked pieces left out this frame (nothing to the marker sheet)
+                g_mkSplit.bytes = bdsc.ByteWidth; memcpy(g_mkSplit.hud, m, bdsc.ByteWidth); memcpy(g_mkSplit.mk, m, bdsc.ByteWidth);
+                for (int k = 0; k < 64; ++k)
+                {
+                    const int rx = rowX + k * st, ry = rowY + k * st; if (rx >= lim || ry >= lim) break;
+                    memset(g_mkSplit.mk + rx * 4, 0, 16); memset(g_mkSplit.mk + ry * 4, 0, 16);
+                    if (missM >> k & 1) { memset(g_mkSplit.hud + rx * 4, 0, 16); memset(g_mkSplit.hud + ry * 4, 0, 16); }
+                }
+                ID3D11RenderTargetView* cur = nullptr; c->OMGetRenderTargets(1, &cur, dsv); if (cur) cur->Release();
+                InterlockedIncrement(&c_mkHeldDrop); InterlockedIncrement(&c_mkSplit);
+                return 2;
+            }
+            if (g_recOn && g_mkMissLines < 300) { InterlockedIncrement(&g_mkMissLines); logf("MKMISS batch vs %016llx: marked %d, placed with a marker %d, markers this HUD frame %d (first %.3f %.3f), HUD seq %ld", vh, nTag, nNear, g_mkCN, g_mkC[0][0], g_mkC[0][1], g_hudSeq); }
+        }
         if (g_mkPieces > 0) { InterlockedDecrement(&g_mkPieces); logf("MKPIECE vs %016llx batch x%d y%d w%d +%d (%u B): pieces %d, tagged %d (ps %d), to marker %d (first %d at %.3f %.3f, d %.3f) | markers %d (first %.3f %.3f) -> %s", vh, rowX, rowY, rowW, st, bdsc.ByteWidth, nAll, nTag, psHits, nNear, firstNear, fx, fy, firstNear >= 0 ? sqrtf(bd) : -1.0f, g_mkCN, g_mkC[0][0], g_mkC[0][1], nNear == 0 ? "hud sheet" : nFar == 0 ? "MARKER SHEET" : "SPLIT"); }
         if (nNear == 0) return 0;
         if (g_mkEye && !g_mkCard && g_mkEyeRTV[0])
         {   // MKEYE: each marker piece's rows moved per eye by its own marker; the rest stays on the HUD sheet
             g_mkPlan.kind = 2; g_mkPlan.bytes = bdsc.ByteWidth; g_mkPlan.rowX = rowX; g_mkPlan.rowY = rowY; g_mkPlan.rowW = rowW;
             g_mkPlan.st = st; g_mkPlan.lim = lim; g_mkPlan.nearM = nearM; g_mkPlan.nFar = nFar; g_mkLastMk = best;
+            g_mkPlan.dropM = (g_mkHeldNow && g_mkCont) ? missM : 0ull; if (g_mkPlan.dropM) InterlockedIncrement(&c_mkHeldDrop);   // HELDDROP2: marked pieces out of reach on a held frame - left out, not on the HUD sheet
             ID3D11RenderTargetView* cur = nullptr; c->OMGetRenderTargets(1, &cur, dsv); if (cur) cur->Release();
             InterlockedAdd(&c_mkEyePieces, nNear); InterlockedIncrement(&f_mkRouted); InterlockedIncrement(&c_mkRouted);
             return 3;
@@ -3792,7 +5208,7 @@ template <class F> void mk_eye_exec(ID3D11DeviceContext* c, ID3D11DepthStencilVi
                             const int rx = P.rowX + k * P.st, ry = P.rowY + k * P.st;
                             if (rx >= P.lim || ry >= P.lim) break;
                             const bool pnear = (P.nearM >> k & 1) != 0;
-                            const bool kept = keep < 0 ? !pnear : (pnear && P.mk[k] == keep);
+                            const bool kept = keep < 0 ? (!pnear && !(P.dropM >> k & 1)) : (pnear && P.mk[k] == keep);   // HELDDROP2
                             if (!kept) { memset(tmp + rx * 4, 0, 16); memset(tmp + ry * 4, 0, 16); }
                         }
                         ID3D11Buffer* bb = mk_sub_buffer(c, bytes, which);
@@ -3856,7 +5272,7 @@ template <class F> void mk_eye_exec(ID3D11DeviceContext* c, ID3D11DepthStencilVi
                 {
                     const int rx = P.rowX + k * P.st, ry = P.rowY + k * P.st;
                     if (rx >= P.lim || ry >= P.lim) break;
-                    if (P.nearM >> k & 1) { memset(tmp + rx * 4, 0, 16); memset(tmp + ry * 4, 0, 16); }
+                    if ((P.nearM | P.dropM) >> k & 1) { memset(tmp + rx * 4, 0, 16); memset(tmp + ry * 4, 0, 16); }   // HELDDROP2
                 }
                 o_UpdSub(c, bh, 0, nullptr, tmp, 0, 0); o_VSCB(c, 0, 1, &bh); draw();
             }
@@ -3936,8 +5352,50 @@ extern "C" __declspec(dllexport) ID3D11Texture2D* akn_get_marker_hud(long* route
     if (routedLastFrame) *routedLastFrame = g_mkRoutedLast;
     return g_markSheet ? g_mkTex : nullptr;
 }
-void STDMETHODCALLTYPE hk_Draw11(ID3D11DeviceContext* c, UINT n, UINT s0) { if (g_hudBound) { InterlockedIncrement(&f_hudDraws); if (hud_skip_draw(c)) return; } mk_dump_draw(c, "Draw", n); d0_draw(c, false); if (dlss_draw_skip(c, false)) return; if (skip_vs(c)) return; log_draw(c, "Draw", n); any_draw(c, n, 0, 0); if (!g_hudBound && g_hudPhase && c == g_gameCtx && !tl_inEyeRender && g_markSheet) mk_scratch_track(c); ID3D11DepthStencilView* mkd = nullptr; const int mk = g_hudBound ? mk_route_begin(c, &mkd) : 0; if (mk == 3) mk_eye_exec(c, mkd, [&] { o_Draw11(c, n, s0); }); else if (mk == 2) mk_split_draw(c, mkd, [&] { o_Draw11(c, n, s0); }); else { o_Draw11(c, n, s0); if (mk == 1) mk_route_end(c, mkd); } rain_depth_post(c); }
-void STDMETHODCALLTYPE hk_DrawIdx11(ID3D11DeviceContext* c, UINT n, UINT s0, INT b0) { if (g_hudBound) { InterlockedIncrement(&f_hudDraws); if (hud_skip_draw(c)) return; } mk_dump_draw(c, "DrawIndexed", n); d0_draw(c, false); if (dlss_draw_skip(c, false)) return; if (skip_vs(c)) return; log_draw(c, "DrawIndexed", n); any_draw(c, n, 0, 1); if (!g_hudBound && g_hudPhase && c == g_gameCtx && !tl_inEyeRender && g_markSheet) mk_scratch_track(c); ID3D11DepthStencilView* mkd = nullptr; const int mk = g_hudBound ? mk_route_begin(c, &mkd) : 0; if (mk == 3) mk_eye_exec(c, mkd, [&] { o_DrawIdx11(c, n, s0, b0); }); else if (mk == 2) mk_split_draw(c, mkd, [&] { o_DrawIdx11(c, n, s0, b0); }); else { o_DrawIdx11(c, n, s0, b0); if (mk == 1) mk_route_end(c, mkd); } rain_depth_post(c); }
+// FLATREC 2026-10-14 (JJ: "the distance marker still flickers over to a copy"; RB10: the number + corner brackets land on the FLAT
+// HUD sheet around each detective switch; RB11: FLIPREC never saw them - text glyphs are placed in pixels, not rows 6 / 7): for 0.7 s
+// after the detective composite appears or disappears (raw, no hold), every HUD-sheet draw left flat is logged with its vertex shader,
+// its placement rows and every value in its constants that looks like a mark (-0.0045 .. -0.0005). Needs "recorders 1".
+volatile LONG g_flatLines = 0, c_flatWin = 0; ULONGLONG g_flatUntil = 0; unsigned long long g_flatSig[512]; int g_flatSigN = 0;   // one line per distinct piece per window
+void flat_rec(ID3D11DeviceContext* c)
+{
+    if (!g_recOn) return;
+    static int s_det = -1; const ULONGLONG now = GetTickCount64(), ds = g_detSeenMs; const int d = ds && now - ds < 80 ? 1 : 0;
+    if (s_det >= 0 && d != s_det) { g_flatUntil = now + 700; g_flatLines = 0; g_flatSigN = 0; InterlockedIncrement(&c_flatWin); logf("FLATREC: detective %s - flat HUD draws for 0.7 s", d ? "on" : "off"); }
+    s_det = d;
+    if (now > g_flatUntil || g_flatLines >= 400) return;
+    ID3D11RenderTargetView* rt = nullptr; c->OMGetRenderTargets(1, &rt, nullptr); const bool onSheet = rt && rt == g_hudRTV; if (rt) rt->Release();
+    if (!onSheet || !g_vsCb0) return;
+    const CbShadow& e = cb_slot(g_vsCb0); if (e.b != g_vsCb0) return;
+    unsigned long long vh = 0; { ID3D11VertexShader* v = nullptr; c->VSGetShader(&v, nullptr, nullptr); if (v) { if (p_shHash) vh = p_shHash(v); v->Release(); } }
+    char marks[400] = ""; int o = 0, nm = 0; const int nf = (int)(e.bytes / 4);
+    for (int i = 0; i < nf && nm < 14; ++i) { const float f = e.m[i]; if (f < -0.0005f && f > -0.0045f) { o += _snprintf_s(marks + o, sizeof(marks) - o, _TRUNCATE, " [%d]%.7f", i, f); ++nm; } }
+    unsigned long long sig = vh ^ ((unsigned long long)e.bytes << 48);
+    for (int i = 0; i < nf; ++i) { const float f = e.m[i]; if (f < -0.0005f && f > -0.0045f) sig = sig * 1099511628211ull ^ (unsigned long long)(i * 131 + (int)(f * -1.0e6f)); }
+    for (int k = 0; k < g_flatSigN; ++k) if (g_flatSig[k] == sig) return;
+    if (g_flatSigN < 512) g_flatSig[g_flatSigN++] = sig;
+    InterlockedIncrement(&g_flatLines);
+    char pcs[700] = ""; int po = 0;
+    {   // FLATREC2: a batch's own pieces (AKVR's layout from the shader code): where each sits and its colour rows' alpha
+        using LayFn = int(*)(const void*, int*); static LayFn p_lay2 = nullptr; static bool t2 = false;
+        if (!t2) { HMODULE hm = GetModuleHandleW(L"dinput8.dll"); p_lay2 = hm ? (LayFn)GetProcAddress(hm, "akvr_vs_batch_layout") : nullptr; t2 = hm != nullptr; }
+        int lay[32] = {}; ID3D11VertexShader* v = nullptr; c->VSGetShader(&v, nullptr, nullptr);
+        const bool ok = v && p_lay2 && p_lay2(v, lay); if (v) v->Release();
+        if (ok)
+            for (int k = 0; k < 24; ++k)
+            {
+                const int rx = lay[0] + k * lay[2], ry = lay[1] + k * lay[2]; if ((rx + 1) * 4 > nf || (ry + 1) * 4 > nf) break;
+                const float* X = e.m + rx * 4; const float* Y = e.m + ry * 4; if (!X[0] && !X[1] && !X[3] && !Y[0] && !Y[1] && !Y[3]) continue;
+                float px = X[3], py = Y[3]; if (lay[5] >= 0 && (lay[5] + k * lay[2] + 1) * 4 <= nf) { const float W = e.m[(lay[5] + k * lay[2]) * 4 + 3]; if (fabsf(W) > 1e-6f) { px /= W; py /= W; } }
+                const int r0 = lay[7] + k * lay[19], r1 = lay[8] + k * lay[20];
+                const float a0 = (r0 + 1) * 4 <= nf ? e.m[r0 * 4 + 3] : 0.0f, a1 = (r1 + 1) * 4 <= nf ? e.m[r1 * 4 + 3] : 0.0f, c0 = (r0 + 1) * 4 <= nf ? e.m[r0 * 4] : 0.0f, c1 = (r1 + 1) * 4 <= nf ? e.m[r1 * 4] : 0.0f;
+                po += _snprintf_s(pcs + po, sizeof(pcs) - po, _TRUNCATE, " | p%d at %.3f %.3f rows %d:%.5f/%.5f %d:%.5f/%.5f", k, px, py, r0, c0, a0, r1, c1, a1);
+            }
+    }
+    logf("FLATREC flat vs %016llx (%u B) markers %d (first %.3f %.3f) | r6.w %.3f r7.w %.3f | marks:%s%s", vh, e.bytes, g_mkCN, g_mkCN ? g_mkC[0][0] : 0.0f, g_mkCN ? g_mkC[0][1] : 0.0f, nf > 27 ? e.m[27] : 0.0f, nf > 31 ? e.m[31] : 0.0f, nm ? marks : " none", pcs);
+}
+void STDMETHODCALLTYPE hk_Draw11(ID3D11DeviceContext* c, UINT n, UINT s0) { if (g_hudBound) { InterlockedIncrement(&f_hudDraws); InterlockedIncrement(&f_hudFrameDraws); if (hud_skip_draw(c)) return; } mk_dump_draw(c, "Draw", n); d0_draw(c, false); if (dlss_draw_skip(c, false)) return; if (skip_vs(c)) return; log_draw(c, "Draw", n); any_draw(c, n, 0, 0); if (!g_hudBound && g_hudPhase && c == g_gameCtx && !tl_inEyeRender && g_markSheet) mk_scratch_track(c); ID3D11DepthStencilView* mkd = nullptr; const int mk = g_hudBound ? mk_route_begin(c, &mkd) : 0; if (mk == 4) { rain_depth_post(c); return; } if (mk == 3) mk_eye_exec(c, mkd, [&] { o_Draw11(c, n, s0); }); else if (mk == 2) mk_split_draw(c, mkd, [&] { o_Draw11(c, n, s0); }); else { if (mk == 0 && g_hudBound) flat_rec(c); o_Draw11(c, n, s0); if (mk == 1) mk_route_end(c, mkd); } rain_depth_post(c); }   // FLATREC
+void STDMETHODCALLTYPE hk_DrawIdx11(ID3D11DeviceContext* c, UINT n, UINT s0, INT b0) { if (g_hudBound) { InterlockedIncrement(&f_hudDraws); InterlockedIncrement(&f_hudFrameDraws); if (hud_skip_draw(c)) return; } mk_dump_draw(c, "DrawIndexed", n); d0_draw(c, false); if (dlss_draw_skip(c, false)) return; if (skip_vs(c)) return; log_draw(c, "DrawIndexed", n); any_draw(c, n, 0, 1); if (!g_hudBound && g_hudPhase && c == g_gameCtx && !tl_inEyeRender && g_markSheet) mk_scratch_track(c); ID3D11DepthStencilView* mkd = nullptr; const int mk = g_hudBound ? mk_route_begin(c, &mkd) : 0; if (mk == 4) { rain_depth_post(c); return; } if (mk == 3) mk_eye_exec(c, mkd, [&] { o_DrawIdx11(c, n, s0, b0); }); else if (mk == 2) mk_split_draw(c, mkd, [&] { o_DrawIdx11(c, n, s0, b0); }); else { if (mk == 0 && g_hudBound) flat_rec(c); o_DrawIdx11(c, n, s0, b0); if (mk == 1) mk_route_end(c, mkd); } rain_depth_post(c); }   // FLATREC
 // JJ's 2nd Quest test 2026-10-07: "the latest device" was Virtual Desktop's (created last, in-process) and its context
 // function table is NOT the game's (D3D11 keeps different tables, e.g. single-threaded vs thread-safe devices) -> the
 // hooks never saw the game (pairs 0, mono). Now: the device AKVR hands over (the one behind the game's swap chain); with
@@ -4014,10 +5472,45 @@ ID3D11ComputeShader* flare_cs(ID3D11DeviceContext* c, ID3D11ComputeShader* cs)
     if (!g_flareOff || !cs || flare_kind(cs) != 2 || !flare_game_ctx(c) || !flare_build(c)) return cs;
     InterlockedIncrement(&c_flareCs); return g_flareCs;
 }
-void STDMETHODCALLTYPE hk_PSSetSh(ID3D11DeviceContext* c, ID3D11PixelShader* ps, ID3D11ClassInstance* const* ci, UINT n) { o_PSSetSh(c, flare_ps(c, ps), ci, n); }
-void STDMETHODCALLTYPE hkd_PSSetSh(ID3D11DeviceContext* c, ID3D11PixelShader* ps, ID3D11ClassInstance* const* ci, UINT n) { od_PSSetSh(c, flare_ps(c, ps), ci, n); }
-void STDMETHODCALLTYPE hk_CSSetSh(ID3D11DeviceContext* c, ID3D11ComputeShader* cs, ID3D11ClassInstance* const* ci, UINT n) { o_CSSetSh(c, flare_cs(c, cs), ci, n); }
-void STDMETHODCALLTYPE hkd_CSSetSh(ID3D11DeviceContext* c, ID3D11ComputeShader* cs, ID3D11ClassInstance* const* ci, UINT n) { od_CSSetSh(c, flare_cs(c, cs), ci, n); }
+// PSNEW 2026-10-14 (JJ: "the entire fov seems to rescale briefly when entering and exiting detective mode"; RB12 EYERING: both
+// lenses identical through every switch, but the left eye's picture is zoomed ~1.3x and blurred for ~11 frames before detective mode
+// shows = a screen effect of the game's own): every pixel / compute shader the game binds is noted by its CRC (Luma's naming); while
+// "psnew 1" is armed, a shader never bound before is logged once with the time - the transition's own passes appear at the switch.
+// "psnew list" prints every shader first seen since arming (first / last time, binds). "psskip <crc hex>" binds NO shader in its place
+// (live A/B: what the picture does without that pass); "psskip 0" = off.
+struct PsSeen { unsigned crc; int cs; ULONGLONG first, last; LONG binds; bool fresh; };
+SRWLOCK g_pnLock = SRWLOCK_INIT; std::unordered_map<const void*, PsSeen> g_pnMap; volatile LONG g_pnOn = 0, g_pnArmed = 0, g_pnLines = 0; ULONGLONG g_pnArmT = 0;
+volatile LONG g_psSkip = 0, c_psSkipped = 0;
+volatile ULONGLONG g_pnArmAt = 0;   // DIAGKIT psnewarm
+bool ps_seen(const void* sh, int cs)   // true = skip this bind (PSSKIP)
+{
+    if (g_pnArmAt && GetTickCount64() >= g_pnArmAt) { g_pnArmAt = 0; g_pnArmed = 1; logf("PSNEW: armed - effects drawn from now on that were not drawn before are logged"); }
+    if (!sh || (!g_pnOn && !g_psSkip)) return false;
+    if (!p_shCrcTried) { HMODULE m = GetModuleHandleW(L"dinput8.dll"); p_shCrc = m ? (ShCrcFn)GetProcAddress(m, "akvr_shader_crc") : nullptr; p_shCrcTried = m != nullptr; }
+    const ULONGLONG now = GetTickCount64(); unsigned crc = 0; bool isNew = false;
+    AcquireSRWLockExclusive(&g_pnLock);
+    auto it = g_pnMap.find(sh);
+    if (it == g_pnMap.end()) { crc = p_shCrc ? p_shCrc(sh) : 0; PsSeen e{ crc, cs, now, now, 1, g_pnArmed != 0 }; g_pnMap[sh] = e; isNew = g_pnArmed != 0; }
+    else { crc = it->second.crc; it->second.last = now; ++it->second.binds; }
+    ReleaseSRWLockExclusive(&g_pnLock);
+    if (isNew && g_pnLines < 400) { InterlockedIncrement(&g_pnLines); logf("PSNEW %s shader %08X (object %p) first bound %llu ms after arming", cs ? "compute" : "pixel", crc, sh, now - g_pnArmT); }
+    if (g_psSkip && crc == (unsigned)g_psSkip) { InterlockedIncrement(&c_psSkipped); return true; }
+    return false;
+}
+void ps_new_list()
+{
+    AcquireSRWLockShared(&g_pnLock); int n = 0;
+    for (const auto& kv : g_pnMap) if (kv.second.fresh) { ++n; logf("PSNEW list: %s %08X first %llu ms, last %llu ms after arming, binds %ld", kv.second.cs ? "compute" : "pixel", kv.second.crc, kv.second.first - g_pnArmT, kv.second.last - g_pnArmT, kv.second.binds); }
+    ReleaseSRWLockShared(&g_pnLock); logf("PSNEW list: %d shaders first bound since arming (%zu known)", n, g_pnMap.size());
+}
+void STDMETHODCALLTYPE hk_PSSetSh(ID3D11DeviceContext* c, ID3D11PixelShader* ps, ID3D11ClassInstance* const* ci, UINT n) { if (ps_seen(ps, 0)) ps = nullptr; o_PSSetSh(c, flare_ps(c, ps), ci, n); }   // PSNEW / PSSKIP
+void STDMETHODCALLTYPE hkd_PSSetSh(ID3D11DeviceContext* c, ID3D11PixelShader* ps, ID3D11ClassInstance* const* ci, UINT n) { if (ps_seen(ps, 0)) ps = nullptr; od_PSSetSh(c, flare_ps(c, ps), ci, n); }   // PSNEW / PSSKIP
+void STDMETHODCALLTYPE hk_CSSetSh(ID3D11DeviceContext* c, ID3D11ComputeShader* cs, ID3D11ClassInstance* const* ci, UINT n) { if (ps_seen(cs, 1)) cs = nullptr; o_CSSetSh(c, flare_cs(c, cs), ci, n); }   // PSNEW / PSSKIP
+void STDMETHODCALLTYPE hkd_CSSetSh(ID3D11DeviceContext* c, ID3D11ComputeShader* cs, ID3D11ClassInstance* const* ci, UINT n) { if (ps_seen(cs, 1)) cs = nullptr; od_CSSetSh(c, flare_cs(c, cs), ci, n); }   // PSNEW / PSSKIP
+void STDMETHODCALLTYPE hk2_PSSetSh(ID3D11DeviceContext* c, ID3D11PixelShader* ps, ID3D11ClassInstance* const* ci, UINT n) { if (ps_seen(ps, 0)) ps = nullptr; o_PSSetSh(c, ps, ci, n); }   // PSNEW / PSSKIP 2026-10-14
+void STDMETHODCALLTYPE hk2d_PSSetSh(ID3D11DeviceContext* c, ID3D11PixelShader* ps, ID3D11ClassInstance* const* ci, UINT n) { if (ps_seen(ps, 0)) ps = nullptr; od_PSSetSh(c, ps, ci, n); }
+void STDMETHODCALLTYPE hk2_CSSetSh(ID3D11DeviceContext* c, ID3D11ComputeShader* cs, ID3D11ClassInstance* const* ci, UINT n) { if (ps_seen(cs, 1)) cs = nullptr; o_CSSetSh(c, cs, ci, n); }
+void STDMETHODCALLTYPE hk2d_CSSetSh(ID3D11DeviceContext* c, ID3D11ComputeShader* cs, ID3D11ClassInstance* const* ci, UINT n) { if (ps_seen(cs, 1)) cs = nullptr; od_CSSetSh(c, cs, ci, n); }
 void hook_context()
 {
     if (g_hooked) return;
@@ -4054,7 +5547,8 @@ void hook_context()
         { 35, (void*)&hk_Blend, (void**)&o_Blend },   // HUDBLEND
         { 44, (void*)&hk_RSVP, (void**)&o_RSVP }, { 45, (void*)&hk_RSSc, (void**)&o_RSSc },   // HUDVP
         { 7, (void*)&hk_VSCB, (void**)&o_VSCB }, { 14, (void*)&hk_Map, (void**)&o_Map }, { 15, (void*)&hk_Unmap, (void**)&o_Unmap }, { 48, (void*)&hk_UpdSub, (void**)&o_UpdSub },   // MARKSHEET
-        { 20, (void*)&hk_DrawII, (void**)&o_DrawII }, { 21, (void*)&hk_DrawI, (void**)&o_DrawI }, { 39, (void*)&hk_DrawIIInd, (void**)&o_DrawIIInd }, { 40, (void*)&hk_DrawIInd, (void**)&o_DrawIInd } };   // RAINDUMP
+        { 20, (void*)&hk_DrawII, (void**)&o_DrawII }, { 21, (void*)&hk_DrawI, (void**)&o_DrawI }, { 39, (void*)&hk_DrawIIInd, (void**)&o_DrawIIInd }, { 40, (void*)&hk_DrawIInd, (void**)&o_DrawIInd },   // RAINDUMP
+        { 9, (void*)&hk2_PSSetSh, (void**)&o_PSSetSh }, { 69, (void*)&hk2_CSSetSh, (void**)&o_CSSetSh } };   // PSNEW / PSSKIP (lean: no flare lookups)
         // (FLAREOFF bind hooks on slots 9 / 69 removed 2026-10-10 - FLAREOFF3 swaps the flare shaders at creation in AKVR)
     for (auto& h : hs)
     {
@@ -4082,7 +5576,8 @@ void hook_context()
                     { 13, (void*)&hkd_Draw, (void**)&od_Draw }, { 12, (void*)&hkd_DrawIdx, (void**)&od_DrawIdx }, { 20, (void*)&hkd_DrawII, (void**)&od_DrawII }, { 21, (void*)&hkd_DrawI, (void**)&od_DrawI }, { 50, (void*)&hkd_Clr, (void**)&od_Clr },
                     { 8, (void*)&hkd_PSSRV, (void**)&od_PSSRV }, { 25, (void*)&hkd_VSSRV, (void**)&od_VSSRV }, { 67, (void*)&hkd_CSSRV, (void**)&od_CSSRV },
                     { 33, (void*)&hkd_RT, (void**)&od_RT }, { 68, (void*)&hkd_CSUAV, (void**)&od_CSUAV },   // XEYE
-                    { 10, (void*)&hkd_PSSamp, (void**)&od_PSSamp } };   // MIPBIAS
+                    { 10, (void*)&hkd_PSSamp, (void**)&od_PSSamp }, { 53, (void*)&hkd_ClrDSV, (void**)&od_ClrDSV },   // MIPBIAS; DETCALLOUT
+                    { 9, (void*)&hk2d_PSSetSh, (void**)&od_PSSetSh }, { 69, (void*)&hk2d_CSSetSh, (void**)&od_CSSetSh } };   // PSNEW / PSSKIP
                 int okN = 0;
                 for (auto& h : ds) { if (dvt[h.slot] == vt[h.slot]) continue; if (MH_CreateHook(dvt[h.slot], h.det, h.orig) == MH_OK && MH_QueueEnableHook(dvt[h.slot]) == MH_OK) ++okN; }
                 logf("deferred context table %p: %d draw/dispatch hooks in", (void*)dvt, okN);
@@ -4135,6 +5630,8 @@ void after_eye_render(int eye)
         {
             D3D11_TEXTURE2D_DESC d; bb->GetDesc(&d);
             // DLSS D1: the eye picture is the small render; DLSS writes the full-size eye (headset size) instead
+            if (eye == 0 && g_depthProbe > 0) depth_probe_after(ctx);   // DEPTHPROBE
+            if (eye == 0 && g_rendVPok && g_scanOn && g_scanRay.ok) scan_pass(ctx, mul44(g_rendV, g_rendP));   // DETCALLOUT: the left eye's depth, still there
             ID3D11Texture2D* up = akn_dlss_mode() > 0 ? akn_dlss_eval(ctx, eye, bb, g_rendJit[0], g_rendJit[1], &g_rendV.m[0][0], &g_rendP.m[0][0], g_rendVPok != 0) : nullptr;
             if (up) { D3D11_TEXTURE2D_DESC ud; up->GetDesc(&ud); d.Width = ud.Width; d.Height = ud.Height; }
             ID3D11Texture2D* const eyePic = up ? up : bb;
@@ -4157,9 +5654,10 @@ void after_eye_render(int eye)
                 if (g_rendVPok && g_rendDOk)
                 {   // MARKERCUT: both eyes' view x lens without the jitter
                     M44 pp = g_rendP; pp.m[2][0] = 0.0f; pp.m[2][1] = 0.0f;
-                    AcquireSRWLockExclusive(&g_mcLock); g_mcPubVP[eye] = mul44(g_rendV, pp); g_mcPubVP[o] = mul44(g_rendDV, g_rendDP); g_mcPubOk = 1;
+                    AcquireSRWLockExclusive(&g_mcLock); g_mcPubVP[eye] = mul44(g_rendV, pp); g_mcPubVP[o] = mul44(g_rendDV, g_rendDP); rain_vp_publish(ctx, g_mcPubVP[0]);   /* RAINLIGHT3 */ g_mcPubOk = 1;
                     for (int k = 0; k < 9; ++k) g_mcPubAx[k] = g_rendAx[k]; g_mcPubAxOk = g_rendAxOk; g_mcPubBVP = g_rendBVP; g_mcPubBvpOk = g_rendBVPok; ReleaseSRWLockExclusive(&g_mcLock);   // PAIRAXES / MKEYE
                 }
+                g_erP[eye] = g_rendP; g_erP[o] = g_rendDP; eye_ring_note(ctx);   // EYERING
                 g_pairStamp = tl_renderStamp; InterlockedIncrement(&g_pairSeq); g_pairHalves = 0; g_mcEyeOk = 0;
                 if (g_capWant & 4) { InterlockedAnd(&g_capWant, ~4); save_bmp(ctx, g_pair, 0, -1, L"pair"); }
                 // one exposure for both eyes: the drawn eye's adaptation into the other eye's view state (Stage 6a, 14 temporal trap)
@@ -4171,10 +5669,10 @@ void after_eye_render(int eye)
             {
                 ctx->CopySubresourceRegion(g_pair, 0, eye == 0 ? 0 : d.Width, 0, 0, eyePic, 0, nullptr);
                 if (g_eyeMark) mark_eye(ctx, eye, d);
-                g_pairHalves |= 1 << eye;
+                g_pairHalves |= 1 << eye; g_erP[eye] = g_rendP;   // EYERING
                 if (g_rendVPok) { M44 pp = g_rendP; pp.m[2][0] = 0.0f; pp.m[2][1] = 0.0f; g_mcEyeVP[eye] = mul44(g_rendV, pp); g_mcEyeOk |= 1 << eye; }   // MARKERCUT: unjittered
-                if (eye == 0) { if (g_pairHalves == 3) { g_pairStamp = tl_renderStamp; InterlockedIncrement(&g_pairSeq);
-                    if (g_mcEyeOk == 3) { AcquireSRWLockExclusive(&g_mcLock); g_mcPubVP[0] = g_mcEyeVP[0]; g_mcPubVP[1] = g_mcEyeVP[1]; g_mcPubOk = 1;
+                if (eye == 0) { if (g_pairHalves == 3) { eye_ring_note(ctx); g_pairStamp = tl_renderStamp; InterlockedIncrement(&g_pairSeq);   // EYERING
+                    if (g_mcEyeOk == 3) { AcquireSRWLockExclusive(&g_mcLock); g_mcPubVP[0] = g_mcEyeVP[0]; rain_vp_publish(ctx, g_mcEyeVP[0]);   /* RAINLIGHT3 */ g_mcPubVP[1] = g_mcEyeVP[1]; g_mcPubOk = 1;
                         for (int k = 0; k < 9; ++k) g_mcPubAx[k] = g_rendAx[k]; g_mcPubAxOk = g_rendAxOk; g_mcPubBVP = g_rendBVP; g_mcPubBvpOk = g_rendBVPok; ReleaseSRWLockExclusive(&g_mcLock); } }   // PAIRAXES / MKEYE
                     g_pairHalves = 0; g_mcEyeOk = 0; }
                 if (eye == 0 && (g_capWant & 4)) { InterlockedAnd(&g_capWant, ~4); save_bmp(ctx, g_pair, 0, -1, L"pair"); }
@@ -4256,6 +5754,7 @@ void __fastcall hk_RenderVF(void* r)
     const bool first = eye >= 0 && (afw || eye == 1), last = eye >= 0 && (afw || eye == 0);   // the frame's first / last eye render
     hook_context();
     if (g_trace10 > 0) logf("TRACE10 render thread: RenderViewFamily %p eye %d begin", r, eye);
+    if (eye >= 0 && g_rainMask) { ID3D11DeviceContext* ic = nullptr; if (g_dev) g_dev->GetImmediateContext(&ic); if (ic) { rain_mask_clear(ic, eye); ic->Release(); } }   // RAINMASK
     if (first && g_afterEye0) { g_afterEye0 = false; g_afterLogs = 0; }
     {   // RANDSYNC (render thread): the right eye renders first - the left eye's render starts from the same dice
         static RandSave s_rt{}; static bool s_have = false;
@@ -4266,11 +5765,18 @@ void __fastcall hk_RenderVF(void* r)
     {
         InterlockedIncrement(&g_rainPair);   // RAINPAIR: a new stereo pair begins
         g_hudPhase = false;   // the previous frame's HUD is complete now (also ended by akn_present)
+        if (g_hrOn && g_hudTex && g_dev) { ID3D11DeviceContext* rc = nullptr; g_dev->GetImmediateContext(&rc); if (rc) { hud_ring_frame(rc); rc->Release(); } }   // HUDRING
+        if (g_recOn && g_hudTex && g_dev) { ID3D11DeviceContext* cc = nullptr; g_dev->GetImmediateContext(&cc); if (cc) { hud_cover_frame(cc); cc->Release(); } }   // HUDCOVER
+        if (g_bhStep >= 0 && g_hudTex && g_dev) { ID3D11DeviceContext* bc = nullptr; g_dev->GetImmediateContext(&bc); if (bc) { black_hunt_frame(bc); bc->Release(); } }   // BLACKHUNT
         if (g_capHud && g_hudTex && g_dev)
         {
             g_capHud = 0;
             ID3D11DeviceContext* c = nullptr; g_dev->GetImmediateContext(&c);
-            if (c) { save_bmp(c, g_hudTex, 0, -1, L"hud_rgb"); save_bmp(c, g_hudTex, 0, -1, L"hud_alpha", true); c->Release(); }
+            if (c) { save_bmp(c, g_hudTex, 0, -1, L"hud_rgb"); save_bmp(c, g_hudTex, 0, -1, L"hud_alpha", true);
+                     // PROMPTCAP 2026-10-11 (JJ: "A to rescue" and other hints never show): world-attached pieces go to the
+                     // per-eye marker layers, which no capture saved - a prompt routed there was invisible to every check
+                     if (g_mkEye) for (int k = 0; k < 2; ++k) if (g_mkEyeTex[k]) save_bmp(c, g_mkEyeTex[k], 0, -1, k ? L"mk_right" : L"mk_left");
+                     c->Release(); }
         }
     }
     tl_trace = eye >= 0 && (g_traceWant & (1 << eye)) != 0;
@@ -4326,6 +5832,7 @@ void __fastcall hk_RenderVF(void* r)
     if (last && g_rtDone) SetEvent(g_rtDone);   // RTWAIT
     vs_inv_end(eye);   // VSINV
     ps_inv_end(eye);   // DETECTIVE
+    if (g_fxcbArm) fxcb_end(eye);   // FXCB
     if (last && g_afterLogs > 0) g_afterEye0 = true;
     if (last) { g_eye0Done = true; if (g_hudOn) { if (!g_hudAll) g_hudClearPending = true; g_hudPhase = true; } }   // HUDTRACE: hudall clears at akn_present
     if (eye >= 0 && g_rtListLogs > 0) { --g_rtListLogs; logf("eye %d render targets in order:%s", eye, tl_rtList); }
@@ -4417,6 +5924,175 @@ bool sig_ok(uintptr_t rva, const char* hex)
     }
     return true;
 }
+// BATEVENT 2026-10-13 (JJ: the bat transition between menus / into gameplay "needs to be full field of view and closer to the
+// camera, same as all the other mods"; REC1: the bats are drawn on the HUD sheet and share textures + shaders with the menu text,
+// so no draw identifies them): the game's own sound - BatmanAK.exe EXPORTS Wwise AK::SoundEngine::PostEvent (id / char / wchar),
+// as Arkham Origins does (Origins O1D: Play_UI_Fader_Bats = 0xE8BB4D2C). Every new event id is logged once (names too) so the
+// fade-to-black's event can be found; akn_bat_age_ms() tells AKVR how long ago the bats started.
+using AkPostIdFn = uint32_t(__cdecl*)(uint32_t, uint64_t, uint32_t, void*, void*, uint32_t, void*, uint32_t);
+using AkPostAFn = uint32_t(__cdecl*)(const char*, uint64_t, uint32_t, void*, void*, uint32_t, void*, uint32_t);
+using AkPostWFn = uint32_t(__cdecl*)(const wchar_t*, uint64_t, uint32_t, void*, void*, uint32_t, void*, uint32_t);
+using AkHashFn = uint32_t(__cdecl*)(const char*);
+AkPostIdFn o_akPostId = nullptr; AkPostAFn o_akPostA = nullptr; AkPostWFn o_akPostW = nullptr; AkHashFn p_akHash = nullptr;
+volatile uint32_t g_batId = 0; volatile LONGLONG g_batAt = 0; volatile LONG c_batEvents = 0, g_akSeenN = 0, g_akHooked = 0;
+uint32_t g_akSeen[512] = {};
+void ak_event(uint32_t id, const char* name, const wchar_t* wname)
+{
+    const ULONGLONG now = GetTickCount64();
+    if (id && id == g_batId) { const LONGLONG prev = InterlockedExchange64(&g_batAt, (LONGLONG)now); if (!prev || now - (ULONGLONG)prev > 300) { InterlockedIncrement(&c_batEvents); logf("BATEVENT: Play_UI_Fader_Bats #%ld", c_batEvents); } }
+    if (!id) return;
+    for (LONG i = 0; i < g_akSeenN; ++i) if (g_akSeen[i] == id) return;
+    if (g_akSeenN >= 512) return;
+    g_akSeen[InterlockedIncrement(&g_akSeenN) - 1] = id;
+    char nm[96] = "";
+    __try { if (name) strncpy_s(nm, name, _TRUNCATE); else if (wname) { int k = 0; for (; k < 95 && wname[k]; ++k) nm[k] = (char)wname[k]; nm[k] = 0; } } __except (EXCEPTION_EXECUTE_HANDLER) { nm[0] = 0; }
+    logf("AKEVENT new: id %u %s%s", id, nm[0] ? "name " : "(posted by id)", nm);
+}
+uint32_t __cdecl hk_akPostId(uint32_t id, uint64_t obj, uint32_t fl, void* cb, void* ck, uint32_t n, void* ext, uint32_t pl) { ak_event(id, nullptr, nullptr); return o_akPostId(id, obj, fl, cb, ck, n, ext, pl); }
+uint32_t __cdecl hk_akPostA(const char* nm, uint64_t obj, uint32_t fl, void* cb, void* ck, uint32_t n, void* ext, uint32_t pl) { uint32_t id = 0; __try { id = (p_akHash && nm) ? p_akHash(nm) : 0; } __except (EXCEPTION_EXECUTE_HANDLER) { id = 0; } ak_event(id, nm, nullptr); return o_akPostA(nm, obj, fl, cb, ck, n, ext, pl); }
+uint32_t __cdecl hk_akPostW(const wchar_t* nm, uint64_t obj, uint32_t fl, void* cb, void* ck, uint32_t n, void* ext, uint32_t pl)
+{
+    uint32_t id = 0; char a[96] = "";
+    __try { if (nm) { int k = 0; for (; k < 95 && nm[k]; ++k) a[k] = (char)nm[k]; a[k] = 0; id = p_akHash ? p_akHash(a) : 0; } } __except (EXCEPTION_EXECUTE_HANDLER) { id = 0; }
+    ak_event(id, a[0] ? a : nullptr, nullptr); return o_akPostW(nm, obj, fl, cb, ck, n, ext, pl);
+}
+void ak_hooks_queue()   // HOOKBATCH: queued, switched on with the start-up batch
+{
+    HMODULE exe = GetModuleHandleW(nullptr);
+    p_akHash = (AkHashFn)GetProcAddress(exe, "?GetIDFromString@SoundEngine@AK@@YAKPEBD@Z");
+    void* t[3] = { (void*)GetProcAddress(exe, "?PostEvent@SoundEngine@AK@@YAKK_KKP6AXW4AkCallbackType@@PEAUAkCallbackInfo@@@ZPEAXKPEAUAkExternalSourceInfo@@K@Z"),
+                   (void*)GetProcAddress(exe, "?PostEvent@SoundEngine@AK@@YAKPEBD_KKP6AXW4AkCallbackType@@PEAUAkCallbackInfo@@@ZPEAXKPEAUAkExternalSourceInfo@@K@Z"),
+                   (void*)GetProcAddress(exe, "?PostEvent@SoundEngine@AK@@YAKPEB_W_KKP6AXW4AkCallbackType@@PEAUAkCallbackInfo@@@ZPEAXKPEAUAkExternalSourceInfo@@K@Z") };
+    if (!p_akHash || !t[0] || !t[1] || !t[2]) { logf("BATEVENT: Wwise exports not found - no bat trigger"); return; }
+    uint32_t id = 0; __try { id = p_akHash("Play_UI_Fader_Bats"); } __except (EXCEPTION_EXECUTE_HANDLER) { id = 0; }
+    g_batId = id;
+    logf("BATEVENT: Play_UI_Fader_Bats = %u (0x%08X; Origins / City 0xE8BB4D2C)", id, id);
+    void* d[3] = { (void*)&hk_akPostId, (void*)&hk_akPostA, (void*)&hk_akPostW }; void** o[3] = { (void**)&o_akPostId, (void**)&o_akPostA, (void**)&o_akPostW };
+    int ok = 0; for (int i = 0; i < 3; ++i) if (MH_CreateHook(t[i], d[i], o[i]) == MH_OK && MH_QueueEnableHook(t[i]) == MH_OK) ++ok;
+    g_akHooked = ok; logf("BATEVENT: %d of 3 Wwise PostEvent hooks queued", ok);
+}
+extern "C" __declspec(dllexport) long akn_bat_age_ms() { const LONGLONG at = g_batAt; return at ? (long)(GetTickCount64() - (ULONGLONG)at) : -1; }   // BATEVENT (AKVR)
+// MENUSTATE 2026-10-13 (RB1: a transition signal must come from the GAME's state - City MENUSTATE: UGFxMoviePlayer Start / Close
+// natives found by name in UE3's native table). AK (64-bit UE3): the table entry is { const char* "<Class>exec<Func>"; impl } (16
+// bytes); the names exist in BatmanAK.exe (UGFxMoviePlayerexecStart / Close, URGFxMovieUIexecStart, RGFxMovieFrontMostexecShouldFade).
+// Each call is logged with the movie object's class + name (GNames found live: entry 0 "None", entry 1 "ByteProperty").
+namespace ms {
+uint8_t* g_namesArr = nullptr; int g_textOff = -1; bool g_wide = false; int g_objNameOff = -1; bool g_namesTried = false;
+bool rd(const void* p, size_t n) { MEMORY_BASIC_INFORMATION mi{}; if (!p || !VirtualQuery(p, &mi, sizeof(mi))) return false; if (mi.State != MEM_COMMIT || (mi.Protect & (PAGE_NOACCESS | PAGE_GUARD))) return false; return (const uint8_t*)p + n <= (const uint8_t*)mi.BaseAddress + mi.RegionSize; }
+bool text_is(const uint8_t* p, const char* t, bool wide) { const size_t n = strlen(t) + 1; if (!rd(p, wide ? 2 * n : n)) return false; for (size_t i = 0; i < n; ++i) if ((wide ? ((const uint16_t*)p)[i] : p[i]) != (uint8_t)t[i]) return false; return true; }
+bool name_text(int idx, char* out, size_t n)
+{
+    out[0] = 0; if (!g_namesArr || idx < 0) return false;
+    __try {
+        uint8_t** data = *(uint8_t***)g_namesArr; const int num = *(const int*)(g_namesArr + 8);
+        if (idx >= num || !rd(data + idx, 8)) return false;
+        const uint8_t* e = data[idx]; if (!e) return false;
+        const uint8_t* t = e + g_textOff; const size_t cw = g_wide ? 2 : 1; size_t i = 0;
+        for (; i + 1 < n; ++i) { if (!rd(t + i * cw, cw)) return false; const unsigned c = g_wide ? ((const uint16_t*)t)[i] : t[i]; if (!c) break; if (c < 0x20 || c > 0x7E) return false; out[i] = (char)c; }
+        out[i] = 0; return i > 0;
+    } __except (EXCEPTION_EXECUTE_HANDLER) { out[0] = 0; return false; }
+}
+bool find_names()
+{
+    const uint8_t* base = (const uint8_t*)GetModuleHandleW(nullptr);
+    const IMAGE_NT_HEADERS* nt = (const IMAGE_NT_HEADERS*)(base + ((const IMAGE_DOS_HEADER*)base)->e_lfanew);
+    const IMAGE_SECTION_HEADER* sec = IMAGE_FIRST_SECTION(nt);
+    for (unsigned si = 0; si < nt->FileHeader.NumberOfSections; ++si, ++sec)
+    {
+        if (!(sec->Characteristics & IMAGE_SCN_MEM_WRITE) || (sec->Characteristics & IMAGE_SCN_MEM_EXECUTE)) continue;
+        uint8_t* lo = (uint8_t*)base + sec->VirtualAddress; const size_t len = sec->Misc.VirtualSize & ~(size_t)7;
+        for (size_t o = 0; o + 16 <= len; o += 8)
+        {
+            uint8_t* p = lo + o; if ((o & 0xFFF) == 0 && !rd(p, 16)) { o += 0xFF8; continue; }
+            __try {
+                const int num = *(const int*)(p + 8), mx = *(const int*)(p + 12);
+                if (num < 2000 || num > 5000000 || mx < num || mx > 8000000) continue;
+                uint8_t** data = *(uint8_t***)p; if (!rd(data, 16)) continue;
+                const uint8_t* e0 = data[0]; const uint8_t* e1 = data[1]; if (!rd(e0, 16) || !rd(e1, 16)) continue;
+                for (int w = 0; w < 2; ++w) for (int off = 0x4; off <= 0x20; off += 4)
+                    if (text_is(e0 + off, "None", w != 0) && text_is(e1 + off, "ByteProperty", w != 0)) { g_wide = w != 0; g_textOff = off; g_namesArr = p; logf("MENUSTATE: name table at %p (%d names, %s at entry +0x%X)", p, num, w ? "UTF-16" : "ANSI", off); return true; }
+            } __except (EXCEPTION_EXECUTE_HANDLER) {}
+        }
+    }
+    return false;
+}
+void describe(const void* o, char* out, size_t n)
+{
+    snprintf(out, n, "%p", o);
+    if (!g_namesArr) { if (g_namesTried) return; g_namesTried = true; if (!find_names()) { logf("MENUSTATE: name table not found"); return; } }
+    const uint8_t* obj = (const uint8_t*)o; char t[96], nm[96] = "?", cl[96] = "?";
+    __try {
+        if (g_objNameOff < 0)
+            for (int off = 0x10; off <= 0x80 && g_objNameOff < 0; off += 4)
+            {
+                if (!rd(obj + off, 16)) break;
+                const uint8_t* cls = *(const uint8_t* const*)(obj + off + 8);
+                if (!name_text(*(const int*)(obj + off), t, sizeof t) || !rd(cls, off + 16)) continue;
+                const uint8_t* meta = *(const uint8_t* const*)(cls + off + 8);
+                if (!name_text(*(const int*)(cls + off), t, sizeof t) || !rd(meta, off + 16)) continue;
+                if (name_text(*(const int*)(meta + off), t, sizeof t) && strcmp(t, "Class") == 0) { g_objNameOff = off; logf("MENUSTATE: object name at +0x%X, class at +0x%X", off, off + 8); }
+            }
+        if (g_objNameOff >= 0 && rd(obj + g_objNameOff, 16))
+        {
+            name_text(*(const int*)(obj + g_objNameOff), nm, sizeof nm);
+            const uint8_t* c = *(const uint8_t* const*)(obj + g_objNameOff + 8); if (rd(c, g_objNameOff + 8)) name_text(*(const int*)(c + g_objNameOff), cl, sizeof cl);
+        }
+    } __except (EXCEPTION_EXECUTE_HANDLER) {}
+    snprintf(out, n, "%s %s (%p)", cl, nm, o);
+}
+// the exec thunk's address from the native table: name string in .rdata -> 8-byte reference in .data -> impl 8 bytes later
+void* find_native(const char* full)
+{
+    const uint8_t* base = (const uint8_t*)GetModuleHandleW(nullptr);
+    const IMAGE_NT_HEADERS* nt = (const IMAGE_NT_HEADERS*)(base + ((const IMAGE_DOS_HEADER*)base)->e_lfanew);
+    const size_t fl = strlen(full) + 1; const uint8_t* str = nullptr;
+    const IMAGE_SECTION_HEADER* sec = IMAGE_FIRST_SECTION(nt);
+    for (unsigned si = 0; si < nt->FileHeader.NumberOfSections && !str; ++si, ++sec)
+    {
+        if (sec->Characteristics & (IMAGE_SCN_MEM_EXECUTE | IMAGE_SCN_MEM_WRITE)) continue;
+        const uint8_t* lo = base + sec->VirtualAddress; const size_t len = sec->Misc.VirtualSize;
+        for (size_t o = 1; o + fl <= len; ++o) if (lo[o] == (uint8_t)full[0] && lo[o - 1] == 0 && memcmp(lo + o, full, fl) == 0) { str = lo + o; break; }
+    }
+    if (!str) return nullptr;
+    const uint8_t* text = nullptr; size_t textLen = 0;
+    sec = IMAGE_FIRST_SECTION(nt);
+    for (unsigned si = 0; si < nt->FileHeader.NumberOfSections; ++si, ++sec) if (sec->Characteristics & IMAGE_SCN_MEM_EXECUTE) { text = base + sec->VirtualAddress; textLen = sec->Misc.VirtualSize; break; }
+    sec = IMAGE_FIRST_SECTION(nt);
+    for (unsigned si = 0; si < nt->FileHeader.NumberOfSections; ++si, ++sec)
+    {
+        if (!(sec->Characteristics & IMAGE_SCN_MEM_WRITE)) continue;
+        const uint8_t* lo = base + sec->VirtualAddress; const size_t len = sec->Misc.VirtualSize & ~(size_t)7;
+        for (size_t o = 0; o + 16 <= len; o += 8)
+        {
+            if (*(const uint8_t* const*)(lo + o) != str) continue;
+            void* impl = *(void* const*)(lo + o + 8);
+            if (text && (const uint8_t*)impl >= text && (const uint8_t*)impl < text + textLen) return impl;
+        }
+    }
+    return nullptr;
+}
+using ExecFn = void(__fastcall*)(void*, void*, void*);
+struct T { const char* full; ExecFn orig; LONG n; };
+T g_t[] = { { "UGFxMoviePlayerexecStart", nullptr, 0 }, { "UGFxMoviePlayerexecClose", nullptr, 0 }, { "URGFxMovieUIexecStart", nullptr, 0 }, { "RGFxMovieFrontMostexecShouldFade", nullptr, 0 } };
+template <int I> void __fastcall det(void* self, void* stack, void* result)
+{
+    const LONG n = InterlockedIncrement(&g_t[I].n);
+    if (n <= 200) { char who[200]; describe(self, who, sizeof who); logf("MENUSTATE %s on %s (#%ld)", g_t[I].full, who, n); }
+    g_t[I].orig(self, stack, result);
+}
+void* const g_det[] = { (void*)&det<0>, (void*)&det<1>, (void*)&det<2>, (void*)&det<3> };
+void queue()
+{
+    int ok = 0;
+    for (int i = 0; i < 4; ++i)
+    {
+        void* f = find_native(g_t[i].full);
+        if (!f) { logf("MENUSTATE: %s not found in the native table", g_t[i].full); continue; }
+        if (MH_CreateHook(f, g_det[i], (void**)&g_t[i].orig) == MH_OK && MH_QueueEnableHook(f) == MH_OK) { ++ok; logf("MENUSTATE: %s at RVA %llX queued", g_t[i].full, (unsigned long long)((uint8_t*)f - (uint8_t*)GetModuleHandleW(nullptr))); }
+    }
+    logf("MENUSTATE: %d of 4 menu natives queued", ok);
+}
+}   // namespace ms
 bool hook(uintptr_t rva, const char* sig, void* det, void** orig, const char* name)
 {
     if (!sig_ok(rva, sig)) { logf("SIGNATURE MISMATCH %s at %llX - not hooked", name, (unsigned long long)rva); return false; }
@@ -4527,6 +6203,7 @@ DWORD WINAPI worker(LPVOID)
     logf("engine stereo %s at start, eye separation %.2f units, second view state mode %ld (F9 / command.txt)", g_stereo ? "ON" : "off", g_ipd, g_vsMode);
     ok &= hook(0xBDDEC0, "40574883ec3048c7442420feffffff48", (void*)&hk_Scene, (void**)&o_Scene, "scene draw entry");
     ok &= hook(0x41BF00, "488bc448894808555356574154415541", (void*)&hk_CdB, (void**)&o_CdB, "ClientDraw B");
+    // (BATEVENT / AKEVENT Wwise hooks and MENUSTATE movie hooks not installed - release tidy 2026-10-14; bats parked, HUD_REBUILD_PLAN HR4)
     {   // HOOKBATCH: the start-up hooks switched on together (each one alone froze the game's threads for ~0.12 s)
         const LONG64 t0 = qpc(); const MH_STATUS st = MH_ApplyQueued();
         logf("start-up hooks switched on in one batch: %s (%.0f ms)", st == MH_OK ? "ok" : "FAILED", (qpc() - t0) * 1000.0 / g_qpf);
@@ -4587,9 +6264,23 @@ DWORD WINAPI worker(LPVOID)
                 static int padTick = 0; using RouteFn = const char*(*)();
                 static RouteFn p_route = nullptr; if (!p_route) { HMODULE m = GetModuleHandleW(L"dinput8.dll"); if (m) p_route = (RouteFn)GetProcAddress(m, "akvr_pad_route"); }
                 if (p_route && (padTick++ % 10) == 0) logf("  %s", p_route());   // GAMEROUTE: which route sees JJ's pad
+                {   // PATHREC (AKVR): frames that show the old eye picture with its HUD again, and the HUD layer on top
+                    using PdFn = const char* (*)(); static PdFn pf = nullptr; static bool pt = false;
+                    if (!pt) { HMODULE hm = GetModuleHandleW(L"dinput8.dll"); pf = hm ? (PdFn)GetProcAddress(hm, "akvr_path_diag") : nullptr; pt = hm != nullptr; }
+                    if (pf) logf("  %s", pf());
+                    static LONG l1 = 0, l2 = 0; const LONG d1 = c_flipSingle - l1, d2 = c_flipBatch - l2; l1 = c_flipSingle; l2 = c_flipBatch;
+                    if (d1 || d2) logf("  FLIPREC: pieces next to a marker left on the HUD sheet/s - single %ld, batched %ld", d1, d2);
+                    { static LONG lc = 0; const LONG dc = c_mkCarry2 - lc; lc = c_mkCarry2; if (dc) logf("  MKCARRY2: HUD frames with no marker point that kept the last ones/s %ld", dc); }
+                    { static LONG lh = 0, lt = 0; const LONG dh = c_mkContHeld - lh, dt = c_mkContTake - lt; lh = c_mkContHeld; lt = c_mkContTake; static LONG ld = 0; const LONG dd = c_mkHeldDrop - ld; ld = c_mkHeldDrop; if (dh || dt || dd) logf("  MKCONT: one-off marker point / HUD map jumps held back/s %ld, new ones taken after 3 frames/s %ld, marked pieces left out on held frames/s %ld", dh, dt, dd); }
+                    { static LONG lf = 0; const LONG df = c_mkTagFaded - lf; lf = c_mkTagFaded; if (df) logf("  TAGFADE: marker pieces recognised by their faded mark/s %ld", df); }
+                    { static LONG lj = 0; const LONG dj = c_mkPlaceJump - lj; lj = c_mkPlaceJump; if (dj) logf("  MKPLACE: frames where the marker jumped off its own path/s %ld", dj); }
+                    { static LONG ln = 0, lr = 0; const LONG dn = c_mkMissNone - ln, dr = c_mkMissReach - lr; ln = c_mkMissNone; lr = c_mkMissReach; if (dn || dr) logf("  MKMISS: marked marker pieces left on the flat sheet/s - no marker this frame %ld, out of reach %ld", dn, dr); }
+                }
                 {   // SUITGLOSS
                     static LONG lastD = 0; const LONG dd = c_glossDraws - lastD; lastD = c_glossDraws;
                     logf("  suit gloss (head-free aim): %s, draws corrected/s %ld", g_gloss ? "on" : "off", dd);
+                    {   static LONG ls = 0, lw = 0; const LONG ds = c_detSeen - ls, dw = c_vsSplitSwaps - lw; ls = c_detSeen; lw = c_vsSplitSwaps;   // DETHOLD
+                        if (ds || dw) logf("  detective: composite seen/s %ld, longest gap %ld ms (hold %ld ms), right-eye view state swaps/s %ld", ds, (long)InterlockedExchange(&g_detGapMax, 0), (long)g_detHoldMs, dw); }
                 }
                 {   // MKSINGLE: one-piece HUD shaders known, marker pieces routed / left on the HUD sheet (other shaders)
                     using CntFn = long(*)(); static CntFn p_cnt = nullptr, p_bcnt = nullptr; if (!p_cnt) { HMODULE hm = GetModuleHandleW(L"dinput8.dll"); if (hm) { p_cnt = (CntFn)GetProcAddress(hm, "akvr_vs_one_piece_count"); p_bcnt = (CntFn)GetProcAddress(hm, "akvr_vs_batch_count"); } }
@@ -4600,7 +6291,15 @@ DWORD WINAPI worker(LPVOID)
                     { static LONG lp = 0, lw = 0, lm = 0, lv = 0, lf = 0, lk = 0;   // MKEYE
                       const LONG dp = c_mkEyePieces - lp, dw = c_mkEyeWhole - lw, dm = c_mkEyeNoMap - lm, dv = c_mkEyeNoView - lv, df = c_mkEyeFrames - lf, dk = c_mkEyeMarkers - lk;
                       lp = c_mkEyePieces; lw = c_mkEyeWhole; lm = c_mkEyeNoMap; lv = c_mkEyeNoView; lf = c_mkEyeFrames; lk = c_mkEyeMarkers;
-                      if (g_mkEye) logf("  MKEYE: marker pieces drawn per eye/s %ld, glow pastes per eye/s %ld | HUD frames with markers placed %ld (markers %ld), no layout map %ld, no pair view %ld", dp, dw, df, dk, dm, dv);
+                      static LONG lfc = 0; const LONG dfc = c_mkFaced - lfc; lfc = c_mkFaced;   // MKFACEPOS
+                      {   static LONG a1 = 0, a2 = 0, a3 = 0, a4 = 0, a5 = 0, a6 = 0;   // DETCALLOUT
+                          const LONG s1 = c_scanSeen - a1, s2 = c_scanPlaced - a2, s3 = c_scanPieces - a3, s4 = c_scanPasses - a4, s5 = c_scanReads - a5, s6 = c_scanSky - a6;
+                          a1 = c_scanSeen; a2 = c_scanPlaced; a3 = c_scanPieces; a4 = c_scanPasses; a5 = c_scanReads; a6 = c_scanSky;
+                          static int s_sdN = 0; if ((!s1 || ++s_sdN % 5 == 0) && akn_detective_active()) { using SdFn = const char* (*)(); static SdFn f = nullptr; static bool t = false; if (!t) { HMODULE hm = GetModuleHandleW(L"dinput8.dll"); f = hm ? (SdFn)GetProcAddress(hm, "akvr_scan_diag") : nullptr; t = hm != nullptr; } if (f) logf("  DETCALLOUT: %s | %s", s1 ? "box shown" : "no box", f()); }   // SCANLINE2: every 5 s while a box shows too
+                          static LONG a7 = 0; const LONG s7 = c_scanExact - a7; a7 = c_scanExact;
+                          hud_sig_sweep();   // HUDSIG
+                          if (s1 || s3) logf("  DETCALLOUT: scan box seen/s %ld, placed as a marker/s %ld (at the projected object point/s %ld, match %.3f), callout pieces routed/s %ld | depth passes/s %ld, answers %ld (sky %ld), distance %.0f units (hit %.0f), skip nearer than %.0f | %s | %s", s1, s2, s7, g_scanMatchD, s3, s4, s5, s6, g_scanDist, g_scanRaw, g_scanMin, g_scanDiag, g_scanNearDiag); }
+                      if (g_mkEye) logf("  MKEYE: marker pieces drawn per eye/s %ld, glow pastes per eye/s %ld | HUD frames with markers placed %ld (markers %ld, faced to the camera %ld, mkfacepos %ld), no layout map %ld, no pair view %ld", dp, dw, df, dk, dfc, (long)g_mkFacePos, dm, dv);
                       static LONG lk1 = 0, lk2 = 0, lk3 = 0, lfl = 0;   // MKEYE2
                       const LONG d1 = c_mkEyeK[1] - lk1, d2 = c_mkEyeK[2] - lk2, d3 = c_mkEyeK[3] - lk3, dfl = c_mkEyeFail - lfl;
                       lk1 = c_mkEyeK[1]; lk2 = c_mkEyeK[2]; lk3 = c_mkEyeK[3]; lfl = c_mkEyeFail;
@@ -4621,6 +6320,7 @@ DWORD WINAPI worker(LPVOID)
                     logf("  markers: HUD shaders known one-piece %ld batched %ld | draws to the marker sheet/s %ld (split %ld), not routable/s %ld | MKTAG mode %ld: marked draws/s %ld, marked but not routable/s %ld, marks set %ld | off-sheet draws skipped %ld", p_cnt ? p_cnt() : -1L, p_bcnt ? p_bcnt() : -1L, dR, dS, dF, g_mkByTag, dT, dL, p_sets ? p_sets() : -1L, c_mkOffSheet);
                 }
                 logf("  dice shared: game thread %ld, render thread %ld (mode %ld) | once-time: left renders with zero elapsed time %ld (mode %ld, offset %ld) | render wait %ld (timeouts %ld) | recorded draws %ld dispatches %ld, playbacks %ld | far rain patched %ld (no axes %ld, near %ld) | rain depth draws %ld", c_randGame, c_randRender, g_randSync, c_deltaZeroed, g_deltaZero, g_deltaOff, c_rtWaits, c_rtWaitTimeouts, c_defDraw, c_defDisp, c_execCL, c_farPatched, c_farNoAxes, c_nearPatched, c_rainDepth);
+                { static LONG lr = 0; const LONG dr = c_rainLight - lr; lr = c_rainLight; static LONG lrr = 0, lrs = 0; const LONG drr = c_rainRelit - lrr, drs = c_rainRelightSkip - lrs; lrr = c_rainRelit; lrs = c_rainRelightSkip; static LONG lsl = 0; const LONG dsl = c_smokeLight - lsl; lsl = c_smokeLight; static LONG lld = 0; const LONG dld = c_lightDir - lld; lld = c_lightDir; logf("  LIGHTDIR: sprite / lit draws given the head-free light rows/s %ld (smokelight %ld; grid forward/s %ld)", dld, (long)g_smokeLight, dsl); static LONG lsp = 0; const LONG dsp = c_spriteAxes - lsp; lsp = c_spriteAxes; static LONG lcf = 0; const LONG dcf = c_charFace - lcf; lcf = c_charFace; logf("  SPRITEAXES: particle sprite draws turned to the head-free camera/s %ld (spriteaxes %ld), facing Batman/s %ld", dsp, (long)g_spriteAxes, dcf); static LONG lm = 0; const LONG dm2 = c_rainMask - lm; lm = c_rainMask; logf("  RAINMASK: rain draws marked for DLSS/s %ld (rainmask %ld)", dm2, (long)g_rainMask); static LONG l2 = 0; const LONG d2 = c_rainLight2 - l2; l2 = c_rainLight2; logf("  RAINLIGHT2: rain lit from the left eye's view/s %ld (rainlight2 %ld)", d2, (long)g_rainLight2); logf("  RAINLIGHT: rain lighting spots corrected/s %ld (rainlight %ld) | RAINRELIGHT: second-eye relights/s %ld, skipped %ld", dr, (long)g_rainLight, drr, drs); }
                 logf("  rain steps/s: simulation left %ld right %ld outside %ld, splashes left %ld right %ld outside %ld (once %ld, skipped %ld) | VR panel state %llx (shown %d, ImGui %d, drew %d, to headset %d, pad %d, chord down %d, buttons %04llx, chord fires %llu)",
                      d[0][0], d[0][1], d[0][2], d[1][0], d[1][1], d[1][2], g_rainOnce, c_rainSkip, ps & 0xff, (int)(ps & 1), (int)((ps >> 2) & 1), (int)((ps >> 3) & 1), (int)((ps >> 4) & 1), (int)((ps >> 5) & 1), (int)((ps >> 6) & 1), (ps >> 16) & 0xffff, ps >> 32);
             }
@@ -4708,6 +6408,13 @@ extern "C" __declspec(dllexport) int akn_active() { return g_base && g_stereo &&
 extern "C" __declspec(dllexport) ID3D11Texture2D* akn_pair(LONG* seq) { if (seq) *seq = g_pairSeq; return g_pair; }
 // the HUD texture (window size, transparent where there is no HUD) and its counter (+1 per frame it was used)
 extern "C" __declspec(dllexport) ID3D11Texture2D* akn_hud(LONG* seq) { if (seq) *seq = g_hudSeq; return g_hudOn ? g_hudTex : nullptr; }
+// SCANLINE 2026-10-12: the detective scan box's world point of the newest HUD frame (AKVR draws the line from it to the label)
+extern "C" __declspec(dllexport) int akn_scan_point(float* w3) { if (!w3 || !g_scanWok) return 0; w3[0] = g_scanWpub[0]; w3[1] = g_scanWpub[1]; w3[2] = g_scanWpub[2]; return 1; }
+// SCANHUD: the box's world point + its own point on the HUD sheet (AKVR moves the marker sheet from there to the object's spot)
+extern "C" __declspec(dllexport) int akn_scan_box(float* out5) { if (!out5 || !g_scanWok) return 0; for (int k = 0; k < 3; ++k) out5[k] = g_scanWpub[k]; out5[3] = g_scanSheet[0]; out5[4] = g_scanSheet[1]; return 1; }
+extern "C" __declspec(dllexport) long akn_hud_draws_last() { return g_hudDrawsLast; }
+extern "C" __declspec(dllexport) void akn_hudsig_reset(const char* why) { AcquireSRWLockExclusive(&g_hsigLock); g_hsigN = 0; g_hsigLines = 0; ReleaseSRWLockExclusive(&g_hsigLock); logf("HUDSIG reset (%s): every draw kind is new again - the bat transition's kinds come and go within ~1.5 s", why ? why : "?"); }   // BATREC
+extern "C" __declspec(dllexport) void akn_hudring_dump(const char* why, int delayMs) { if (!g_hrOn || g_hrDumps >= 12 || g_hrDumpAt) return; strncpy_s(g_hrWhy, why ? why : "x", _TRUNCATE); for (char* p = g_hrWhy; *p; ++p) if (!isalnum((unsigned char)*p)) *p = '_'; g_hrDumpAt = (LONGLONG)GetTickCount64() + (delayMs > 0 ? delayMs : 400); }   // HUDRING   // MENUSOUND (AKVR audiosync)
 extern "C" __declspec(dllexport) void akn_set_hud(int on) { g_hudOn = on; if (!on) g_hudPhase = false; }
 // per-eye lens (tangents l, r, u, d for eye 0 then eye 1; left/down negative) and eye offsets along view x (game units)
 extern "C" __declspec(dllexport) void akn_set_eyes(const float* tan8, const float* off2, int asym)
@@ -4728,6 +6435,7 @@ void hud_stat_present();   // HUDTRACE, below
 extern "C" __declspec(dllexport) void akn_present()
 {
     g_hudPhase = false; InterlockedIncrement(&c_presents);
+    g_hudDrawsLast = InterlockedExchange(&f_hudFrameDraws, 0);   // MENUSOUND
     if (g_hudStat > 0) hud_stat_present();
     if (g_hudAll && g_hudOn) g_hudClearPending = true;   // HUDTRACE hudall: AKVR has taken this frame's sheet - the next HUD bind starts a new one
 }
@@ -4819,6 +6527,10 @@ void akn_start(HMODULE self)
     wcscat_s(g_dir, L"akn\\");
     CreateDirectoryW(g_dir, nullptr);
     wchar_t lp[MAX_PATH]; wcscpy_s(lp, g_dir); wcscat_s(lp, L"akn_log.txt");
+    {   // LOGKEEP 2026-10-11 (JJ's SteamVR crash at 19:01: two relaunches overwrote that session's log): keep the last two
+        wchar_t p1[MAX_PATH], p2[MAX_PATH]; wcscpy_s(p1, g_dir); wcscat_s(p1, L"akn_log_prev.txt"); wcscpy_s(p2, g_dir); wcscat_s(p2, L"akn_log_prev2.txt");
+        MoveFileExW(p1, p2, MOVEFILE_REPLACE_EXISTING); MoveFileExW(lp, p1, MOVEFILE_REPLACE_EXISTING);
+    }
     InitializeCriticalSection(&g_cs);
     g_log = _wfopen(lp, L"w");
     LARGE_INTEGER f; QueryPerformanceFrequency(&f); g_qpf = (double)f.QuadPart;
@@ -4848,4 +6560,263 @@ void akn_log(const char* fmt, ...)
 {
     char b[1024]; va_list a; va_start(a, fmt); vsnprintf(b, sizeof(b), fmt, a); va_end(a);
     logf("%s", b);
+}
+namespace {   // DETCALLOUT: scan_pass was declared inside the file's unnamed namespace
+// the left eye's depth copied at the moment the game's SMAA edge pass reads it (the only time it is whole), while a box shows
+ID3D11Texture2D* g_scanCopy = nullptr; ID3D11Resource* g_scanCopySrc = nullptr; volatile LONG g_scanCopied = 0, c_scanCopies = 0;
+volatile LONG g_scanClears = 0, g_scanFromClear = 0, g_scanClearLog = 0;   // depth clears this left-eye render; copy came from one
+// DC1 run 6 (03:52 depth dump): at the SMAA pass the depth holds only Batman (0.88-0.93 = ~1 m), the world reads 1.0 - UE3 clears
+// depth for the foreground group mid-render. The depth is copied just BEFORE each depth clear of the left eye's render except the
+// first (the render's own start); the last such copy holds the world.
+bool scan_copy_into(ID3D11DeviceContext* c, bool deferred, ID3D11Resource* r);
+void scan_clear_copy(ID3D11DeviceContext* c, bool deferred, ID3D11DepthStencilView* d, UINT f)
+{
+    if ((!g_scanOn || !g_scanRay.ok) && g_depthProbe <= 0) return;   // DEPTHPROBE also takes the copy
+    if (!(f & D3D11_CLEAR_DEPTH)) return;
+    const LONG k = InterlockedIncrement(&g_scanClears);
+    ID3D11Resource* r = nullptr; d->GetResource(&r); if (!r) return;
+    D3D11_TEXTURE2D_DESC td{}; ID3D11Texture2D* t = nullptr; if (SUCCEEDED(r->QueryInterface(__uuidof(ID3D11Texture2D), (void**)&t)) && t) { t->GetDesc(&td); t->Release(); }
+    if (g_scanClearLog < 40) { ++g_scanClearLog; logf("DETCALLOUT: left-eye depth clear #%ld %ux%u format %d (%s)%s", k, td.Width, td.Height, (int)td.Format, deferred ? "deferred" : "immediate", k >= 2 ? " - copied" : ""); }
+    if (k >= 2 && (td.BindFlags & D3D11_BIND_SHADER_RESOURCE) && scan_copy_into(c, deferred, r)) g_scanFromClear = 1;
+    r->Release();
+}
+void scan_copy_depth(ID3D11DeviceContext* c, bool deferred, ID3D11Resource* r)
+{
+    if (!g_scanOn || !g_scanRay.ok || !r || !g_dev || !c) return;
+    if (g_scanFromClear) return;   // a mid-render clear's copy (the world) is better than this one (foreground only)
+    if (r != g_scanCopySrc || !g_scanCopy)
+    {
+        ID3D11Texture2D* t = nullptr; D3D11_TEXTURE2D_DESC d{};
+        if (FAILED(r->QueryInterface(__uuidof(ID3D11Texture2D), (void**)&t)) || !t) return;
+        t->GetDesc(&d); t->Release();
+        if (d.SampleDesc.Count != 1) return;
+        d.Usage = D3D11_USAGE_DEFAULT; d.CPUAccessFlags = 0; d.MiscFlags = 0; d.MipLevels = 1; d.ArraySize = 1;
+        d.BindFlags = D3D11_BIND_SHADER_RESOURCE | (d.BindFlags & D3D11_BIND_DEPTH_STENCIL);
+        if (g_scanCopy) { g_scanCopy->Release(); g_scanCopy = nullptr; }
+        if (FAILED(g_dev->CreateTexture2D(&d, nullptr, &g_scanCopy))) { g_scanCopy = nullptr; logf("DETCALLOUT: depth copy texture FAILED (format %d)", (int)d.Format); return; }
+        g_scanCopySrc = r;
+        logf("DETCALLOUT: depth copy %ux%u format %d (from the SMAA edge pass, %s context)", d.Width, d.Height, (int)d.Format, deferred ? "deferred" : "immediate");
+    }
+    if (deferred) c->CopyResource(g_scanCopy, r); else o_CopyRes(c, g_scanCopy, r);
+    g_scanCopied = 1; InterlockedIncrement(&c_scanCopies);
+}
+bool scan_copy_into(ID3D11DeviceContext* c, bool deferred, ID3D11Resource* r)
+{
+    if (!g_dev || !c || !r) return false;
+    if (r != g_scanCopySrc || !g_scanCopy)
+    {
+        ID3D11Texture2D* t = nullptr; D3D11_TEXTURE2D_DESC d{};
+        if (FAILED(r->QueryInterface(__uuidof(ID3D11Texture2D), (void**)&t)) || !t) return false;
+        t->GetDesc(&d); t->Release();
+        if (d.SampleDesc.Count != 1) return false;
+        d.Usage = D3D11_USAGE_DEFAULT; d.CPUAccessFlags = 0; d.MiscFlags = 0; d.MipLevels = 1; d.ArraySize = 1;
+        d.BindFlags = D3D11_BIND_SHADER_RESOURCE | (d.BindFlags & D3D11_BIND_DEPTH_STENCIL);
+        if (g_scanCopy) { g_scanCopy->Release(); g_scanCopy = nullptr; }
+        if (FAILED(g_dev->CreateTexture2D(&d, nullptr, &g_scanCopy))) { g_scanCopy = nullptr; return false; }
+        g_scanCopySrc = r;
+    }
+    if (deferred) c->CopyResource(g_scanCopy, r); else o_CopyRes(c, g_scanCopy, r);
+    g_scanCopied = 1; InterlockedIncrement(&c_scanCopies);
+    return true;
+}
+// once per HUD frame while the box shows: read an older answer, then queue this frame's march
+// DC1 run 3 (03:31): at HUD time the depth reads 1.0 everywhere (cleared) - the pass runs right after the LEFT eye's render
+// instead (after_eye_render, where DLSS takes the same depth), with that render's own view x lens; the ray is the latest HUD
+// frame's (one frame older; only the distance is kept)
+void scan_pass(ID3D11DeviceContext* c, const M44& vpNow)
+{
+    if (!c || !g_scanRay.ok) return;
+    if (!o_Map || !o_Unmap || !o_OMSetRT || !o_UpdSub || !o_CSSRV || !o_CSUAV || !o_Dispatch || !o_CopyRes) return;
+    ID3D11Device* dev = nullptr; c->GetDevice(&dev); if (!dev) return;
+    const bool ready = scan_ensure(dev);
+    dev->Release();
+    if (!ready) return;
+    if (g_scanK >= 3)
+    {   // the answer from three passes ago (long finished; never wait)
+        const unsigned r = (g_scanK - 3) % 4;
+        D3D11_MAPPED_SUBRESOURCE ms{};
+        if (o_Map(c, g_scanStage[r], 0, D3D11_MAP_READ, D3D11_MAP_FLAG_DO_NOT_WAIT, &ms) == S_OK)
+        {
+            const unsigned* rr = (const unsigned*)ms.pData; const unsigned hit = rr[0]; float dist; memcpy(&dist, rr + 1, 4);
+            o_Unmap(c, g_scanStage[r], 0);
+            InterlockedIncrement(&c_scanReads);
+            if (hit < (unsigned)kScanN && dist > 0.0f)
+            {   // DETCALLOUT2: the median of the last 7 answers (JJ's run jumped 67 -> 3 -> 52 m for single frames), then
+                // small changes eased (no depth shimmer), a lasting jump (another object) taken at once
+                static float s_h[7] = {}; static int s_hn = 0, s_hi = 0;
+                s_h[s_hi] = dist; s_hi = (s_hi + 1) % 7; if (s_hn < 7) ++s_hn;
+                float tmp[7]; for (int i = 0; i < s_hn; ++i) tmp[i] = s_h[i];
+                std::sort(tmp, tmp + s_hn); const float med = tmp[s_hn / 2];
+                const float old = g_scanDist;
+                g_scanDist = (old > 0.0f && fabsf(med - old) < 0.15f * old) ? old + 0.35f * (med - old) : med;
+                g_scanRaw = (float)hit;
+            }
+            else { InterlockedIncrement(&c_scanSky); g_scanRaw = 999.0f; }   // sky: keep the last distance
+        }
+    }
+    UINT bw = 0, bh = 0; int bf = 0; LONG bn = 0;
+    ID3D11Resource* depth = scan_take_dsv(bw, bh, bf, bn);   // (diag: logs the left eye's depth buffers)
+    // DC1 run 5 (03:42): the scene depth (1520x1656 format 19) ALSO reads 1.0 after the render - it is cleared or reused before
+    // the render ends. Our copy, taken at the game's SMAA edge pass (where DLSS gets it), is read instead.
+    depth = g_scanCopied ? (ID3D11Resource*)g_scanCopy : nullptr;
+    g_scanCopied = 0; g_scanClears = 0; g_scanFromClear = 0;   // the next left-eye render starts again
+    static int s_dump = 3;   // DC1 run 6 diag (done: the copied depth, 16 x 16 grid read on the processor); 0 = dump 3 again
+    if (depth && s_dump < 3)
+    {
+        ++s_dump;
+        D3D11_TEXTURE2D_DESC sd{}; g_scanCopy->GetDesc(&sd);
+        sd.Usage = D3D11_USAGE_STAGING; sd.BindFlags = 0; sd.CPUAccessFlags = D3D11_CPU_ACCESS_READ; sd.MiscFlags = 0;
+        ID3D11Texture2D* st = nullptr;
+        if (SUCCEEDED(g_dev->CreateTexture2D(&sd, nullptr, &st)) && st)
+        {
+            o_CopyRes(c, st, g_scanCopy);
+            D3D11_MAPPED_SUBRESOURCE ms{};
+            if (o_Map(c, st, 0, D3D11_MAP_READ, 0, &ms) == S_OK)
+            {
+                const UINT bpp = sd.Format == DXGI_FORMAT_R32G8X24_TYPELESS ? 8 : 4;
+                float mn = 1e30f, mx = -1e30f; int below = 0; char row[512]; int k = 0;
+                for (int gy = 0; gy < 16; ++gy)
+                    for (int gx = 0; gx < 16; ++gx)
+                    {
+                        const UINT x = (UINT)((gx + 0.5f) / 16.0f * sd.Width), y = (UINT)((gy + 0.5f) / 16.0f * sd.Height);
+                        float v; memcpy(&v, (const uint8_t*)ms.pData + (size_t)y * ms.RowPitch + (size_t)x * bpp, 4);
+                        if (sd.Format == DXGI_FORMAT_R24G8_TYPELESS) v = (float)(*(const uint32_t*)((const uint8_t*)ms.pData + (size_t)y * ms.RowPitch + (size_t)x * 4) & 0xFFFFFF) / 16777215.0f;
+                        mn = v < mn ? v : mn; mx = v > mx ? v : mx; if (v < 0.9999f) ++below;
+                        if (gy == 8 && k < 480) k += snprintf(row + k, sizeof(row) - k, " %.4f", v);
+                    }
+                o_Unmap(c, st, 0);
+                logf("DETCALLOUT depth dump: %ux%u format %d - min %.6f max %.6f, %d of 256 below 0.9999 | middle row:%s", sd.Width, sd.Height, (int)sd.Format, mn, mx, below, row);
+            }
+            st->Release();
+        }
+    }
+    ID3D11ShaderResourceView* dsrv = depth ? akn_dlss_srv(depth) : nullptr;
+    if (!dsrv) return;
+    D3D11_TEXTURE2D_DESC dd{};
+    { ID3D11Texture2D* t = nullptr; if (FAILED(depth->QueryInterface(__uuidof(ID3D11Texture2D), (void**)&t)) || !t) return; t->GetDesc(&dd); t->Release(); }
+    UINT rw = 0, rh = 0; akn_dlss_render_size(0, rw, rh);
+    if (!rw || !rh || rw > dd.Width || rh > dd.Height) { rw = dd.Width; rh = dd.Height; }
+    // the march's inputs: drawn area, steps, depth direction | ray start + nearest distance | ray direction + span | view x lens
+    float cb[28] = {};
+    const M44& M = vpNow;
+    auto proj = [&](float t, float o[4]) {
+        const float P[3] = { g_scanRay.c[0] + g_scanRay.d[0] * t, g_scanRay.c[1] + g_scanRay.d[1] * t, g_scanRay.c[2] + g_scanRay.d[2] * t };
+        for (int k = 0; k < 4; ++k) o[k] = P[0] * M.m[0][k] + P[1] * M.m[1][k] + P[2] * M.m[2][k] + M.m[3][k]; };
+    float n4[4], f4[4]; proj(g_scanMin, n4); proj(g_scanMin * kScanSpan, f4);
+    if (n4[3] <= 1e-3f || f4[3] <= 1e-3f) return;
+    const float sign = (f4[2] / f4[3]) > (n4[2] / n4[3]) ? 1.0f : -1.0f;   // normal: depth grows with distance
+    cb[0] = (float)rw; cb[1] = (float)rh; cb[2] = (float)kScanN; cb[3] = sign; g_scanSignDbg = sign; g_scanRwDbg = rw; g_scanRhDbg = rh;
+    for (int k = 0; k < 3; ++k) { cb[4 + k] = g_scanRay.c[k]; cb[8 + k] = g_scanRay.d[k]; }
+    cb[7] = g_scanMin; cb[11] = kScanSpan;
+    for (int r = 0; r < 4; ++r) for (int k = 0; k < 4; ++k) cb[12 + r * 4 + k] = M.m[r][k];
+    // our own compute pass inside the game's HUD: targets unbound around it, every compute binding put back
+    ID3D11RenderTargetView* rtv[8] = {}; ID3D11DepthStencilView* dsv = nullptr; c->OMGetRenderTargets(8, rtv, &dsv);
+    ID3D11ComputeShader* ocs = nullptr; ID3D11ClassInstance* oci[256]; UINT nci = 256; c->CSGetShader(&ocs, oci, &nci);
+    ID3D11Buffer* ocb = nullptr; c->CSGetConstantBuffers(0, 1, &ocb);
+    ID3D11ShaderResourceView* osrv = nullptr; c->CSGetShaderResources(0, 1, &osrv);
+    ID3D11UnorderedAccessView* ouav = nullptr; c->CSGetUnorderedAccessViews(0, 1, &ouav);
+    o_OMSetRT(c, 0, nullptr, nullptr);
+    o_UpdSub(c, g_scanCb, 0, nullptr, cb, 0, 0);
+    c->CSSetShader(g_scanCs, nullptr, 0);
+    c->CSSetConstantBuffers(0, 1, &g_scanCb);
+    o_CSSRV(c, 0, 1, &dsrv);
+    o_CSUAV(c, 0, 1, &g_scanUav, nullptr);
+    o_Dispatch(c, 1, 1, 1);
+    const unsigned slot = g_scanK % 4;
+    o_CopyRes(c, g_scanStage[slot], g_scanOut); g_scanStageMin[slot] = g_scanMin; ++g_scanK;
+    InterlockedIncrement(&c_scanPasses);
+    c->CSSetShader(ocs, nci ? oci : nullptr, nci); c->CSSetConstantBuffers(0, 1, &ocb); o_CSSRV(c, 0, 1, &osrv);
+    const UINT keep = (UINT)-1; o_CSUAV(c, 0, 1, &ouav, &keep);
+    o_OMSetRT(c, 8, rtv, dsv);
+    if (ocs) ocs->Release(); for (UINT i = 0; i < nci; ++i) if (oci[i]) oci[i]->Release();
+    if (ocb) ocb->Release(); if (osrv) osrv->Release(); if (ouav) ouav->Release();
+    for (auto* r : rtv) if (r) r->Release(); if (dsv) dsv->Release();
+}
+
+// DEPTHPROBE 2026-10-12 (DC1 lead): does the depth DLSS / camera motion get (the SMAA edge pass input) hold the world, or only the
+// foreground group as in detective mode? One left-eye render: that depth vs the copy made before the last mid-render depth clear,
+// 32 x 32 grid each, read on the processor.
+ID3D11Texture2D* g_probeSmaa = nullptr; volatile LONG g_probeSmaaOk = 0;
+void probe_copy_smaa(ID3D11DeviceContext* c, bool deferred, ID3D11Resource* r)
+{
+    if (!g_dev || !c || !r) return;
+    if (!g_probeSmaa)
+    {
+        ID3D11Texture2D* t = nullptr; D3D11_TEXTURE2D_DESC d{};
+        if (FAILED(r->QueryInterface(__uuidof(ID3D11Texture2D), (void**)&t)) || !t) return;
+        t->GetDesc(&d); t->Release();
+        d.Usage = D3D11_USAGE_DEFAULT; d.CPUAccessFlags = 0; d.MiscFlags = 0; d.MipLevels = 1; d.ArraySize = 1;
+        d.BindFlags = D3D11_BIND_SHADER_RESOURCE | (d.BindFlags & D3D11_BIND_DEPTH_STENCIL);
+        if (FAILED(g_dev->CreateTexture2D(&d, nullptr, &g_probeSmaa))) { g_probeSmaa = nullptr; return; }
+    }
+    if (deferred) c->CopyResource(g_probeSmaa, r); else o_CopyRes(c, g_probeSmaa, r);
+    g_probeSmaaOk = 1;
+}
+void probe_stats(ID3D11DeviceContext* c, ID3D11Texture2D* tex, const char* what)
+{
+    if (!tex) { logf("DEPTHPROBE %s: none", what); return; }
+    D3D11_TEXTURE2D_DESC sd{}; tex->GetDesc(&sd);
+    sd.Usage = D3D11_USAGE_STAGING; sd.BindFlags = 0; sd.CPUAccessFlags = D3D11_CPU_ACCESS_READ; sd.MiscFlags = 0;
+    ID3D11Texture2D* st = nullptr;
+    if (FAILED(g_dev->CreateTexture2D(&sd, nullptr, &st)) || !st) return;
+    o_CopyRes(c, st, tex);
+    D3D11_MAPPED_SUBRESOURCE ms{};
+    if (o_Map(c, st, 0, D3D11_MAP_READ, 0, &ms) == S_OK)
+    {
+        const UINT bpp = sd.Format == DXGI_FORMAT_R32G8X24_TYPELESS ? 8 : 4;
+        int below = 0, n = 0; float mn = 2.0f, mx = -1.0f; double sum = 0.0;
+        for (int gy = 0; gy < 32; ++gy)
+            for (int gx = 0; gx < 32; ++gx)
+            {
+                const UINT x = (UINT)((gx + 0.5f) / 32.0f * sd.Width), y = (UINT)((gy + 0.5f) / 32.0f * sd.Height);
+                float v; memcpy(&v, (const uint8_t*)ms.pData + (size_t)y * ms.RowPitch + (size_t)x * bpp, 4);
+                ++n; if (v < 0.9999f) { ++below; sum += v; } mn = v < mn ? v : mn; mx = v > mx ? v : mx;
+            }
+        o_Unmap(c, st, 0);
+        logf("DEPTHPROBE %s: %ux%u format %d - %d of %d grid points hold depth (< 0.9999), min %.5f max %.5f, mean of those %.5f", what, sd.Width, sd.Height, (int)sd.Format, below, n, mn, mx, below ? sum / below : 0.0);
+    }
+    st->Release();
+}
+void depth_probe_after(ID3D11DeviceContext* c)
+{
+    if (!c || !g_dev || !o_Map || !o_Unmap || !o_CopyRes) return;
+    probe_stats(c, g_probeSmaaOk ? g_probeSmaa : nullptr, "SMAA-pass depth (DLSS / camera motion input)");
+    probe_stats(c, g_scanFromClear ? g_scanCopy : nullptr, "copy before the last mid-render clear (the world)");
+    logf("DEPTHPROBE: left-eye depth clears this render %ld, detective %d", (long)g_scanClears, akn_detective_active());
+    g_probeSmaaOk = 0;
+    if (!g_scanRay.ok) { g_scanCopied = 0; g_scanClears = 0; g_scanFromClear = 0; }
+    InterlockedDecrement(&g_depthProbe);
+}
+}
+namespace {
+void hud_rec_dump(const char* tag)
+{   // HUDREC: the ring, oldest first; counters as per-frame differences
+    wchar_t fn[MAX_PATH]; swprintf_s(fn, L"%shudrec_%S.txt", g_dir, tag);
+    FILE* f = _wfopen(fn, L"w"); if (!f) return;
+    const LONG n = g_hrecN; const LONG first = n > 400 ? n - 400 : 0; const ULONGLONG tEnd = n ? g_hrec[(n - 1) % 400].t : 0;
+    fprintf(f, "ms_before_capture seq markers  pt0_x pt0_y  pt1_x pt1_y | world0 | left_eye_pt right_eye_pt | map sx sy tx ty | routed eyePieces flat missReach missNone held drop tagLost heldNow detective (per-frame differences)\n");
+    const HudRec* pr = nullptr;
+    for (LONG i = first; i < n; ++i)
+    {
+        const HudRec& r = g_hrec[i % 400];
+        auto d = [&](LONG a, LONG b) { return pr ? a - b : 0; };
+        fprintf(f, "%6lld %6ld %d  %7.3f %7.3f  %7.3f %7.3f | %9.0f %9.0f %7.0f | %7.3f %7.3f  %7.3f %7.3f | %.4f %.4f %.4f %.4f | %ld %ld %ld %ld %ld %ld %ld %ld %d %d\n",
+                (long long)(tEnd - r.t), r.seq, r.n, r.c[0], r.c[1], r.c1[0], r.c1[1], r.w[0], r.w[1], r.w[2], r.e0[0], r.e0[1], r.e1[0], r.e1[1], r.xf[0], r.xf[1], r.xf[2], r.xf[3],
+                r.routed, d(r.eyePieces, pr ? pr->eyePieces : 0), d(r.flat, pr ? pr->flat : 0), d(r.missReach, pr ? pr->missReach : 0), d(r.missNone, pr ? pr->missNone : 0), d(r.held, pr ? pr->held : 0), d(r.drop, pr ? pr->drop : 0), d(r.tagLost, pr ? pr->tagLost : 0), r.heldNow, r.det);
+        pr = &r;
+    }
+    fclose(f); logf("HUDREC: %ld HUD frames written to hudrec_%s.txt", n - first, tag);
+}
+}   // namespace (HUDREC)
+// RAINMASK: dlss.cpp reads this eye's mask (null = none this render)
+extern "C" ID3D11Texture2D* akn_rain_mask(int eye) { return (eye == 0 || eye == 1) && g_rainMask && g_rmUsed[eye] ? g_rmTex[eye] : nullptr; }
+// DIAGKIT: the panel's status line for the TESTS drawer
+extern "C" __declspec(dllexport) int akn_diag_status(char* out, int n)
+{
+    if (!out || n < 8) return 0;
+    if (g_fxCollect) _snprintf_s(out, n, _TRUNCATE, "collecting the effects on screen ...");
+    else if (g_fxIdx >= 0 && g_fxN > 0) _snprintf_s(out, n, _TRUNCATE, "hiding effect %ld of %ld  (%016llx)", g_fxIdx + 1, g_fxN, (unsigned long long)g_skipPs);
+    else if (g_fxN > 0) _snprintf_s(out, n, _TRUNCATE, "%ld effects collected - all shown", g_fxN);
+    else _snprintf_s(out, n, _TRUNCATE, "no effects collected yet");
+    return 1;
 }

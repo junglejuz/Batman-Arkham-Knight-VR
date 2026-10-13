@@ -3434,6 +3434,7 @@ namespace
         bool room, taggedByUs;                      // PARTTAG: "hang in the room" (colour mark) and ours applied
         bool zoomHide;                              // ZOOMHIDE: hidden only while the zoom vignette is on
         bool world, autoRoom;                       // ROOMALL: "stays on its target"; marked by the whole-HUD rule
+        bool scan;                                  // DETCALLOUT: a part of detective mode's scan callout (its own mark)
     };
     Layer   g_layers[2048];
     int     g_nLayers = 0;
@@ -3454,15 +3455,40 @@ namespace
     {
         return L.hide || L.room || L.zoomHide || L.world || std::fabs(L.s - 1.0f) > 0.001f || std::fabs(L.dx) > 0.0005f || std::fabs(L.dy) > 0.0005f;
     }
+    // DETCALLOUT 2026-10-12 (JJ: in detective mode the box of four plus signs and its line + label "should be locked on to the
+    // drones as they move around"; it hung in the room). F2 hudlayers of JJ's captures 23:02:35-48: the scan HUD is
+    // K1/0.0.0.0.3.0; its child .9 (the box: .9.1.0.0-.3 = the four plus signs) is MOVED by the game every frame to the scanned
+    // object's screen point, .4 / .10 (and the hidden variants .3 .5 .8) are the label panels; .0 / .1 = the hexagon arcs at
+    // the view's sides and .2 = a still part at the stage centre stay in the room. The callout parts become "stays on its
+    // target" with their own mark (kScanTag): AKN routes every piece carrying it to ONE marker placed at the box's object.
+    volatile LONG g_scanOn = 1;   // AKN command "scan 0|1"
+    volatile LONG g_scanLineOn = 1;   // SCANLINE: AKVR draws the scan line (the game's own is hidden)
+    long g_scanLineReshown = 0;   // SCANLINE2: times a part of the game's line was found shown (and hidden again)
+    bool scan_key(const char* key, bool* isBox)
+    {
+        static const char kPre[] = "K1/0.0.0.0.3.0.";
+        if (isBox) *isBox = false;
+        if (strncmp(key, kPre, sizeof(kPre) - 1) != 0) return false;
+        const char* rest = key + sizeof(kPre) - 1;
+        // DETCALLOUT2 2026-10-12 (JJ headset: the label + line on the object read as "a separate plane at a different angle" that
+        // rotates with head movements): only the BOX (.9.1 = the four plus signs) goes to the object; the line (.9.0) and the
+        // label panels stay on the HUD, square to the face
+        // (DETCALLOUT3: ".9.1" alone is often missing from the 2048-part list - the list is full at ~2040 - so the box part .9
+        // (plus signs AND the line) is used; the label panels stay on the HUD)
+        if (strcmp(rest, "9") == 0) { if (isBox) *isBox = true; return true; }
+        return false;
+    }
     void layer_load(Layer& L)
     {
         L.s = 1.0f; L.dx = L.dy = 0.0f; L.hide = false; L.room = false; L.zoomHide = false; L.world = false;
+        L.scan = g_scanOn && scan_key(L.key, nullptr);   // DETCALLOUT: on target by default (not a saved setting)
+        if (L.scan) L.world = true;
         char k[112]; _snprintf_s(k, sizeof(k), _TRUNCATE, ";%s:", L.key);
         const char* hit = strstr(g_layerXf, k);
         if (!hit) return;
         float s = 1, x = 0, y = 0; int h = 0, rm = 0, zh = 0, wd = 0;
         if (sscanf_s(hit + strlen(k), "%f:%f:%f:%d:%d:%d:%d", &s, &x, &y, &h, &rm, &zh, &wd) >= 3)
-        { L.s = s; L.dx = x; L.dy = y; L.hide = h != 0; L.room = rm != 0; L.zoomHide = zh != 0; L.world = wd != 0; }
+        { L.s = s; L.dx = x; L.dy = y; L.hide = h != 0; L.room = rm != 0; L.zoomHide = zh != 0; L.world = wd != 0 || L.scan; }
     }
     void layer_save(const Layer& L)
     {
@@ -3857,6 +3883,11 @@ namespace
     // strategy?"): marker parts ("stays on its target") carry their OWN mark, so AKN recognises their pieces by what they
     // are, not by where they sit on screen. Two 8-bit half-steps (invisible); AKN looks for -0.0039 in the draw constants.
     constexpr float kMkTag = -2.0f / 512.0f;
+    // PARTID 2026-10-13 (JJ: the distance marker "flickering to a different location"; REC1/RB1: the misplaced pieces carry the ROOM mark -
+    // which room part are they?): diagnostic - each room part's mark is kPartTag - (index + 1) * kPartIdStep, so AKN's FLIPREC rows name
+    // the part (table in akvr_captures\partid.txt). Steps keep every value within -0.00195 .. -0.0028, clear of kMkTag (-0.0039 +- 2e-4).
+    constexpr float kPartIdStep = 4.0e-7f; volatile LONG g_partIdOn = 0;
+    constexpr float kScanTag = -3.0f / 512.0f;   // DETCALLOUT: detective scan callout parts (AKN: one marker at the box's object)
     volatile LONG g_mkTagOn = 1; long g_mkTagSets = 0;
     // PARTTAG2 2026-09-30 — JJ: ticking "hang in the room" changed nothing and "marks set" kept rising: the game
     // rewrote the part's colour every frame after our mark. DisplayObjectBase::SetCxform 0x1411eedf0 (obj, cx)
@@ -3899,7 +3930,7 @@ namespace
     void mark_rgb(uint8_t* data, float v)
     {
         float* add = (float*)(data + 0x60);
-        if (v == 0.0f) { for (int c = 0; c < 4; ++c) if (add[c] == kPartTag || add[c] == kMkTag) add[c] = 0.0f; return; }
+        if (v == 0.0f) { for (int c = 0; c < 4; ++c) if (add[c] == kPartTag || add[c] == kMkTag || add[c] == kScanTag) add[c] = 0.0f; return; }
         // KEEPGLOW3 — JJ: with KEEPGLOW/KEEPGLOW2 the launch objective stayed on the head; it hung in the room when the
         // mark overwrote all four adds (WORLDKIDS). Back to that; the glow is kept instead by never marking a part
         // under an already marked one (apply_layers), which is where the two compass pieces lost it.
@@ -3911,12 +3942,29 @@ namespace
         return add[0] == kPartTag || add[1] == kPartTag || add[2] == kPartTag || add[3] == kPartTag;
     }
     bool has_value(uintptr_t data, float v) { const float* add = (const float*)(data + 0x60); return add[0] == v && add[3] == v; }   // MKTAG
+    // SCANLINE3 2026-10-13 (JJ: the second line still appeared; SCANLINE2 log: "game line re-hidden" +45/s = the game shows its line
+    // again EVERY frame, so hiding loses some frames): the line branch's colour alpha (multiply and add, data+0x5C / +0x6C) is set
+    // to 0 every frame and again right after the game sets that node's colour (hkObjSetCxform) - the game re-shows, never re-colours
+    uintptr_t volatile g_scanLineNodes[8] = {}; volatile LONG g_scanLineNodeN = 0; long g_scanLineClears = 0;
+    bool scan_line_node(uintptr_t node) { const LONG n = g_scanLineNodeN; for (LONG i = 0; i < n; ++i) if (g_scanLineNodes[i] == node) return true; return false; }
+    void scan_line_clear(uintptr_t node)
+    {
+        if (!g_treeWritable) return;
+        __try
+        {
+            uintptr_t d = 0; if (!node_data(node, d)) return;
+            if (*(const float*)(d + 0x5C) == 0.0f && *(const float*)(d + 0x6C) <= 0.0f) return;   // already clear
+            if (uint8_t* w = (uint8_t*)g_treeWritable((void*)node, 2)) { ((float*)(w + 0x50))[3] = 0.0f; float* a = (float*)(w + 0x60); if (a[3] > 0.0f) a[3] = 0.0f; ++g_scanLineClears; }
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER) {}
+    }
     void hkObjSetCxform(void* obj, const float* cx)
     {
         g_origObjCx(obj, cx);
         __try
         {
             const uintptr_t node = *(const uintptr_t*)((const uint8_t*)obj + 0x48);
+            if (node && g_scanLineNodeN && scan_line_node(node)) scan_line_clear(node);   // SCANLINE3
             if (node && g_treeWritable && tag_node(node))
             {
                 float v = kPartTag; const LONG n = g_tagNodeN;
@@ -3967,6 +4015,32 @@ namespace
     bool layer_moved(const Layer& L)
     {
         return std::fabs(L.s - 1.0f) > 0.001f || std::fabs(L.dx) > 0.0005f || std::fabs(L.dy) > 0.0005f;
+    }
+    // SCANLINE4 2026-10-13 (JJ: the second line still there with SCANLINE3): the hide ran BEFORE the movie's own update (slot 27),
+    // which shows the line again - it now also runs right after that update (hkMovieSlot27), so the game no longer has the last word
+    uintptr_t g_scanBoxNode = 0, g_scanBoxParent = 0; long g_scanLinePost = 0;
+    volatile LONG g_scanKillOn = 0;   // SCANBOX 2026-10-13: SCANLINE2-4 (hiding the game's line on the HUD tree after every movie update) off -
+                                       // the marker sheet is not shown any more, and the flicker JJ saw began with that build
+    bool is_child_of(uintptr_t node, uintptr_t parent);
+    void scan_line_kill(uintptr_t box)
+    {
+        uintptr_t kids[4]; const int nk = node_children(box, kids, 4);
+        for (int c = 0; c < nk && nk >= 2; ++c)
+        {
+            uintptr_t g1[4]; const int n1 = node_children(kids[c], g1, 4);
+            uintptr_t g2[8]; const bool plus = n1 == 1 && node_children(g1[0], g2, 8) == 4;
+            if (plus) continue;
+            float km[12]; int kf = 0;
+            if (node_matrix(kids[c], km, &kf) && (kf & 1)) { g_treeSetVisible((void*)kids[c], false); ++g_scanLineReshown; }
+            for (int q = 0; q < n1; ++q)
+                if (node_matrix(g1[q], km, &kf) && (kf & 1)) { g_treeSetVisible((void*)g1[q], false); ++g_scanLineReshown; }
+            uintptr_t ln[5] = { kids[c] }; int nln = 1; for (int q = 0; q < n1 && nln < 5; ++q) ln[nln++] = g1[q];
+            for (int q = 0; q < nln; ++q)
+            {
+                scan_line_clear(ln[q]);
+                if (!scan_line_node(ln[q])) { if (g_scanLineNodeN >= 8) InterlockedExchange(&g_scanLineNodeN, 0); g_scanLineNodes[g_scanLineNodeN] = ln[q]; InterlockedIncrement(&g_scanLineNodeN); }
+            }
+        }
     }
     void apply_layers(void* view)
     {
@@ -4035,7 +4109,7 @@ namespace
             const bool roomNow0 = roomWanted && !above;
             const bool mkNow = g_mkTagOn && L.world && !roomNow0;   // MKTAG: the marker part itself (its pieces inherit it)
             const bool roomNow = roomNow0 || mkNow;                 // (name kept: "carries a mark now")
-            const float tagV = mkNow ? kMkTag : kPartTag;
+            const float tagV = mkNow ? (L.scan ? kScanTag : kMkTag) : (g_partIdOn ? kPartTag - (float)(i + 1) * kPartIdStep : kPartTag);   // DETCALLOUT: the callout's own mark; PARTID
             if (!moved && !hideNow && !L.haveLast && !L.hidByUs && !roomNow && !L.taggedByUs) continue;
             __try
             {
@@ -4051,7 +4125,8 @@ namespace
                     uintptr_t d = 0;
                     if (node_data(L.node, d))
                     {
-                        const bool b = mkNow ? has_value(d, kMkTag) : has_mark(d);   // KEEPGLOW: any channel (the mark avoids the game's own adds)
+                        const bool b = (mkNow || g_partIdOn) ? has_value(d, tagV) : has_mark(d);   // KEEPGLOW: any channel (the mark avoids the game's own adds); PARTID: the part's own value
+                        if (g_partIdOn && roomNow) { const LONG n = g_tagNodeN; for (LONG k = 0; k < n; ++k) if (g_tagNodes[k] == L.node) { g_tagVals[k] = tagV; break; } }   // PARTID: the cxform guard writes this part's value
                         if (roomNow && b) ++g_tagReadOk; else if (roomNow) ++g_tagReadBad;   // PARTTAG2 diag
                         if (roomNow && !tag_node(L.node) && g_tagNodeN < 1024)
                         { g_tagVals[g_tagNodeN] = tagV; g_tagNodes[g_tagNodeN] = L.node; InterlockedIncrement(&g_tagNodeN); }
@@ -4085,6 +4160,15 @@ namespace
                 {
                     if (L.baseVisible && !(flags & 1)) g_treeSetVisible((void*)L.node, true);
                     L.hidByUs = false;
+                }
+                if (L.scan && g_scanOn && g_scanLineOn)
+                {   // SCANLINE: the game's line (the box part's first child) is drawn by AKVR instead
+                    // SCANLINE2 2026-10-13 (JJ: "a second line on one of the HUD elements that was attached to a box from an object,
+                    // but then it went away"; capture 17:05:01: .9.0 AND its shape .9.0.0 shown, routed with the box = a line from
+                    // the object to the label's flat-layout place): hide the line's whole branch (.9.0 and the shapes under it)
+                    // every frame, never the plus-sign branch (the child holding one part with 4 parts); count re-shows
+                    if (g_scanKillOn) scan_line_kill(L.node);   // SCANLINE4 (off since SCANBOX: AKVR draws the box itself, the game's line never shows)
+                    g_scanBoxNode = L.node; g_scanBoxParent = L.parentNode;
                 }
                 // --- move / resize (2D: 2x4, 3D: 3x4; translation at [3], [7])
                 if (moved)
@@ -4136,7 +4220,13 @@ namespace
         if (g_steady > 0.001f || g_steadyTx != 0.0f || g_steadyTy != 0.0f)
             if (RootState* rs = root_state(view, false)) if (rs->want) apply_root(view, false);
         apply_layers(view);                      // before the frame is captured
-        return g_orig27 ? g_orig27(view, flag) : 0;
+        const uintptr_t r27 = g_orig27 ? g_orig27(view, flag) : 0;
+        if (g_scanKillOn && g_scanBoxNode && g_scanOn && g_scanLineOn && g_treeSetVisible)   // SCANLINE4: after the movie's own update too (off since SCANBOX)
+        {
+            __try { if (is_child_of(g_scanBoxNode, g_scanBoxParent)) { scan_line_kill(g_scanBoxNode); ++g_scanLinePost; } else g_scanBoxNode = 0; }
+            __except (EXCEPTION_EXECUTE_HANDLER) { g_scanBoxNode = 0; }
+        }
+        return r27;
     }
 }
 // Called from fix_one_movie's vtable patch (earlyres.cpp): slot 27 = 0x1411ad270.
@@ -4472,6 +4562,161 @@ namespace {
         return out;
     }
 }
+// DETCALLOUT: the scan box's point on the HUD sheet (clip units of a rtW x rtH target, y up): the centre of its four plus
+// signs (K1/0.0.0.0.3.0.9.1.0.0-.3), else the box node's origin. 0 = no box shown (the box and every parent visible).
+namespace {
+    // SCANOWN 2026-10-13 (JJ: drone boxes "way off diagonally at a seemingly unrelated location"; his 16:53 log: the box's layout
+    // point = 0.80 x the drone's projected point + a shift, every frame = his HUD-layer shrink on K1/0 (s 0.80 x 0.010 y -0.135)
+    // was inside the box point): parts we moved/resized, with the game's own matrix (L.base) while the node still holds ours
+    struct OwnM { uintptr_t node; float last[8], base[8]; };
+    bool node_clip(uintptr_t node, uintptr_t root, int rtW, int rtH, float& cx, float& cy, const OwnM* own = nullptr, int nOwn = 0)
+    {
+        float x = 0.0f, y = 0.0f;
+        for (int up = 0; up < 40; ++up)
+        {
+            float m[12]; int fl = 0;
+            if (!node_matrix(node, m, &fl) || (fl & 0x200) || !(fl & 1)) return false;   // 3D or hidden
+            for (int k = 0; k < nOwn; ++k)   // SCANOWN: the game's own placement of a part we adjusted
+                if (own[k].node == node) { if (memcmp(m, own[k].last, sizeof(own[k].last)) == 0) memcpy(m, own[k].base, sizeof(own[k].base)); break; }
+            const float nx = m[0] * x + m[1] * y + m[3], ny = m[4] * x + m[5] * y + m[7];
+            x = nx; y = ny;
+            if (node == root) break;
+            uintptr_t p = 0;
+            __try { p = *(uintptr_t*)(node + 0x20); } __except (EXCEPTION_EXECUTE_HANDLER) { p = 0; }
+            if (!readable_ptr(p) || (p & 7)) return false;
+            node = p;
+            if (up == 39) return false;
+        }
+        if (!(x == x) || !(y == y)) return false;
+        cx = x / (float)rtW * 2.0f - 1.0f; cy = 1.0f - y / (float)rtH * 2.0f;
+        return true;
+    }
+    long g_scanCalls = 0, g_scanShown = 0, g_scanNoPart = 0, g_scanNoRoot = 0, g_scanHidden = 0, g_scanParts = 0;
+    // SCANLINE 2026-10-12 (JJ: "The end of the line should connect with the text, and the other end that has the box attached
+    // to it should connect with whatever element it's attached to"): the game's line (.9.0, a shape drawn from the box to the
+    // label) is hidden and AKVR draws one per eye from the box's world point to the label's anchor on the HUD sheet (.10)
+    float g_scanBoxPt[2] = {}, g_scanAnc[2] = {}; volatile LONG g_scanAncOk = 0;   // (g_scanLineOn: with g_scanOn)
+    float g_scanBoxDrawn[2] = {}; volatile LONG g_scanDrawnOk = 0; volatile LONG g_scanOwn = 1;
+    float g_scanCornerPt[4][2] = {}; volatile LONG g_scanCornerN = 0;
+    char g_scanTreeDiag[200] = ""; volatile LONG g_scanTreeLogged = 0;   // SCANBOX4: the box's subtree shape (children per level)   // SCANBOX: the four plus signs' DRAWN points (sheet clip units)   // SCANOWN: where the box is DRAWN (our adjustments in)
+    OwnM g_scanOwnM[32]; int g_scanOwnN = 0;
+}
+extern "C" __declspec(dllexport) int akvr_scan_callout(int rtW, int rtH, float* out2)
+{
+    if (!out2 || rtW < 16 || rtH < 16 || !g_scanOn) return 0;
+    ++g_scanCalls;
+    InterlockedExchange(&g_scanAncOk, 0);   // SCANLINE: set again below while the box shows
+    InterlockedExchange(&g_scanDrawnOk, 0);   // SCANOWN: likewise
+    uintptr_t box = 0, root = 0, corner[4] = {};
+    if (!TryAcquireSRWLockShared(&g_layerLock)) return 0;
+    g_scanOwnN = 0;
+    for (int i = 0; i < g_nLayers; ++i)
+    {
+        const Layer& L = g_layers[i];
+        if (g_scanOwn && L.haveLast && !(L.flags & 0x200) && L.node && g_scanOwnN < 32)   // SCANOWN: parts we moved/resized
+        {
+            OwnM& o = g_scanOwnM[g_scanOwnN++]; o.node = L.node; memcpy(o.last, L.last, sizeof(o.last)); memcpy(o.base, L.base, sizeof(o.base));
+        }
+        bool isBox = false;
+        if (L.scan && scan_key(L.key, &isBox) && isBox && L.node)
+        {
+            box = L.node;
+            int r = L.parent, guard = 0;
+            while (r >= 0 && r < i && guard++ < 40 && g_layers[r].depth != 0) r = g_layers[r].parent;
+            if (r >= 0 && r < i && g_layers[r].depth == 0) root = g_layers[r].node;
+        }
+        static const char kC[] = "K1/0.0.0.0.3.0.9.1.0.";
+        if (strncmp(L.key, kC, sizeof(kC) - 1) == 0)
+        {
+            const char* t = L.key + sizeof(kC) - 1;
+            if (t[0] >= '0' && t[0] <= '3' && t[1] == 0) corner[t[0] - '0'] = L.node;
+        }
+    }
+    ReleaseSRWLockShared(&g_layerLock);
+    if (!box) { ++g_scanNoPart; return 0; }
+    {   // SCANBOX3: always from the box's CURRENT children (list entries can be stale: the game recreates the corner parts)
+        // SCANBOX2 2026-10-13 (RB2 fake run: no plus signs drawn - AKVR's part list is full at 2040 of 2048, so the corner parts
+        // .9.1.0.0-.3 are not in it): the corners straight from the box node - its child holding one part with four parts
+        // SCANBOX4 (JJ 21:3x: "corners found 0" with SCANBOX3): breadth-first under the box, up to 4 levels, the first part with
+        // exactly four children whose four points all resolve = the plus signs; the shape seen is logged once (g_scanTreeDiag)
+        uintptr_t q[64]; int dep[64]; int qn = 0, qi = 0; q[qn] = box; dep[qn++] = 0; bool got = false;
+        char td[200] = ""; int tdo = 0;
+        while (qi < qn && !got)
+        {
+            const uintptr_t nd = q[qi]; const int dd = dep[qi++];
+            uintptr_t ch[16]; const int nc4 = node_children(nd, ch, 16);
+            if (tdo < 180) tdo += _snprintf_s(td + tdo, sizeof(td) - tdo, _TRUNCATE, "d%d:%d ", dd, nc4);
+            if (nc4 == 4 && dd >= 1)
+            {
+                float tx, ty; int okc = 0;
+                for (int k = 0; k < 4; ++k) if (node_clip(ch[k], root, rtW, rtH, tx, ty)) ++okc;
+                if (okc == 4) { for (int k = 0; k < 4; ++k) corner[k] = ch[k]; got = true; break; }
+            }
+            if (dd < 4) for (int k = 0; k < nc4 && qn < 64; ++k) { q[qn] = ch[k]; dep[qn++] = dd + 1; }
+        }
+        if (!g_scanTreeLogged) { g_scanTreeLogged = 1; strncpy_s(g_scanTreeDiag, td, _TRUNCATE); }
+    }
+    if (!root) { ++g_scanNoRoot; return 0; }
+    float cx = 0.0f, cy = 0.0f;
+    if (!node_clip(box, root, rtW, rtH, cx, cy)) { ++g_scanHidden; return 0; }   // not shown
+    float sx = 0.0f, sy = 0.0f; int nc = 0;
+    for (int k = 0; k < 4; ++k) { float x, y; if (corner[k] && node_clip(corner[k], root, rtW, rtH, x, y)) { sx += x; sy += y; g_scanCornerPt[nc][0] = x; g_scanCornerPt[nc][1] = y; ++nc; } }
+    InterlockedExchange(&g_scanCornerN, nc);   // SCANBOX
+    if (nc == 4) { cx = sx / 4.0f; cy = sy / 4.0f; }
+    g_scanBoxDrawn[0] = cx; g_scanBoxDrawn[1] = cy; InterlockedExchange(&g_scanDrawnOk, 1);   // SCANOWN: drawn here (AKVR moves the drawn box)
+    if (g_scanOwnN > 0)
+    {   // SCANOWN: the game's own point (what the game projected the object to) for AKN's ray / projected-point match
+        float ox = 0.0f, oy = 0.0f;
+        if (node_clip(box, root, rtW, rtH, ox, oy, g_scanOwnM, g_scanOwnN))
+        {
+            float qx = 0.0f, qy = 0.0f; int nq = 0;
+            for (int k = 0; k < 4; ++k) { float x, y; if (corner[k] && node_clip(corner[k], root, rtW, rtH, x, y, g_scanOwnM, g_scanOwnN)) { qx += x; qy += y; ++nq; } }
+            if (nq == 4) { ox = qx / 4.0f; oy = qy / 4.0f; }
+            cx = ox; cy = oy;
+        }
+    }
+    out2[0] = cx; out2[1] = cy;
+    g_scanBoxPt[0] = cx; g_scanBoxPt[1] = cy;
+    {   // SCANLINE: the label's anchor (.10's origin) on the sheet
+        uintptr_t anc = 0;
+        if (TryAcquireSRWLockShared(&g_layerLock)) { for (int i = 0; i < g_nLayers && !anc; ++i) if (strcmp(g_layers[i].key, "K1/0.0.0.0.3.0.10") == 0) anc = g_layers[i].node; ReleaseSRWLockShared(&g_layerLock); }
+        float ax = 0.0f, ay = 0.0f;
+        if (anc && node_clip(anc, root, rtW, rtH, ax, ay)) { g_scanAnc[0] = ax; g_scanAnc[1] = ay; InterlockedExchange(&g_scanAncOk, 1); }
+        else InterlockedExchange(&g_scanAncOk, 0);
+    }
+    ++g_scanShown;
+    return nc == 4 ? 2 : 1;
+}
+extern "C" long akvr_scan_plus_draws_c();   // xr.cpp SCANBOX
+extern "C" __declspec(dllexport) const char* akvr_scan_diag()   // DETCALLOUT2 diag
+{
+    static char d[720]; long parts = 0;
+    if (TryAcquireSRWLockShared(&g_layerLock)) { for (int i = 0; i < g_nLayers; ++i) if (g_layers[i].scan) ++parts; ReleaseSRWLockShared(&g_layerLock); }
+    _snprintf_s(d, sizeof(d), _TRUNCATE, "AKVR box lookup: calls %ld, shown %ld, no box part %ld, no root %ld, hidden %ld | scan parts in the list %ld of %d | box %.3f %.3f, label anchor %.3f %.3f (%ld) | game line re-hidden %ld, made transparent %ld, after-update passes %ld | box drawn by AKVR %ld (corners found %ld, box tree %s)", g_scanCalls, g_scanShown, g_scanNoPart, g_scanNoRoot, g_scanHidden, parts, g_nLayers, g_scanBoxPt[0], g_scanBoxPt[1], g_scanAnc[0], g_scanAnc[1], (long)g_scanAncOk, g_scanLineReshown, g_scanLineClears, g_scanLinePost, akvr_scan_plus_draws_c(), (long)g_scanCornerN, g_scanTreeDiag);
+    return d;
+}
+extern "C" __declspec(dllexport) int akvr_scan_corners(float* out8) { const LONG n = g_scanCornerN; if (!out8 || n != 4 || !g_scanDrawnOk) return 0; for (int k = 0; k < 4; ++k) { out8[k * 2] = g_scanCornerPt[k][0]; out8[k * 2 + 1] = g_scanCornerPt[k][1]; } return 4; }   // SCANBOX
+extern "C" __declspec(dllexport) int akvr_scan_box_drawn(float* out2) { if (!out2 || !g_scanDrawnOk) return 0; out2[0] = g_scanBoxDrawn[0]; out2[1] = g_scanBoxDrawn[1]; return 1; }   // SCANOWN
+extern "C" __declspec(dllexport) void akvr_scan_own_set(int on) { InterlockedExchange(&g_scanOwn, on ? 1 : 0); }   // SCANOWN (AKN "scanown 0|1")
+extern "C" __declspec(dllexport) int akvr_scan_anchor(float* out2) { if (!out2 || !g_scanAncOk || !g_scanLineOn) return 0; out2[0] = g_scanAnc[0]; out2[1] = g_scanAnc[1]; return 1; }   // SCANLINE
+extern "C" __declspec(dllexport) void akvr_scan_line_set(int on) { InterlockedExchange(&g_scanLineOn, on ? 1 : 0); }   // SCANLINE
+// PARTID: switch on/off (AKN "partid 1|0"); on writes the table index -> key -> mark value (akvr_captures\partid.txt in the game folder)
+extern "C" __declspec(dllexport) void akvr_partid_set(int on)
+{
+    InterlockedExchange(&g_partIdOn, on ? 1 : 0);
+    if (!on) return;
+    wchar_t path[MAX_PATH] = {}; GetModuleFileNameW(nullptr, path, MAX_PATH);
+    if (wchar_t* sl = wcsrchr(path, L'\\')) { sl[1] = 0; wcscat_s(path, L"akvr_captures\\partid.txt"); }
+    FILE* f = nullptr; if (_wfopen_s(&f, path, L"w") != 0 || !f) return;
+    fprintf(f, "PARTID table: room mark value = %.9f - (index + 1) * %.9f\nindex value key room-wanted world\n", kPartTag, kPartIdStep);
+    AcquireSRWLockShared(&g_layerLock);
+    for (int i = 0; i < g_nLayers; ++i)
+        fprintf(f, "%d %.9f %s %d %d\n", i, kPartTag - (float)(i + 1) * kPartIdStep, g_layers[i].key, (int)(g_layers[i].room || g_layers[i].autoRoom), (int)g_layers[i].world);
+    ReleaseSRWLockShared(&g_layerLock);
+    fclose(f);
+}
+extern "C" __declspec(dllexport) float akvr_scan_tag_value() { return kScanTag; }
+extern "C" __declspec(dllexport) void akvr_scan_set(int on) { InterlockedExchange(&g_scanOn, on ? 1 : 0); }
 // MKTAG: AKN reads the mark value and switches it (command "mktag 0|1")
 extern "C" __declspec(dllexport) float akvr_marker_tag_value() { return kMkTag; }
 extern "C" __declspec(dllexport) void akvr_marker_tag_set(int on) { InterlockedExchange(&g_mkTagOn, on ? 1 : 0); }
@@ -4490,7 +4735,7 @@ int akvr_hud_target_points(float* xy, int max, int rtW, int rtH, float* off, flo
     for (int i = 0; i < g_nLayers && nWant < 8; ++i)
     {
         const Layer& L = g_layers[i];
-        if (!L.world || !L.node) continue;
+        if (!L.world || !L.node || L.scan) continue;   // DETCALLOUT: never a target point (the layout map comes from the first part)
         bool top = true; int r = L.parent, guard = 0;
         while (r >= 0 && r < i && guard++ < 32) { if (g_layers[r].world) { top = false; break; } if (g_layers[r].depth == 0) break; r = g_layers[r].parent; }
         if (!top || r < 0 || r >= i || g_layers[r].depth != 0) continue;
@@ -4544,6 +4789,11 @@ int akvr_hud_target_points(float* xy, int max, int rtW, int rtH, float* off, flo
     float sxy[16]; int ns = 0; uintptr_t snode[8] = {};
     float lxy[16]; int nl = 0; uintptr_t lnode[8] = {};
     const DWORD now = GetTickCount();
+    // MAPROOT 2026-10-14 (JJ: the compass's green box and the distance marker still jump; AKN MAPCONT 10-14: the map flipped between
+    // (0.667 0.667 0 -0.134) and (0.667 0.668 0.281 -0.359) for single frames): the layout map came from the FIRST on-target part that
+    // had something drawn - four parts in three movies (K1 / K2 / K4), so on a frame where the first one was empty the map was another
+    // movie's. The map now always comes from the first part's own movie root, drawn or not.
+    if (nWant > 0 && xf) { float dx = 0.0f, dy = 0.0f; (void)point_of(want[0].root, want[0], dx, dy); }
     for (int w = 0; w < nWant; ++w)
     {
         uintptr_t node = want[w].node, kids[96];

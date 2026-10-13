@@ -62,6 +62,7 @@ add_library(akvr SHARED
     src/xr.cpp
     src/openvr_beacon.cpp
     src/gamepad.cpp
+    src/mouse_block.cpp
     src/${AKVR_PROXY}.def
     vendor/kiero/kiero.cpp)
 target_include_directories(akvr PRIVATE

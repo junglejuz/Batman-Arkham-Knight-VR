@@ -12,6 +12,7 @@
 // ------------------------------------------------------------------
 #define _CRT_SECURE_NO_WARNINGS
 #include "akn_link.h"
+extern "C" int akvr_shader_save(unsigned long long h, const wchar_t* path);   // DIAGKIT (hudsplit.cpp)
 #include <windows.h>
 #include <intrin.h>  // _ReturnAddress (desktop guard)
 #include <d3d11.h>
@@ -35,6 +36,8 @@
 #include "hudsplit.h"   // HUDSPLIT: the one HUD draw, watched
 #include "openvr_beacon.h"
 #include "gamepad.h"
+#include "mouse_block.h"   // PANELMOUSE: the game's DirectInput mouse is still under the panel
+#include <mutex>
 #include <string>
 #include <vector>   // PARTOPEN
 #include "imgui.h"
@@ -123,6 +126,8 @@ void        akvr_cam_swing_set(bool on);
 void        akvr_cam_restore_set(bool on);
 void        akvr_audiosync_shutdown();
 bool        akvr_audiosync();
+bool        akvr_trans_full();          // TRANSFULL (xr.cpp)
+void        akvr_trans_full_set(bool on);
 void        akvr_audiosync_set(bool on);
 const char* akvr_audiosync_diag();
 float       akvr_menu_text_left();              // MENUTEXT: main-menu text slides left, fraction of width
@@ -179,6 +184,10 @@ void        akvr_hud_layer_xf_list_set(const char* list);
 const char* akvr_hud_containers_list();                  // CONTAINERFP
 void        akvr_hud_containers_list_set(const char* list);
 void        akvr_hud_layers_dump(const wchar_t* path);   // HUDLAYERS (earlyres.cpp)
+int  akvr_xr_menu_phase();   // BLACKHUNT (xr.cpp)
+bool akvr_xr_pause_live();   // BLACKHUNT (xr.cpp)
+volatile ULONGLONG g_ringLayersAt = 0; volatile LONG g_ringLayersN = 0;   // HUDRING2: the HUD tree mid-bats
+void akvr_ring_layers_request(int ms) { if (g_ringLayersN < 12 && !g_ringLayersAt) g_ringLayersAt = GetTickCount64() + (ULONGLONG)ms; }
 // Gameplay-only HUD shrinking: on a 2D screen the picture IS the UI, so scaling it just
 // wraps it in black. Set from Present before akvr_hud_tick().
 void        akvr_hud_gameplay(bool on);
@@ -431,6 +440,42 @@ namespace
     WNDPROC  g_origWndProc  = nullptr;
     HWND     g_focusHwnd    = nullptr;
 
+    // PANELMOUSE (ported from Batman City 2026-10-13, JJ: "Arkham City's mouse works now in the overlay, port it to ...
+    // Arkham Knight"): the mouse on the VR panel. Window messages arrive on the game's window thread, the panel frame runs
+    // on the render thread: both touch ImGui's input queue, so one RECURSIVE lock (City: a plain one crashed when a
+    // Win32 call re-entered the window procedure on the same thread). Buttons and the wheel are handed to ImGui directly,
+    // NOT through the backend's message handler: that one takes and releases mouse capture, and its release on button-up
+    // would take the GAME's own capture away (the 2026-08-05 "camera not behaving" build forwarded everything).
+    std::recursive_mutex g_imguiInputLock;
+    unsigned g_panelMouseButtons = 0;   // buttons pressed on the panel, so their releases reach ImGui after it closes
+    bool panel_takes_mouse() { return g_imguiReady && g_panelToVR && (g_showOverlay || akvr_gamepad_menu()); }
+
+    // PANELMOUSE: the backend queues the cursor in window pixels (it reads it every frame while the game is in front);
+    // map the queued positions from the part of the window on its monitor (the VR window can be bigger than the
+    // monitor) onto the whole panel. Mapping the queue, not io.MousePos (City's offset / drifting / double cursor).
+    void map_mouse_to_panel(ImVec2 panel)
+    {
+        HWND wnd = g_focusHwnd ? g_focusHwnd : g_hwnd;
+        RECT cr{};
+        if (!wnd || !GetClientRect(wnd, &cr)) return;
+        POINT tl{cr.left, cr.top}, br{cr.right, cr.bottom};
+        ClientToScreen(wnd, &tl);
+        ClientToScreen(wnd, &br);
+        RECT vis{tl.x, tl.y, br.x, br.y}, on{};
+        MONITORINFO mi{sizeof(mi)};
+        if (GetMonitorInfoW(MonitorFromWindow(wnd, MONITOR_DEFAULTTONEAREST), &mi) && IntersectRect(&on, &vis, &mi.rcMonitor))
+            vis = on;
+        const float vx = float(vis.left - tl.x), vy = float(vis.top - tl.y);
+        const float vw = float(vis.right - vis.left), vh = float(vis.bottom - vis.top);
+        if (vw <= 0 || vh <= 0) return;
+        for (ImGuiInputEvent& e : GImGui->InputEventsQueue)
+        {
+            if (e.Type != ImGuiInputEventType_MousePos || e.MousePos.PosX <= -FLT_MAX) continue;
+            e.MousePos.PosX = ImClamp((e.MousePos.PosX - vx) / vw, 0.0f, 1.0f) * panel.x;
+            e.MousePos.PosY = ImClamp((e.MousePos.PosY - vy) / vh, 0.0f, 1.0f) * panel.y;
+        }
+    }
+
     LRESULT CALLBACK focus_wndproc(HWND h, UINT msg, WPARAM w, LPARAM l)
     {
         // RAISE THE SIZE CEILING. Measured 2026-08-04: after rewriting AdjustWindowRect
@@ -467,12 +512,43 @@ namespace
         // Nothing is lost â€” ImGui never received mouse buttons before either (the panel
         // is driven by the controller), and the cursor position is read directly by
         // ImGui_ImplWin32_NewFrame, not from here.
+        // PANELMOUSE: buttons + wheel while the panel shows in the headset; the cursor position comes from the panel frame.
+        if (msg >= WM_MOUSEFIRST && msg <= WM_MOUSELAST && msg != WM_MOUSEMOVE && ImGui::GetCurrentContext() &&
+            (panel_takes_mouse() || g_panelMouseButtons))
+        {
+            int button = -1; bool down = false;
+            switch (msg)
+            {
+            case WM_LBUTTONDOWN: case WM_LBUTTONDBLCLK: button = 0; down = true; break;
+            case WM_RBUTTONDOWN: case WM_RBUTTONDBLCLK: button = 1; down = true; break;
+            case WM_MBUTTONDOWN: case WM_MBUTTONDBLCLK: button = 2; down = true; break;
+            case WM_LBUTTONUP: button = 0; break;
+            case WM_RBUTTONUP: button = 1; break;
+            case WM_MBUTTONUP: button = 2; break;
+            }
+            {
+                std::lock_guard<std::recursive_mutex> lk(g_imguiInputLock);
+                ImGuiIO& io = ImGui::GetIO();
+                if (button >= 0 && (down ? panel_takes_mouse() : (g_panelMouseButtons & (1u << button)) != 0))
+                {
+                    io.AddMouseSourceEvent(ImGuiMouseSource_Mouse);
+                    io.AddMouseButtonEvent(button, down);
+                    if (down) g_panelMouseButtons |= 1u << button; else g_panelMouseButtons &= ~(1u << button);
+                }
+                else if (msg == WM_MOUSEWHEEL && panel_takes_mouse())
+                    io.AddMouseWheelEvent(0.0f, (float)GET_WHEEL_DELTA_WPARAM(w) / (float)WHEEL_DELTA);
+            }
+            if (panel_takes_mouse()) return 0;   // the panel's click, not Batman's
+        }
         const bool isKeyMsg = (msg == WM_KEYDOWN || msg == WM_KEYUP ||
                                msg == WM_SYSKEYDOWN || msg == WM_SYSKEYUP ||
                                msg == WM_CHAR || msg == WM_SYSCHAR);
         if (isKeyMsg && g_showOverlay && ImGui::GetCurrentContext())
         {
-            ImGui_ImplWin32_WndProcHandler(h, msg, w, l);
+            {
+                std::lock_guard<std::recursive_mutex> lk(g_imguiInputLock);
+                ImGui_ImplWin32_WndProcHandler(h, msg, w, l);
+            }
             // While a text box has focus the keystrokes are the panel's, not Batman's â€”
             // otherwise typing "3" into a value also throws a batarang.
             if (ImGui::GetIO().WantCaptureKeyboard)
@@ -917,6 +993,7 @@ namespace
         fprintf(f, "hudeyefollow=%d\npausenoback=%d\n", akvr_xr_hud_eye_follow() ? 1 : 0, akvr_xr_pause_no_back() ? 1 : 0);   // HUDEYES / PAUSENOBACK
         fprintf(f, "menubackopacity=%.2f\n", akvr_xr_menu_back_opacity());   // MENUBACK (replaces menunoback)
         fprintf(f, "audiosync=%d\n", akvr_audiosync() ? 1 : 0);   // AUDIOSYNC
+        fprintf(f, "transfull2=%d\n", akvr_trans_full() ? 1 : 0);   // TRANSFULL
         fprintf(f, "menubackfeather=%.2f\n", akvr_xr_menu_back_feather());   // MENUFEATHER
         fprintf(f, "pausemenusize=%.2f\n", akvr_xr_pause_menu_size());   // PAUSESIZE
         fprintf(f, "pauseaspect=%.3f\n", akvr_xr_pause_aspect());
@@ -1080,6 +1157,7 @@ namespace
             else if (sscanf(line, "pausenoback=%d", &iv) == 1) akvr_xr_pause_no_back_set(iv != 0);   // PAUSENOBACK
             else if (sscanf(line, "menubackopacity=%f", &v) == 1) akvr_xr_menu_back_opacity_set(v);   // MENUBACK
             else if (sscanf(line, "audiosync=%d", &iv) == 1) akvr_audiosync_set(iv != 0);   // AUDIOSYNC
+            else if (sscanf(line, "transfull2=%d", &iv) == 1) akvr_trans_full_set(iv != 0);   // TRANSFULL
             else if (sscanf(line, "menubackfeather=%f", &v) == 1) akvr_xr_menu_back_feather_set(v);   // MENUFEATHER
             else if (sscanf(line, "pausemenusize=%f", &v) == 1) akvr_xr_pause_menu_size_set(v);   // PAUSESIZE
             else if (sscanf(line, "pauseaspect=%f", &v) == 1) akvr_xr_pause_aspect_set(v);
@@ -1464,6 +1542,7 @@ namespace
         ImGui::StyleColorsDark();
         ImGui_ImplWin32_Init(g_hwnd);
         ImGui_ImplDX11_Init(g_device, g_context);
+        akvr_mouse_block_install([] { return panel_takes_mouse() || g_panelMouseButtons != 0; }); // PANELMOUSE
         akvr_xr_set_device(g_device);   // hand the game's device to OpenXR for its session
 
         g_injectTick = GetTickCount64();
@@ -1503,7 +1582,22 @@ namespace
         if (akvr_engine_stereo())
         {
             char pc[48]; snprintf(pc, sizeof(pc), "capmk c%02u%02u%02u", stamp.wHour, stamp.wMinute, stamp.wSecond);   // MK3: + HUD + marker data
+            {   // DIAGKIT: 2 s later (AKN has listed the shaders drawn now) their code goes into this capture's "shaders" folder
+                struct Job { std::wstring base, dir; }; Job* j = new Job{ base, base + g_capDir + L"shaders\\" };
+                CloseHandle(CreateThread(nullptr, 0, [](LPVOID p) -> DWORD {
+                    Job* j = (Job*)p; Sleep(2000); CreateDirectoryW(j->dir.c_str(), nullptr); int n = 0;
+                    for (const wchar_t* inv : { L"akn\\vs_inventory.txt", L"akn\\ps_inventory.txt" })
+                    {
+                        FILE* f = _wfopen((j->base + inv).c_str(), L"r"); if (!f) continue;
+                        char line[64]; const bool vs = wcsstr(inv, L"vs_") != nullptr;
+                        while (fgets(line, sizeof(line), f)) { unsigned long long h = _strtoui64(line, nullptr, 16); if (!h) continue;
+                            wchar_t fn[MAX_PATH]; swprintf_s(fn, L"%s%016llx_%s.txt", j->dir.c_str(), h, vs ? L"vs" : L"ps"); n += akvr_shader_save(h, fn); }
+                        fclose(f);
+                    }
+                    delete j; (void)n; return 0; }, j, 0, nullptr));
+            }
             akn_command(pc);
+            // (BLACKHUNT on menu captures removed 2026-10-14 - release tidy; command "blackhunt" stays)
         }
         const std::wstring capture = base + g_capDir;
         akvr_present_probe_dump((capture + L"present.csv").c_str());
@@ -2390,6 +2484,7 @@ namespace
             // AUDIOSYNC (JJ: "maybe we need to pause the audio so it syncs up with ... the menu screen appearing")
             bool as = akvr_audiosync();
             if (ImGui::Checkbox("start-up: hold the sound while the game loads the menu", &as)) { akvr_audiosync_set(as); settings_save(); }
+            // (TRANSFULL test checkbox removed 2026-10-14 - not ready; parked, HUD_REBUILD_PLAN HR4)
             if (g_showAdvanced) ImGui::TextDisabled("   %s", akvr_audiosync_diag());
             float pscr = akvr_xr_pause_zoom() * 100.0f;
             if (SliderStep("map size %", &pscr, 10.0f, 100.0f, "%.0f"))   // PAUSESIZE: the pause menu has its own size now
@@ -2673,6 +2768,36 @@ namespace
         }
 
         // ---- KEYBOARD SHORTCUTS (folded) -----------------------------------------
+        // RAINVIEW panel 2026-10-14 (JJ: "I don't have the setting anymore to isolate the rain"): the rain test back, in its own drawer
+        ImGui::SetNextItemOpen(false, ImGuiCond_Once); if (ImGui::CollapsingHeader("TROUBLESHOOTING"))
+        {
+            // DIAGKIT 2026-10-14 (JJ: test features "for whenever we run into HUD element bugs or sprite element bugs"): permanent tools.
+            // The capture button always saves both eyes, the HUD, the marker data, the last 8 s of marker numbers and the code of every
+            // shader on screen (akvr_captures\<time>\shaders). Guide: VR_DEBUG_TOOLKIT.md.
+            ImGui::TextWrapped("Press CAPTURE (F2) right after you see a problem: it saves both eyes, the HUD and the effects on screen for a bug report.");
+            static bool s_replay = false;
+            if (ImGui::Checkbox("keep a replay of the last half second (adds it to each capture; uses a lot of disk)", &s_replay)) akn_command(s_replay ? "hudring 1" : "hudring 0");
+            static bool s_detail = false;
+            if (ImGui::Checkbox("detailed HUD and marker logs", &s_detail)) akn_command(s_detail ? "recorders 1" : "recorders 0");
+            if (ImGui::Button("watch for effects that start appearing")) akn_command("psnewarm");
+            ImGui::SameLine(); ImGui::TextDisabled("(2 s to learn what is on screen, then new ones are noted)");
+            ImGui::Separator();
+            ImGui::Text("Find a broken effect: hide them one at a time");
+            if (ImGui::Button("collect the effects on screen")) akn_command("fxcollect");
+            ImGui::SameLine(); if (ImGui::Button("<  previous")) akn_command("fxstep -1");
+            ImGui::SameLine(); if (ImGui::Button("next  >")) akn_command("fxstep 1");
+            ImGui::SameLine(); if (ImGui::Button("show all")) akn_command("fxstep 0");
+            {   using StFn = int (*)(char*, int); static StFn st = nullptr; static bool t = false;
+                if (!t) { HMODULE m = GetModuleHandleW(L"XINPUT9_1_0.dll"); st = m ? (StFn)GetProcAddress(m, "akn_diag_status") : nullptr; t = m != nullptr; }
+                char line[160] = "(engine stereo only)"; if (st) st(line, sizeof(line)); ImGui::TextDisabled("   %s - capture while the problem is gone to record which effect it is", line); }
+            ImGui::Separator();
+            // (SMOKELIGHT / LIGHTDIR always on; smoke cards always upright = AKN default spriteaxes 2 - JJ 2026-10-14; commands stay for tests)
+            ImGui::Separator();
+            static int s_rainView = 0;
+            if (ImGui::RadioButton("rain as normal", s_rainView == 0)) { s_rainView = 0; akn_command("rainview 0"); }
+            ImGui::SameLine(); if (ImGui::RadioButton("show only the rain", s_rainView == 2)) { s_rainView = 2; akn_command("rainview 2"); }
+            ImGui::SameLine(); if (ImGui::RadioButton("hide the rain", s_rainView == 1)) { s_rainView = 1; akn_command("rainview 1"); }
+        }
         ImGui::SetNextItemOpen(false, ImGuiCond_Once); if (ImGui::CollapsingHeader("Keyboard shortcuts"))
         {
             ImGui::TextDisabled("F8 show/hide this panel   |   hold both stick clicks = use it with the controller");
@@ -3224,6 +3349,17 @@ namespace
                 grab_backbuffer(swapChain, L"akvr_captures\\frame_early.bmp");
             }
             // PANELTIDY5 2026-10-11: MKREC (20 s of eye pictures for the marker test) removed.
+            // HUDRING2 2026-10-13: the HUD tree (visible parts, positions) while the bats play - which part is the bat swarm and which
+            // the menus' black backdrop (akvr_captures folder, ringlayers_<n>_<time>.txt), asked for by an A / B press in a menu (gamepad.cpp)
+            if (g_ringLayersAt && gnow >= g_ringLayersAt)
+            {
+                g_ringLayersAt = 0; const LONG n = InterlockedIncrement(&g_ringLayersN);
+                std::wstring p = settings_path(); const std::wstring base = p.empty() ? L"" : p.substr(0, p.find_last_of(L"\\/") + 1);
+                CreateDirectoryW((base + L"akvr_captures").c_str(), nullptr);
+                SYSTEMTIME st{}; GetLocalTime(&st);
+                wchar_t name[200]; swprintf_s(name, L"%sakvr_captures\\ringlayers_%02ld_%02u%02u%02u_%03u.txt", base.c_str(), n, st.wHour, st.wMinute, st.wSecond, st.wMilliseconds);
+                akvr_hud_layers_dump(name);
+            }
             if (g_grabWanted)
             {
                 // NUMBERED, not overwritten. Comparing two head positions needs two
@@ -3398,6 +3534,7 @@ namespace
             g_panelToVR = toVR;
 
             ImGui_ImplDX11_NewFrame();
+            std::unique_lock<std::recursive_mutex> inputLock(g_imguiInputLock); // until NewFrame took the queued input
             ImGui_ImplWin32_NewFrame();
             // feed the real controller as menu navigation (menu mode only); ONESTEP: left/right
             // held back from ImGui while a slider was controller-active last panel frame
@@ -3406,8 +3543,11 @@ namespace
             {
                 uint32_t ow, oh; akvr_xr_overlay_size(ow, oh);
                 io.DisplaySize = ImVec2((float)ow, (float)oh);
+                map_mouse_to_panel(ImVec2((float)ow, (float)oh));
             }
+            io.MouseDrawCursor = toVR;   // PANELMOUSE: the panel draws its own cursor (the Windows one is on the monitor)
             ImGui::NewFrame();
+            inputLock.unlock();
             draw_panel();
             ImGui::Render();
 

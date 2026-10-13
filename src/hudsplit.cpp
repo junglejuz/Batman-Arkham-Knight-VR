@@ -565,6 +565,48 @@ namespace {
                 g_vb[i].L = L; MemoryBarrier(); g_vb[i].ready = 1; return;
             }
     }
+    // SPRITEAXES 2026-10-14 (JJ: chimney smoke sprites differ per eye and roll with head roll): UE3 particle sprite vertex shaders
+    // spread each card along camera right / up from their own cb0 rows (sincos of the sprite's rotation, then
+    // "mul rC, rS.xxxx, cb0[A]" + "mad rC, -rK.xxxx, cb0[B]"). Found at creation; AKN gives those two rows the head-free game
+    // camera's axes per draw (playbook FAIL-STR-023: orient billboards once, for both eyes). 32 of AK's sprite shaders (rows 23/24 ..).
+    struct SpEntry { void* volatile obj; int a, b, w; };   // w: the facing-mode weights row (x camera axes, y velocity, z axis lock, w face the camera position)
+    constexpr int kSpMap = 2048; SpEntry g_sp[kSpMap] = {}; volatile LONG c_spFound = 0;
+    bool sprite_rows(const char* t, int& a, int& b, int& w)
+    {
+        const char* p = t;
+        while ((p = strstr(p, "sincos ")) != nullptr)
+        {
+            int s1 = -1, c1 = -1; char line[160] = {};
+            const char* e = strchr(p, '\n'); if (!e) return false;
+            if (sscanf_s(p, "sincos r%d.x, r%d.x,", &s1, &c1) == 2)
+            {
+                const char* l2 = e + 1; while (*l2 == ' ') ++l2;
+                const char* e2 = strchr(l2, '\n'); if (!e2) return false;
+                const char* l3 = e2 + 1; while (*l3 == ' ') ++l3;
+                int d1 = -1, s2 = -1, n1 = -1, d2 = -1, c2 = -1, n2 = -1;
+                if (sscanf_s(l2, "mul r%d.xyzw, r%d.xxxx, cb0[%d].xyzw", &d1, &s2, &n1) == 3 && s2 == s1 &&
+                    sscanf_s(l3, "mad r%d.xyzw, -r%d.xxxx, cb0[%d].xyzw", &d2, &c2, &n2) == 3 && c2 == c1 && d2 == d1 && n1 >= 0 && n2 >= 0 && n1 < 256 && n2 < 256)
+                {   // SPRITEFACE: the next line weights the camera-axes card: "mad rX, rC.xyzw, cb0[W].xxxx, ..."
+                    a = n1; b = n2; w = -1;
+                    const char* e3 = strchr(l3, '\n'); if (e3) { const char* l4 = e3 + 1; while (*l4 == ' ') ++l4; int d3 = -1, c3 = -1, n3 = -1; if (sscanf_s(l4, "mad r%d.xyzw, r%d.xyzw, cb0[%d].xxxx", &d3, &c3, &n3) == 3 && c3 == d1 && n3 >= 0 && n3 < 256) w = n3; }
+                    return true; }
+            }
+            p = e;
+        }
+        return false;
+    }
+    void sp_add(void* obj, int a, int b, int w)
+    {
+        for (uint32_t i = sh_slot(obj) & (kSpMap - 1), n = 0; n < 64; ++n, i = (i + 1) & (kSpMap - 1))
+            if (InterlockedCompareExchangePointer((PVOID volatile*)&g_sp[i].obj, obj, nullptr) == nullptr || g_sp[i].obj == obj) { g_sp[i].a = a; g_sp[i].b = b; g_sp[i].w = w; MemoryBarrier(); return; }
+    }
+    bool sp_get(const void* obj, int& a, int& b, int& w)
+    {
+        if (!obj) return false;
+        for (uint32_t i = sh_slot(obj) & (kSpMap - 1), n = 0; n < 64; ++n, i = (i + 1) & (kSpMap - 1))
+        { void* v = g_sp[i].obj; if (!v) return false; if (v == obj) { a = g_sp[i].a; b = g_sp[i].b; w = g_sp[i].w; return a >= 0 && b >= 0; } }
+        return false;
+    }
     // out[32]: rowX, rowY, stride, rows, base, rowW, nPiece, prow[12], pstride[12] (MKBATCH / MKTAG)
     bool vb_get(const void* obj, int* out)
     {
@@ -589,6 +631,19 @@ namespace {
         const bool dir = strstr(body, "cb1[11]") || strstr(body, "cb1[12]") || strstr(body, "cb1[13]");
         return dir && !strstr(body, "cb1[14]");
     }
+    // LIGHTDIR 2026-10-14 (JJ: the chimney smoke brightens looking up, turns GREEN looking far down, flat game steady): AK's sprite
+    // pixel shaders (07ac19831f7c0c35) get light directions in VIEW space (cb0[25] / [27] / [29]) and turn them into the world with
+    // the view's inverse rows cb1[15..17]; the directions match the head-free camera, the rows follow the head -> the lights swing
+    // with the head. Flagged here; AKN gives those draws the head-free camera's inverse rows (akvr_shader_lightdir).
+    void* volatile g_ldSet[kMcMap] = {}; volatile LONG c_ldFound = 0;
+    bool ld_has(const void* obj) { if (!obj) return false; for (uint32_t i = sh_slot(obj) & (kMcMap - 1), n = 0; n < 64; ++n, i = (i + 1) & (kMcMap - 1)) { void* v = g_ldSet[i]; if (!v) return false; if (v == obj) return true; } return false; }
+    void ld_add(void* obj) { for (uint32_t i = sh_slot(obj) & (kMcMap - 1), n = 0; n < 64; ++n, i = (i + 1) & (kMcMap - 1)) if (InterlockedCompareExchangePointer((PVOID volatile*)&g_ldSet[i], obj, nullptr) == nullptr || g_ldSet[i] == obj) return; }
+    bool ld_pattern(const char* t)
+    {   // "mul rN.xyz, cb0[K].yyyy, cb1[16].xyzx": a constant vector turned by the view's inverse rows
+        const char* p = t;
+        while ((p = strstr(p, ".yyyy, cb1[16].xyz")) != nullptr) { const char* ls = p; while (ls > t && ls[-1] != '\n') --ls; if (strstr(ls, "cb0[") && strstr(ls, "cb0[") < p && strncmp(ls + strspn(ls, " "), "mul ", 4) == 0) return true; ++p; }
+        return false;
+    }
     DWORD WINAPI mc_worker(LPVOID)
     {
         HMODULE m = LoadLibraryW(L"d3dcompiler_47.dll");
@@ -609,8 +664,25 @@ namespace {
                 {
                     InterlockedIncrement(&c_mcSeen);
                     if (j.kind == 0 && vr_pattern((const char*)txt->GetBufferPointer())) { vr_add(j.obj); InterlockedIncrement(&c_vrFound); }   // SUITGLOSS3
+                    if (j.kind == 0 && ld_pattern((const char*)txt->GetBufferPointer())) { ld_add(j.obj); InterlockedIncrement(&c_ldFound); }   // LIGHTDIR
                     if (j.kind == 1 && v1_pattern((const char*)txt->GetBufferPointer())) { v1_add(j.obj); InterlockedIncrement(&c_v1Found); }   // MKSINGLE
                     else if (j.kind == 1) { VsBatchLayout bl; if (vs_batch_layout((const char*)txt->GetBufferPointer(), bl)) { vb_add(j.obj, bl); InterlockedIncrement(&c_vbFound); } }   // MKBATCH
+                    if (j.kind == 1) { int sa = -1, sb = -1, sw = -1; if (sprite_rows((const char*)txt->GetBufferPointer(), sa, sb, sw)) { sp_add(j.obj, sa, sb, sw); InterlockedIncrement(&c_spFound); } }   // SPRITEAXES
+                    if (j.kind == 1)
+                    {   // SPRITEFIND 2026-10-14 (JJ: chimney smoke sprites differ per eye and roll with the head): vertex shaders that turn
+                        // a sprite (sincos) or build quads from vertex / instance ids are written to akvr_captures\sprite_vs\<hash>.txt, so the
+                        // smoke's camera-axis rows can be read offline (playbook FAIL-STR-023: orient billboards once for both eyes)
+                        const char* t = (const char*)txt->GetBufferPointer();
+                        static volatile LONG s_spN = 0;
+                        if (false && (strstr(t, "sincos") || (strstr(t, "vertex_id") && strstr(t, "instance_id"))) && s_spN < 400)   /* SPRITEFIND off 2026-10-14: DIAGKIT captures save shader code */
+                        {
+                            InterlockedIncrement(&s_spN);
+                            wchar_t dir[MAX_PATH]; GetModuleFileNameW(nullptr, dir, MAX_PATH); if (wchar_t* sl = wcsrchr(dir, L'\\')) sl[1] = 0;
+                            wcscat_s(dir, L"akvr_captures\\sprite_vs\\"); CreateDirectoryW(dir, nullptr);
+                            wchar_t fn[MAX_PATH]; swprintf_s(fn, L"%s%016llx.txt", dir, (unsigned long long)sh_get(j.obj));
+                            if (FILE* f = _wfopen(fn, L"wb")) { fwrite(t, 1, strlen(t), f); fclose(f); }
+                        }
+                    }
                     txt->Release();
                 }
             }
@@ -626,11 +698,20 @@ namespace {
         AcquireSRWLockExclusive(&g_mcLock); g_mcQ.push_back(std::move(j)); ReleaseSRWLockExclusive(&g_mcLock);
         if (g_mcEvent) SetEvent(g_mcEvent);
     }
+    // DIAGKIT 2026-10-14 (JJ: test features in the overlay "so that we don't have to continually build new ones"): every shader's code is
+    // kept by its name (~100 MB), so a capture can save the code of the shaders on screen (akvr_shader_save) - no SPRITEFIND-style rebuilds.
+    std::unordered_map<uint64_t, std::vector<uint8_t>> g_shCode; SRWLOCK g_shCodeLock = SRWLOCK_INIT;
+    void sh_store(uint64_t h, const void* code, SIZE_T len)
+    {   // DIAGKIT (no __try here: the vector needs unwinding; mc_copy guards the read)
+        std::vector<uint8_t> v(len); if (!mc_copy(v.data(), code, len)) return;
+        AcquireSRWLockExclusive(&g_shCodeLock); if (!g_shCode.count(h)) g_shCode.emplace(h, std::move(v)); ReleaseSRWLockExclusive(&g_shCodeLock);
+    }
     void sh_note(const void* code, SIZE_T len, void* obj)
     {
         if (!code || !obj) return;
         uint64_t h = 0;
         __try { h = fnv64(code, len); } __except (EXCEPTION_EXECUTE_HANDLER) { h = 0; }
+        if (h && len < (1u << 20)) sh_store(h, code, len);   // DIAGKIT
         uint32_t crc = 0;
         __try { crc = crc32_buf(code, len); } __except (EXCEPTION_EXECUTE_HANDLER) { crc = 0; }
         if (h) { sh_put(obj, h, crc); }
@@ -2256,6 +2337,20 @@ void akvr_hudsplit_ui_now(int& movies, int& draws)
 }
 
 // RAINONCE 2026-10-07: AKN names the compute shader bound at a dispatch (the game's shaders are named at creation here)
+
+// DIAGKIT: write one shader's disassembly (by its name) to a file; 1 = written
+extern "C" __declspec(dllexport) int akvr_shader_save(unsigned long long h, const wchar_t* path)
+{
+    std::vector<uint8_t> code;
+    AcquireSRWLockShared(&g_shCodeLock); auto it = g_shCode.find(h); if (it != g_shCode.end()) code = it->second; ReleaseSRWLockShared(&g_shCodeLock);
+    if (code.empty() || !path) return 0;
+    typedef HRESULT(WINAPI* DisFn)(LPCVOID, SIZE_T, UINT, LPCSTR, ID3DBlob**);
+    static DisFn dis = nullptr; if (!dis) { HMODULE m = LoadLibraryW(L"d3dcompiler_47.dll"); dis = m ? (DisFn)GetProcAddress(m, "D3DDisassemble") : nullptr; }
+    ID3DBlob* txt = nullptr; if (!dis || FAILED(dis(code.data(), code.size(), 0, nullptr, &txt)) || !txt) return 0;
+    FILE* f = _wfopen(path, L"wb"); if (f) { fwrite(txt->GetBufferPointer(), 1, txt->GetBufferSize() > 0 ? txt->GetBufferSize() - 1 : 0, f); fclose(f); }
+    txt->Release();
+    return f ? 1 : 0;
+}
 extern "C" __declspec(dllexport) unsigned long long akvr_shader_hash(const void* obj) { return sh_get(obj); }
 
 // DLSS D0 2026-10-08: Luma's shader names (CRC-32) for AKN - the SMAA passes Luma swaps for DLSS
@@ -2265,10 +2360,12 @@ void akvr_flareoff_set(int v) { g_flareOff = v ? 1 : 0; }   // FLAREOFF3: settin
 
 // SUITGLOSS3: does this pixel shader take its gloss from the camera's aim?
 extern "C" __declspec(dllexport) int akvr_shader_camdir(const void* obj) { return vr_has(obj) ? 1 : 0; }   // SUITGLOSS3
+extern "C" __declspec(dllexport) int akvr_shader_lightdir(const void* obj) { return ld_has(obj) ? 1 : 0; }   // LIGHTDIR
 extern "C" __declspec(dllexport) int akvr_vs_one_piece(const void* obj) { return v1_has(obj) ? 1 : 0; }   // MKSINGLE
 extern "C" __declspec(dllexport) long akvr_vs_one_piece_count() { return c_v1Found; }
 // MKBATCH / MKTAG: out[32] = x row, y row, rows per piece, rows in cb0, base, w row (-1 = 2D), n piece rows, rows[12],
 // steps[12] - all for piece 0 (position translation = .w of the x / y rows)
+extern "C" __declspec(dllexport) int akvr_vs_sprite_rows(const void* obj, int* out) { int a = -1, b = -1, w = -1; if (!out || !sp_get(obj, a, b, w)) return 0; out[0] = a; out[1] = b; out[2] = w; return 1; }   // out[3]   // SPRITEAXES (AKN)
 extern "C" __declspec(dllexport) int akvr_vs_batch_layout(const void* obj, int* out) { return out && vb_get(obj, out) ? 1 : 0; }
 extern "C" __declspec(dllexport) long akvr_vs_batch_count() { return c_vbFound; }
 

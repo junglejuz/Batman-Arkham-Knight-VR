@@ -1247,3 +1247,21 @@ DoF is off). TONETEST code stays (tonetest=1, not saved).
   table is grabbed). If the off one is 28/24 (UNORM) and the on one float, the DoF-off path loses highlights upstream
   and no curve can recover them -> recommend DoF on + game AA off + NEARSOFT. Colour grade strength now 0..2 (exposure
   weight clamped at 1).
+
+## 2026-10-13 PANELMOUSE - mouse on the VR panel (AKVR + AKN share this panel)
+JJ: "Arkham City's mouse works now in the overlay, port it to Origins and Arkham Knight". Before: the panel took keyboard
+only (2026-08-05 narrowing), no cursor, clicks ignored, the game's mouse still turned the camera under the panel.
+SOURCE (src/hooks.cpp, new src/mouse_block.cpp):
+- focus_wndproc: while the panel shows in the headset, mouse buttons + wheel go to ImGui DIRECTLY (io.AddMouseButtonEvent
+  / AddMouseWheelEvent) and are swallowed; releases of buttons pressed on the panel still reach ImGui after it closes.
+  The backend's message handler is NOT used for the mouse: its button-up ReleaseCapture would take the GAME's capture
+  away (likely the 08-05 "camera not behaving").
+- Cursor position: the backend's per-frame GetCursorPos (window pixels), queued events mapped onto the panel from the part
+  of the window on its monitor (map_mouse_to_panel; City's io.MousePos scaling bug avoided). io.MouseDrawCursor = toVR.
+- One recursive lock around ImGui's input queue (window thread vs render thread; City's plain mutex crashed).
+- mouse_block: the game's DirectInput MOUSE reads (GetDeviceState / GetDeviceData, shared vtable via the SYSTEM dinput8)
+  return nothing while the panel takes the mouse. Log "PANELMOUSE: ...".
+STATIC: build-dinput8 Release built clean (VS's own cmake.exe - PATH cmake 4.4 cannot reuse that cache), installed
+dinput8.dll SHA-256 bf7f3fcd45e9ea8e..., backup akvr\backups\dinput8.dll.before-panelmouse. Not run.
+Test: F8 / stick chord -> mouse over items, click drawers + checkboxes, drag a slider, wheel; let go 5 s (cursor stays);
+camera does not turn while the panel is open; close -> mouse-look normal, clicks fire in the game again.

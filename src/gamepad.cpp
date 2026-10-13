@@ -6,6 +6,9 @@
 #include <cstdio>
 #include <cstring>
 #include "akn_link.h"
+int  akvr_xr_menu_phase();   // xr.cpp (HUDRING)
+bool akvr_xr_pause_live();   // xr.cpp (HUDRING)
+void akvr_ring_layers_request(int ms);   // hooks.cpp (HUDRING2)
 
 namespace
 {
@@ -44,6 +47,21 @@ namespace
     // forwarder in the game folder, our read of Windows' own copy never sees that pad. Engine mode now wraps the game's
     // OWN import of XInputGetState (BatmanAK.exe's import table): the game's reads pass our filter, and our chord read
     // calls the top of that same chain, so it sees exactly what the game sees.
+    // HUDRING 2026-10-13 (JJ: bat transitions between menus / into gameplay; too short to capture by hand): an A or B press in a
+    // menu (start-up / main menu, or the pause screen) asks AKN to write its HUD-sheet ring 0.9 s later (the bats' second)
+    void ring_on_press(WORD b)
+    {
+        static WORD s_prev = 0; const WORD down = (WORD)(b & ~s_prev); s_prev = b;
+        if (!(down & (XINPUT_GAMEPAD_A | XINPUT_GAMEPAD_B))) return;
+        if (akvr_xr_menu_phase() == 2 && !akvr_xr_pause_live()) return;
+        using DumpFn = void (*)(const char*, int); static DumpFn f = nullptr; static bool t = false;
+        if (!t) { HMODULE m = GetModuleHandleW(L"XINPUT9_1_0.dll"); f = m ? (DumpFn)GetProcAddress(m, "akn_hudring_dump") : nullptr; t = m != nullptr; }
+        if (f) f((down & XINPUT_GAMEPAD_A) ? "padA" : "padB", 900);
+        akvr_ring_layers_request(600);   // HUDRING2: the HUD tree mid-bats (hooks.cpp)
+        { using RsFn = void (*)(const char*); static RsFn r = nullptr; static bool rt = false;   // BATREC: draw kinds new again
+          if (!rt) { HMODULE m = GetModuleHandleW(L"XINPUT9_1_0.dll"); r = m ? (RsFn)GetProcAddress(m, "akn_hudsig_reset") : nullptr; rt = m != nullptr; }
+          if (r) r((down & XINPUT_GAMEPAD_A) ? "padA" : "padB"); }
+    }
     using XIGS2_t = DWORD(WINAPI*)(DWORD, XINPUT_STATE*);
     void** g_iatSlot = nullptr;
     XIGS2_t g_iatNext = nullptr;
@@ -63,6 +81,7 @@ namespace
             st->Gamepad.wButtons |= (WORD)g_injBtns;
         }
         if (!tl_ourRead) { InterlockedIncrement(&g_iatReads); game_read(idx, st, r); }
+        // (HUDRING menu-press dumps removed 2026-10-14 - release tidy; the panel capture covers it)
         return r;
     }
     void** find_iat(const char* dll, const char* fn)

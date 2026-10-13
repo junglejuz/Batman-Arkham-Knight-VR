@@ -1912,3 +1912,717 @@ SHADERFINDER, RADARREC, AIMSHOT, the render-target observer + scene TAP feed, sh
 Kept: FARRAIN (camera input = head-free game camera, as nearrainlag=0 gave), FLAREOFF, SUITGLOSS, MKGS, MKSINGLE/MKBATCH, HUD
 split / layers / markers, F2 capture core, start-up / mode logs, AKN-command test switches (MARKSHEET, MARKERCUT, MAPFLAT ...),
 first person (fp_report probe file kept until JJ confirms the training fix). Shipped settings file: 27 dead keys removed.
+
+## JJ 2026-10-11 ~22:00: markers face straight out; hints missing ("A to rescue"); detective mode lacks lights in the LEFT eye; crash opening the panel in detective mode under SteamVR
+Looked up: VR_WORLD_MARKERS_GUIDE §5a/§5b (AKN card = upright, facing the camera HEADING); batman_city BATMAN_CITY_PLAN
+"MARKERFACE" (JJ asked City the same thing 17:4x; card faces the game camera's POSITION, right edge level; JJ now says it is
+fixed in City); NOTES DETECTIVE / VSSPLIT / VSSYNC / DETVIG (detective mode was right in both eyes 2026-10-09 03:2x);
+VR_ESSENTIALS §8 / memory vd-crash-new-swapchain-midsession, vr-session-refused-pc-side; no earlier note on missing prompts.
+### Findings (LIVE / STATIC, 22:0x)
+- Crashes, matched to launches (Application log + CrashDumps + akvr_swapchains.txt + xrclient_BatmanAK.txt):
+  - 18:22-19:01:16 SteamVR session = JJ's crash: ACCESS VIOLATION (null read) in nvwgf2umx.dll+0x1b6d74 on an NVIDIA driver
+    worker thread (only driver frames); at that moment a SteamVR (vrclient_x64) thread was in D3D11 / the driver (taking a
+    submitted frame). AKN's log of that session was overwritten by the relaunches -> LOGKEEP below. Dump BatmanAK.exe.19880.dmp.
+    (Stack scans without unwinding are noisy: the D3DCompile frames seen on AKN's status thread were stale - a false lead.)
+  - 19:02:19 VD launch: "HUD layer" swapchain FAILED (-2), then fail-fast in virtualdesktop-openxr.dll = the known first-VD-
+    session-after-SteamVR refusal (vr-session-refused-pc-side), not the mod.
+  - 19:06:27 VD, and the same signature at 17:34 / 18:17: fail-fast (CFG, code 0xa) on a VirtualDesktop.LibOVRRT64_1 thread
+    with ONE thread left in the process = a crash while the game is already exiting (after quitting). Not the play crash.
+- Detective lights: c190600 (JJ, detective mode) - the green / warm lights on the pipes, tanks and the building at the right
+  are in the right eye only; the left eye (the game's own family, rendered second) has them dark. Means L 13/19/23, R 15/22/25.
+- Prompts: c184715 (JJ at the rescue spot, a person on the floor): no prompt in either eye nor on the HUD sheet (compass only).
+  The per-eye marker layers were never saved by any capture, so a prompt routed as a world marker was invisible to checks.
+### Built 22:14 (AKN only, installed; previous DLL in akvr\diagnostics\before-MKFACEPOS-20261011)
+- MKFACEPOS (default on, "mkfacepos 0|1"): City's MARKERFACE in mk_eye_frame - the card faces the game camera's POSITION
+  (solved from the head-free view x lens), right edge level, up = normal x right; size fitted so the game camera sees the
+  game's layout at W (first order), in a ROLL-FREE frame (forward = camera aim, level right) because AKN's head-free camera
+  carries head roll (MKREC 045423). Falls back to the upright card with the camera nearly above / below the marker. Status
+  line: "markers N, faced to the camera N". Offline (scratchpad facepos_check.py): normal . (W->camera) = 1, right z = 0,
+  size identical with a 25 deg rolled camera, layout reproduced (diagonal 0.998 / 1.000).
+- LOGKEEP: akn_log.txt -> akn_log_prev.txt -> akn_log_prev2.txt at start (a crash + relaunch kept no evidence).
+- PROMPTCAP: every panel capture / capmk also saves both eye marker layers (mk_left_<tag>.bmp, mk_right_<tag>.bmp).
+
+## TEST PLAN JJ1011N (one launch; SteamVR launcher, so the crash repro can be the last step; JJ drives, I send switches)
+| # | command / switch | what it proves | how to judge |
+|---|---|---|---|
+| 1 | none (mkfacepos 1 default); then mkfacepos 0 / 1 on JJ's word | markers tilt toward the camera, still no turn with the head | JJ: grapple point / objective above or to the side faces him; log "faced to the camera" > 0 |
+| 2 | tools\Run-PROMPT.ps1 at a spot with a button prompt | where the prompt is lost (see the script header) | prompt in p0 mk layers / hud sheet / nowhere; which of p1-p4 makes it appear |
+| 3 | tools\Run-DET2.ps1 in detective mode, standing still facing lit buildings (~70 s) | view-dependent (eyesame) vs per-eye state (gloss, vssync, vssplit, detvig, mipbias, framesync, rainonce) | left vs right brightness of the lit area per step; d0 = d11 (JJ held still) |
+| 4 (last, crash-prone) | detective mode on, open the panel (both sticks), close, repeat 3x | reproduces the SteamVR crash with LOGKEEP on | crash: akn_log_prev.txt end + new dump; no crash: repeat once under VD |
+Follow-ups: T3 eyesame 1 makes them equal -> culling / lens from the main camera in detective lighting (TURNEDEYE family): try a
+left-eye light-cull fix next; a switch in d4-d10 restores the lights -> that feature skips / corrupts detective lighting in the
+game's family: fix that path. T2 p1 shows it -> extend the HUD phase to that movie's draw; p2-p4 -> fix the routing / placement.
+### JJ1011N T1 / T3 RESULTS 22:2x
+- T1 HEADSET: JJ "the marker points are now facing the camera" - MKFACEPOS confirmed. T2 (prompts) set aside by JJ: he does
+  not know a spot with a prompt yet.
+- T3 run 1 (22:25:50-22:27:01, pair_det0..11): JJ was at Ace Chemicals facing the plant, NOT the 19:06 view (ledge looking
+  down at the yard with the green-lit pipes / tanks). No lit structures in view; both eyes match in every step (whole-picture
+  means L/R within 1.1 of 0-255; overall level drifts 8 -> 13 between steps = the detective look / camera, not the eyes).
+  Inconclusive for the missing lights: re-run facing the 19:06 area.
+### JJ1011N T3 run 2 + JJ report 22:29 (SteamVR, 22-43 frames/s) -> DETHOLD
+- HEADSET (JJ): lighting "a lot more consistent" between the eyes in detective mode; no crash (panel opened). But after leaving
+  detective mode the right eye was missing lighting, and in detective mode the building's OUTLINE (only that element) flicked
+  on now and then - JJ thinks it should stay on all the time.
+- LIVE (akn_log 22:21-22:28): (1) the DET2 step "detvig 0" (22:26:33) also switched detection OFF (ps_note_skip only ran while
+  detvig hid the shader) -> VSSPLIT made the right eye's normal-play view state IN detective mode and used it for 5 s = that
+  state left half in detective mode = the right eye wrong after the exit (test-induced, this launch only). (2) 22:27:44-
+  22:28:37: the right eye swapped view states 12 times in 50 s while JJ was in detective mode: at 22 frames/s the 100 ms
+  "composite seen" window dropped out.
+- DETHOLD (AKN 22:31, installed): detection always runs; one hold (600 ms, "dethold <ms>") for the view-state choice, the
+  exit and AKVR's vignette; per-second line "detective: composite seen/s, longest gap, right-eye view state swaps/s".
+- Next check (JJ, next launch): detective on 30 s -> swaps/s 0 while on; outline steady? which eye flickered?; exit -> right
+  eye lighting normal. Open: whether the outline flicker was the view-state swaps (right eye only) or the game's own.
+- Side note: SteamVR ran at 22-43 frames/s this session (VD sessions ~88) - check pacing under SteamVR (VR_ESSENTIALS §11).
+### DETHOLD RESULT + crash 2 (JJ, SteamVR, 22:35-22:37)
+- LIVE: DETHOLD works - in detective mode 0 view-state swaps/s, longest composite gap 32 ms (was 12 swaps in 50 s).
+- HEADSET (JJ): after the exit the right eye is "nearly perfect, just a little bit different" (capture c223654, 16 s after the
+  22:36:38 exit, Ace Chemicals: the left eye shows a big searchlight shaft top-left, the right eye only a faint one at its
+  left edge - may be just each eye's own turned view; needs a same-spot before / after pair to judge).
+- CRASH 22:37:13 (JJ: looked down in detective mode): nvwgf2umx.dll+0x1b6d74 null read = IDENTICAL to 19:01. Both SteamVR,
+  both in detective mode. No dump written this time; LOGKEEP log ends normally (detective on 11 s, 28 frames/s, nothing odd).
+  Lead: graphics memory. NVML whole-card use: VD session 19:03-19:06 10.0-10.4 GB; SteamVR sessions 10.8-11.6 GB of 12 GB with
+  GPU busy only 40-56 % at 22-28 frames/s (= paging); 6.0 GB used with the game CLOSED (SteamVR still up + browsers, Discord,
+  Notion ...). Hypothesis: SteamVR + desktop apps push the card to its limit, detective mode / looking down (new textures)
+  tips it over, the driver fails an allocation and reads null. Not proven.
+- Next: (1) same-spot before/after capture for the right-eye remainder, under VD; (2) crash: run detective mode under VD
+  (no crash there so far) and SteamVR with desktop apps closed; if SteamVR still crashes, cut AKN's own memory (render
+  scale, HUD / marker layer textures) and log free memory per second.
+### DETSHARE 2026-10-11 22:45-23:02 (JJ, VD and SteamVR) - the right eye's private view state IS the detective difference
+- SteamVR crash 3 (22:46:5x): same driver null read; it came in the 3rd detective entry (22:46:48). Crash 2 (22:37:13) was in
+  the 2nd entry. First entries never crashed. VD run 22:47-23:0x: toggling + looking down did NOT crash; VRAM 9.5 GB (SteamVR
+  10.8). Lead: re-entry swaps the right eye back to its detective view state (VSSPLIT) + full graphics memory under SteamVR.
+- JJ (VD): right-eye lighting differs from the START (not only after exit); after an exit the right eye misses lighting.
+- Snapshots (akn\vs_norm1 / det1 / norm2 / det2 _0/_1.bin + pair_*.bmp; scratchpad vsdiff.py / vsstable.py / vsdet12.py):
+  pair_detsame (eyesame 1 in detective) = identical eyes -> not view-dependent. det2 (JJ: "different"): the right eye lights
+  the yard floor and the green pipes, the left (game) has the dark detective look; diff: ring buffers of frame numbers
+  (+0x177c.., +0x1f18..) filled in the right eye and empty in the game's, +0x07c8 game 1 / right 0, +0x0724..0x073c.
+- DECISIVE (pair_shareoff / pair_shareon, 23:01): "vs 0" (right eye uses the GAME's view state) -> both eyes the same dark
+  detective look. JJ (HEADSET): "The two eyes are consistent now." The game's look is the right one.
+- vs 0 left ON in JJ's session. Open: smearing / ghosting with a shared view state (the reason for own view states, AKN M3b
+  T3 - before per-eye DLSS existed); the right eye after a detective exit with vs 0.
+- JJ (HEADSET, vs 0): exiting detective mode "looks better now too" (right eye matches). No smearing reported yet - asked
+  him to check normal play (fast turns, glide, cape edges) before making vs 0 the default.
+### DETCALLOUT (open, JJ 23:02: "a marker that's supposed to be attached to a world object ... moves around when you move
+### the camera and your head"; captures c230235 / 239 / 242 / 248)
+- The detective scan callout ("VENTILATION SHAFT" text box + leader line ending at a small square on the object, and the
+  green 4-corner scan brackets at the picture centre) is on the HUD SHEET (hud_rgb_c230248) = room-fixed, so it slides over
+  the world. The distance marker (118 m) is correctly on the eye marker layers (mk_left / mk_right).
+- No Canvas.Project point anchors it (aim-driven). Plan: world point from depth at the leader line's end (AIMDEPTH /
+  TARGETDEPTH style ray-march, Batman City), route the callout's pieces as a marker card at that point (MKTAG needs a mark on
+  the callout's HUD node - find its name in the HUD tree; or route by its shaders + text texture). Look up first: Batman
+  City AIMDEPTH, VR_WORLD_MARKERS_GUIDE §6 "Aim reticles", geo-11 TARGETDEPTH, NOTES "2nd projection caller 5A2BB1".
+- JJ 23:06: the callout = a line to a square made of four plus signs (one per corner), labelled (VENTILATION SHAFT, also on
+  Rattler drones); the square must lock onto its object (drones move) - with head moves too.
+- LIVE (capmk detmk 23:03:51, PROJ log): Canvas.Project (RA 0x86DC0D) projected only ONE world point, the 118 m objective
+  (-35497 -118659 3315); the 2nd caller 0x5A2BB1 made no calls in that period (count unchanged at 151011). So the
+  detective callouts are NOT placed through the projection calls we hook: their position comes from another path.
+- Plan DETCALLOUT (next session), ranked: (A) depth anchor - find the four-plus square's pieces (shader + texture, as
+  Batman City AIMDEPTH picks its sprites), take its centre in layout, march the HEAD-FREE camera's ray through that point
+  into the left eye's depth (City AIMDEPTH compute pass), place the square + line + text as one MKGS card at that world
+  point (follows moving drones because the game moves the square every frame); (B) RE where the game gets the scan
+  target's screen point (detective HUD movie, native caller writing its position) for an exact world point.
+### DETSHARE default (AKN 23:07, installed): g_vsMode 4 -> 0 (the right eye shares the game's view state; VSSPLIT / VSSYNC
+then idle). "vs 4" / aknvs=4 restores the old route. JJ to check: fast turns / glide for smearing in the right eye; SteamVR
+detective on/off toggles + looking down (crash with no view-state swaps?).
+### DETSHARE RESULT 2026-10-12 (JJ, HEADSET): "No crashing in Steam VR now at that same place anymore. And everything looks
+### clean getting in and out of detective mode." -> CONFIRMED. The SteamVR driver crash (nvwgf2umx+0x1b6d74) went with the
+### right eye's view-state swaps on detective re-entry (mode 4 / VSSPLIT). Next: DETCALLOUT (JJ: "good to proceed").
+
+## DETCALLOUT BUILD + TEST PLAN DC1 (2026-10-12; JJ: "good to proceed with attaching the scan boxes to their world space
+## targets"; JJ AFK 10 h: "run any tests you wish on a fake vr headset")
+Looked up: Batman City AIMDEPTH (markers.cpp: depth march of the head-free centre ray, 96 geometric samples, read back 3
+passes later; BATMAN_CITY_PLAN 2026-10-08); VR_WORLD_MARKERS_GUIDE §5b/§5c/§6 (aim reticles by depth); AKN AFW (afw.cpp:
+the DLSS-path depth matches each eye's own view x lens; akn_dlss_depth / akn_dlss_srv / akn_dlss_render_size); AKVR
+TARGETANCHOR / point_of (a HUD part's sheet point from the live tree); MKTAG marks. REA (JJ) is not connected in this session.
+Structure (F2 hudlayers of JJ's 23:02 captures, scratchpad layerdiff.py): scan HUD = K1/0.0.0.0.3.0; .9 = the box (moved
+every frame; .9.1.0.0-.3 = the four plus signs), .4 / .10 (+ hidden .3 .5 .8) = label panels; .0 / .1 hexagon arcs and .2
+(still, stage centre) stay in the room.
+SOURCE (built 2026-10-12 ~00:2x, both DLLs, not yet installed):
+- AKVR earleyres: scan_key(); those parts are "stays on its target" by default with their own mark kScanTag (-3/512); kept out
+  of akvr_hud_target_points (the layout map comes from the first target part); export akvr_scan_callout(sheetW, sheetH, xy)
+  = the box's sheet point (centre of the four plus signs), 0 when hidden; akvr_scan_tag_value, akvr_scan_set.
+- AKN probe: mk_eye_frame turns the box point into the game's layout R (layout map), the head-free camera's ray through R,
+  and - once a depth answer exists - a marker (W = camera + ray x distance) placed like every marker (MKGS card facing the
+  camera, MKFACEPOS); mk_route_begin sends every piece carrying kScanTag (single, batched, whole draws) to that marker at any
+  distance; scan_pass (end of file, original context functions) marches the ray through the LEFT eye's depth (DLSS depth,
+  render size, left eye's view x lens), depth convention from the matrix itself, result read 3 passes later; distance kept and
+  applied to the current ray (moving drones). Commands "scan 0|1", "scanmin <units>" (default 300 = past Batman). Per-second
+  line "DETCALLOUT: scan box seen/s, placed/s, pieces routed/s | depth passes/s, answers (sky), distance, hit".
+| # | step (Run-DC1.ps1, fake headset, into gameplay) | proves | judge |
+|---|---|---|---|
+| 0 | gameplay, capmk dc0 | baseline, no detective | DETCALLOUT line absent |
+| 1 | padbtn 0001 (D-pad up) -> detective | detective on | "detective: composite seen/s" > 0 |
+| 2 | look for a box: mouse sweeps, capmk per step | the box shows; AKVR finds it | "scan box seen/s" > 0 |
+| 3 | capmk dc_on + headset shot | pieces leave the sheet, sit in mk layers at the object | hud_rgb has no box/label; mk_left/right have them; distance sane |
+| 4 | head yaw +-15 / pitch -10 (xrsim) shots | locked to the object | box stays on the same object in the composited eyes |
+| 5 | scan 0 -> capmk dc_off | control | box back on the sheet |
+| 6 | detective off, quit | clean exit | no crash |
+### DC1 RESULTS 2026-10-12 03:15-04:18 (fake headset, 8 runs, Run-DC1.ps1; JJ's settings backed up + restored each run)
+- Run 1: detective mode never came on - injected pad buttons are ignored (known since 2026-10-09). AK's PC key is X
+  (BmInput.ini kToggleDetectiveMode=Tap [X]); `akmenu.py hold 0x58 0.15` works ("detective: composite seen/s" ~130).
+- Runs 2-3: sweeps too steep (camera at the roof). A shallow grid (3 downward steps x 24 yaw steps of 200 counts) finds a
+  box in ~30-60 s: AKVR's akvr_scan_callout finds the box (LIVE "scan box seen/s" up to 78).
+- Runs 3-6 = the DEPTH hunt: every answer "sky". Diag: the expected device depths along the ray were right (normal depth,
+  near 10: 0.977 at 4.8 m) but the buffer read 1.0 - (a) at HUD time (cleared), (b) right after the left eye's render, (c) in
+  the most-bound depth buffer (1520x1656 format 19), (d) copied at the SMAA edge pass. A 16x16 CPU dump of (d): only BATMAN has
+  depth (0.88-0.93 = ~1 m), the world reads 1.0 = UE3 clears the depth mid-render for the foreground group. FIX: copy the depth
+  just before each depth clear of the left eye's render except the first (immediate hk_ClrDSV + new deferred hkd_ClrDSV slot
+  53); dump then: 203 of 256 grid points carry world depth. LEAD (not acted on): DLSS / CAMMV / AFW take their depth from the
+  SMAA pass = foreground only - in detective mode at least; check normal play (camera motion vectors for the world may treat it
+  as infinitely far) -> a merged depth (world copy + foreground) could help DLSS ghosting.
+- Run 6: placed, pieces routed (~1,600/s), but nothing visible: the callout drew in the eye marker layers - captured
+  (PROMPTCAP) box + line + "VENTILATION SHAFT" label per eye; the crops show the box around the same object (a figure at the
+  billboard base) in BOTH eyes.
+- Run 7: march moved to the GPU (geometric steps + 12 halvings), distance eased (35 %/frame, jumps > 15 % taken at once):
+  distances steady (638 / 3,335 / 8,8xx units per target). Run 8: head yaw +-15 / pitch -12 with the box up (sighting 3,
+  box seen 76/s throughout): the label keeps its place against the "123m" marker (world-locked) in every pose; distance
+  8,330-8,346. Clean exits, no crash in 8 runs.
+- STATIC: installed = build of 04:10 (XINPUT ad6bdac2fcad, dinput8 577d180b8e51); JJ's previous DLLs + settings in
+  akvr\diagnostics\before-DETCALLOUT-20261012. Commands: "scan 0|1", "scanmin <units>".
+- For JJ (HEADSET): detective mode at a scannable (vent, drones): the box of four plus signs on the object at its depth,
+  the line and label with it, staying put when the head moves, following moving drones. Open questions: is the label's
+  size / place at the object right for him (it is the flat layout carried to the object's depth); drones moving fast
+  (the distance answer is 3 frames old; the direction is current).
+### DEPTHPROBE DP1 2026-10-12 04:21 (fake headset, Run-DP1.ps1; command "depthprobe N")
+LIVE, 32x32 grid of the left eye's depth: NORMAL PLAY - the SMAA-pass depth (DLSS / CAMMV / AFW input) holds the world (939 of
+1024 points), 2 depth clears per render, the copy before the 2nd is empty. DETECTIVE MODE - 3 clears; the SMAA-pass depth holds
+only the foreground (140 of 1024, Batman 0.889-0.92); the copy before the 3rd clear holds the world (939). So DLSS and camera
+motion vectors lack world depth in detective mode only. Lead (not done): in detective mode give DLSS / CAMMV the merged depth
+(world copy, foreground where the SMAA depth is < 1). DETCALLOUT's "last copy before a clear after the first" = the world in
+detective mode (the only mode with callouts).
+
+## JJ 2026-10-12 ~16:3x (HEADSET, DETCALLOUT build): "the markers were not connected to their world space objects ... All HUD
+## elements which should have been square to my face were attached to a separate plane that was at a different angle to the
+## headset and it would rotate with head movements ... even the distance target text would flip onto that plane"; also the
+## menu's first sound "about one second too late"
+LIVE (his log 16:30-16:32, captures c163157-c163217): callout distances jumped (67, 48, 31 m, then 3.1 m / 4.3 m = hits on Batman
+or the ledge right after the 300-unit skip); the label + line were on the object's card (large, seen at an angle = "a separate
+plane"); AKVR's box point matched the drawn box (fake run: reported 0.116 0.090, drawn 0.114 0.091 - not the cause).
+DETCALLOUT2/3 (both DLLs, installed 17:08, fake-headset checked):
+- only the BOX part goes to the object; the label panels stay on the HUD, square to the face. (".9.1" = the plus signs alone
+  was tried: it is often MISSING from AKVR's 2048-part list, which sits at ~2040 - so ".9" = plus signs + the line.)
+- whole draws carrying the callout's mark are no longer routed (a draw of unknown layout held other HUD pieces - the distance
+  text "flipped onto that plane").
+- depth: nearer than 600 units ignored (was 300); the median of the last 7 answers, then eased.
+- AKVR diag "akvr_scan_diag" in AKN's per-second line while detective mode shows no box.
+MENUSOUND (AKVR, installed): AUDIOSYNC held the menu's first sound from the menu scene's start until MAIN MENU on (3.0 s in every
+run: no brightness and no UI signal exist in engine stereo - the eye pair and the window both read black, AKN draws no HUD in
+start-up). In engine stereo the hold now ends 2 s after it began (fake run: released 8.9 s, MAIN MENU on 9.8 s). Also: AKN
+export akn_hud_draws_last (HUD-sheet draws per frame), brightness probe fed in engine stereo (reads 0 there - kept for the diag).
+Open: whether 2 s matches JJ's text appearing; the box's depth on near targets (a 6.6 m hit in the last fake run, unverified).
+
+## JJ 2026-10-12 ~23:xx (HEADSET, DETCALLOUT3): "the line and the plus signed box ... is moving all around the place with your
+## head movements and camera movements. The end of the line should connect with the text, and the other end that has the box
+## attached to it should connect with whatever element it's attached to ... ventilation shaft locked ... rattler drones moving"
+- Fake headset (Run-DC1 head-only test 18:17): xrsim "head rot" changed NEITHER the HUD box point NOR the eye views (left-eye
+  projection of W constant to 0.001 over yaw +-15 / pitch -12) = the fake head turns do not reach the eye views in these runs;
+  head-driven motion cannot be judged on the fake headset now.
+- Root causes (SOURCE + his 16:3x log): (1) the box's world point came from a depth march (unstable, 3-67 m jumps); the game
+  itself projects each scannable object through FSceneView::Project from RA 0x5A2BB1 (~1,000/s in detective mode only) - with
+  the LEFT EYE's view (head included), like Canvas.Project before MARKERBASE; (2) the game's line ran from the box to the label
+  in the flat layout: with the box on the object and the label on the shrunk HUD (hudscale 600/670) it could not meet both.
+- SCANPROJ (AKN): RA 0x5A2BB1 answered head-free (scanbase 1) and kept (world + screen point) per game frame; the box's marker
+  takes the world point whose screen point matches the box (0.06) - exact, per frame (moving drones); the depth march only
+  when nothing matches (scanexact 0 = march). Export akn_scan_point (the box's world point this HUD frame).
+- SCANLINE (AKVR): the game's line (.9.0, a shape drawn from the box to the label; its own transform never changes) is hidden
+  every frame; hud_in_eyes draws a 1.3 px light-grey line per eye from where that eye sees the box's world point (AKN's pair
+  view x lens) to where it sees the label's anchor (.10's origin on the sheet, through the sheet's corner clip positions).
+  Anchor check pending: the fixed square by the label sits at sheet ~(0.25, -0.12) in JJ's and the fake captures; AKVR's diag
+  "label anchor x y" in AKN's per-second "no box" line shows .10's point to compare.
+- Installed 23:32 (before: akvr\diagnostics\before-SCANLINE-20261012). Fake run not done: Arkham Asylum was running (JJ or a
+  peer); no smoke test of this build yet.
+
+## JJ 2026-10-13 ~00:0x (HEADSET, SCANLINE build): "a little bit better. The squares seem to stay quite stable, but ... the drones
+## seem to miss the mark a little bit most of the time ... the new lines are going from the HUD depth to the game depth. I think
+## the lines and the box should all be at HUD depth for detective mode."
+- LIVE: SCANPROJ never matched (0/s in JJ's run and the fake runs): RA 0x5A2BB1 projects ~6 points per frame 48-834 m away
+  (detective markers for distant things), the nearest 0.22 NDC from the box - the box is NOT placed through that call. All
+  boxes so far came from the depth march.
+- Fake headset, head turned in 1 deg steps (HEADRAMP: a 15 deg jump is re-centred as a tracking glitch - why earlier fake
+  head turns changed nothing): the eye views turned (shots) while the box's layout point stayed fixed to 0.001 over yaw
+  +-20 = the game places the box from the HEAD-FREE camera (the head-free ray was right).
+- SCANHUD (AKN + AKVR, installed 00:2x, fake-checked): the box is no world marker any more. AKN routes the callout's pieces
+  unmoved to its marker sheet and exports the box's world point + sheet point (akn_scan_box); AKVR (hud_in_eyes) finds where
+  the ray from the head's centre to the object (both eyes' directions to the world point) meets the HUD plane, draws the marker
+  sheet on the HUD plane shifted so the box lands there, and draws the line from that point to the label's anchor on the same
+  plane. Box + line + label all at HUD depth; the box's direction depends on the head's position only (not rotation), and
+  since the world point lies on the head-free ray through the game's own box point, distance errors barely move it.
+  Fake shots: box on the roof vent left of the "VENTILATION SHAFT" label, the line joining them, unchanged by head yaw.
+- Open: JJ's check of drones (the game's per-frame box point is now what places the box); the 600-unit near limit (the roof
+  vent is nearer; harmless at HUD depth).
+
+## JJ 2026-10-13 ~04:0x (HEADSET, SCANHUD build?): "much more accurate, but for moving targets like the rattler drones the HUD
+## boxes are not over them - offset by a fair margin. They are attached (they move with them), just not at the exact spot"
+Looked up: NOTES DETCALLOUT/DC1/SCANLINE/SCANHUD (box direction = head centre -> W, W = head-free ray through the game's own box
+point x marched distance; distance barely matters at HUD depth); memory ak-one-frame-thread-lag-rain-hud + NOTES MKLAG (Canvas.Project
+markers showed NO frame lag in AKN, default 0 - but the scan box comes from another, unknown path); VR_WORLD_MARKERS_GUIDE §6.
+No log newer than the 00:31 fake run (JJ's session not logged, or from before SCANHUD).
+Ranked causes: (A) the GAME's box trails the drone (box point from last tick's location or a Scaleform ease toward the target) -
+fits "attached but offset"; would show in the flat game too. (B) the scan box's HUD layout belongs to the neighbouring game frame
+(MKLAG never measured this path). (C) head-centre parallax from a wrong marched distance (box ray misses the thin drone, hits the
+background) - small unless the head is far from the recentre point.
+## TEST PLAN SCANLAG (to build; JJ drives, detective mode at moving drones)
+| # | command / switch | proves | judge |
+|---|---|---|---|
+| 1 | SCANREC (always on in detective): per HUD frame box layout point, its screen velocity, march hits | data for 2-3 | log |
+| 2 | GPU blob search in the left eye's depth copy round the box: centroid of near pixels (the drone) vs the box | offset vs drone motion: along -velocity = lag (A/B), fixed direction = mapping, ~0 = (C)/HUD-depth perception | lag in frames = offset.v/|v|^2, steady -> A/B |
+| 3 | "scanlag 0/1" (box from the other kept frame) | B | offset drops |
+| 4 | fix "scansnap 1": add the measured blob offset (3 passes old, steady for steady motion) | A | box on drone in captures |
+| 5 | fix "scanlead k": extrapolate the box by its own velocity k frames | A (fallback) | same |
+| 6 | panel SCAN TEST button: off / scanlag / snap / lead 1 / lead 2, 3 s each, label + capture each | JJ judges after, not live | captures |
+| 7 | (JJ, 1 min) flat game, detective mode on a drone: does the box trail it? | A is the game's own | yes/no |
+### SCANLAG superseded -> SCANOWN (2026-10-13 17:0x). JJ: "the box is not behind. it's way off diagonally at a seemingly unrelated
+### location"; no lag in the flat game. So NOT timing (plan SCANLAG above dropped).
+- LIVE (JJ's log 16:53-16:54, captures c165345-c165418 + AKVR captures 20261013_1653xx): every second's "box layout" vs the
+  nearest detective projection (RA 0x5A2BB1, world z ~1500 = the drones) fits box = 0.80 x point + (0.02, -0.194) to 0.003, e.g.
+  point (0.188, -0.026) -> box (0.171, -0.215); (-0.128, 0.013) -> (-0.082, -0.183). HEADSET capture c165345: the line runs from
+  the RATTLER DRONE label down-left to empty ground; the 5 drones float above it.
+- Cause (SOURCE): akvr_scan_callout read the box point through the LIVE Scaleform matrices, which include JJ's HUD-layer
+  adjustment on K1/0 (s 0.80 x 0.010 y -0.135, hudlayers.txt). AKN then cast the head-free ray through a shrunk, shifted point
+  (so the depth march hit the ground) and the 0.06 projection match never fired. The game's own box point = the drone's
+  projected point exactly.
+- Fix SCANOWN (both DLLs, installed 17:01; before: akvr\diagnostics\before-SCANOWN-20261013): akvr_scan_callout gives AKN the
+  box point through the GAME's own matrices (L.base for parts we moved, while the node still holds ours); the drawn point (with
+  our shrink) is kept for AKVR's on-screen shift (export akvr_scan_box_drawn); the label anchor stays drawn. Expected: SCANPROJ
+  matches every frame ("at the projected object point/s" ~= "placed/s", match < 0.01) = the drone's exact world point per frame.
+  A/B: AKN command "scanown 0|1". Not run yet (built + installed only).
+- Why static vents looked fine: unverified (the vent likely has no projected point and its box sat near the shrink's fixed point).
+### SCANOWN RESULT 2026-10-13 17:04-17:05 (JJ, HEADSET): "That looks almost perfect now"
+- LIVE: "at the projected object point/s" = "placed/s" every second, match 0.000-0.002 (box layout = the object's projected point);
+  no depth march needed (passes 0). Drones (z ~1500) and the vent (-36288 -115332 4956) both matched. CONFIRMED.
+- JJ: "a second line on one of the HUD elements that was attached to a box from an object, but then it went away". Capture
+  20261013_170501_908: two lines from the vent box - ours to the label, and the GAME's line (.9.0 and its shape .9.0.0 both shown
+  in hudlayers) routed with the box (a child of .9), its far end at the label's flat-layout place = partway.
+- SCANLINE2 (AKVR + AKN diag, installed 17:1x; before: akvr\diagnostics\before-SCANLINE2-20261013): every frame hide every child
+  of .9 except the plus-sign branch (one child holding 4 parts), and their children; count re-shows ("game line re-hidden N" in
+  the AKVR box lookup diag, now logged every 5 s while a box shows too). If the count keeps climbing per frame, the game re-shows
+  the line after our hide each frame -> next step: drop the line's pieces in AKN's routing instead.
+### MENUSOUND2 2026-10-13 17:2x (JJ: "Remove the Audio effect two-second wait between the launch titles and the first menu")
+AKVR audiosync.cpp: in engine stereo no menu-scene hold (it could only end on MENUSOUND's fixed 2 s timer: JJ's 17:03 timeline
+"4.4s sound held (menu scene, no menu yet) ... 6.4s sound on after 2000 ms"), and any hold ends with the next frame. The 50 ms
+frame-gap holds (game loading, no frames) stay. geo-11 path unchanged. Installed (dinput8 only; before: akvr\diagnostics\before-MENUSOUND2-20261013).
+
+## JJ 2026-10-13 ~17:1x (HEADSET, SCANLINE2 + MENUSOUND2): (1) "still a second line appearing on one of the HUD elements attached
+## to the object"; (2) main menu: "a black box overlay covering the menu items and Batman. Can we remove that?"; (3) "the bat
+## transition that appears when you go from one menu to the next or into gameplay needs to be full field of view and closer to
+## the camera, same as all the other mods"
+Looked up: NOTES BACKEXT / BLACKKEY / HUDSKIP (pause backdrops: 50 % black sheet + 16:9 band; BLACKKEY keys out dark see-through
+texels, pause look only - would also eat black bats); Batman City BATMAN_CITY_PLAN WIPEMAIN/HIDEWIPES/WIPEFLIP/WIPEPANEL (full-view
+bats, a long series), Origins BUILD_PLAN O1D (bats full projection FOV, 0.8 m, enlargement 1.6, event-gated); memory
+arkham-bat-sound-and-unpause (check unpause / map close / quit separately; prefer the engine's menu state).
+- (1) LIVE 17:09-17:10: "game line re-hidden" +45/s while a box shows = the game shows its line again EVERY frame; hiding wins
+  only some frames. SCANLINE3 (AKVR): the line branch's colour alpha (multiply + add, data+0x5C/+0x6C) set to 0 every frame and
+  again right after the game sets that node's colour (hkObjSetCxform); diag "made transparent N".
+- (2)+(3): no capture of either yet (AKVR's eyes picture is only filled in gameplay; MENUSTART grabs the geo-11 texture). HUDSIG
+  (AKN, default on): every HUD-sheet draw kind (vs + ps + texture size) logged when new / back after 1.5 s / gone (duration,
+  draws, sheet index range) - transitions = kinds living ~1-2 s; the menu box = kinds living through the main menu. Command
+  "hudsig 0|1". Installed 17:2x (before: akvr\diagnostics\before-HUDSIG-20261013).
+## TEST PLAN MENUBATS (one JJ-driven launch)
+| # | JJ does | proves | judge |
+|---|---|---|---|
+| 1 | launch, title -> main menu; in the main menu: panel capture | box = which draws (capmk HUD dump + HUDSIG kinds at menu start) | hud_rgb shows the box; its draw kind |
+| 2 | go into a sub-menu and back (bats between menus) | bat draw kinds + duration | HUDSIG new/gone pairs ~1-2 s |
+| 3 | Continue -> gameplay (bats into gameplay) | same kinds? | HUDSIG back/gone |
+| 4 | detective mode, scan drones + vent; capture if the 2nd line shows | SCANLINE3 | "made transparent" climbs, no 2nd line |
+| 5 | pause -> quit to main menu (bats) ; then quit | exit wipe kinds | HUDSIG |
+Next build from the result: drop the box draw kind in the main menu (HUDSKIP rule, menu-gated); while a bat kind is live, draw the
+HUD sheet full-view close (City/Origins way), with a panel switch.
+### MENUBATS RESULTS 2026-10-13 17:17-17:19 (JJ, HEADSET; captures 171758 (loading), 171819 (vent), 171835 + 171851 (drones))
+- (1) Second line still there (171819: two dashed lines leave the vent box in the left eye - ours to the label, one partway; the
+  HUD sheet holds neither = it is on the scan marker sheet). SCANLINE3's diag was cut (AKVR diag buffer 200 chars).
+  Lead: apply_layers runs BEFORE the movie's own update (hkMovieSlot27 -> g_orig27), which shows the line again every frame.
+  SCANLINE4: the hide + transparency also run right AFTER g_orig27 (box node kept, is_child_of checked); diag buffer 400,
+  "after-update passes N".
+- (2) Black box: 171758 was taken on the loading screen (AKVR timeline: main menu 7.7-24.8 s, capture ~40 s). Its HUD sheet: rgb
+  black, alpha OPAQUE in a full-width 16:9 band = a solid black 16:9 rectangle on the sheet (candidate for the box). HUDSIG: too
+  noisy to name it (text glyph kinds dominate; same shaders as the menu text).
+- (4) NEW, JJ: "an orange box that's at an angle and it's not attached to where it should be attached, which is below it in the
+  HUD". 171851: an orange diamond on the HUD SHEET at the sheet centre (0.50, 0.49); the eye marker layer mk_left holds two small
+  orange dots at the blue hologram panel below it (pair: a world object). Reading: a target marker whose small pieces are routed
+  to the object while its diamond stays on the sheet. Part not identified yet (no ON-TARGET part at the centre in hudlayers).
+- HUDRING (AKN + AKVR, installed 17:3x; before: akvr\diagnostics\before-HUDRING-20261013): ring of 12 HUD sheets (every 3rd
+  stereo frame, ~0.7 s, ~360 MB video memory); written at half size over grey (akn\ring<n>_<k>_<ms>_<why>.bmp) 0.3 s after each
+  screen change (MAIN MENU / loading / screen / 3D / flat) and 0.9 s after an A or B press in menus or the pause screen; at most
+  12 dumps per session; "hudring 0" turns it off. Turn OFF by default after this test.
+### HUDRING RESULTS 2026-10-13 17:28-17:30 (JJ, HEADSET): orange box "fixed correctly" (nothing was changed for it - watch);
+### extra line still there; NEW: duplicated compass briefly on first entering gameplay; a duplicate distance marker + its box
+### flickering off to the side every 3-4 s
+- LIVE: SCANLINE4 ran (after-update passes ~17,000, made transparent 3,458) - the extra line remains = it is NOT (only) .9.0.
+  Captures 172944 / 173011 / 173023: some frames show one line per eye (the cyan dotted lines are the game's detective world
+  outlines); 171819 showed two in the left eye. Neither the left eye render (pair) nor its marker layer holds it.
+- HUDRING dumps (7, akn\ring01-07): THE BATS ARE ON THE HUD SHEET (Scaleform): black bat shapes sweep over the sheet and end
+  fully black (dumps 6, 7: pad A in the pause/main menu, "screen"). THE BLACK BOX: dump 2 (A into "SELECT SAVED GAME") - an
+  opaque black 16:9 band appears behind the menu text on the sheet (rgb 0, alpha 1), shown on the menu's HUD panel = a hard black
+  box over Batman. HUDSIG cannot name either (same shaders / texture sizes as the menu text; ps d5b5473b also draws text).
+- SCANCUT (AKVR, installed 17:4x; before: akvr\diagnostics\before-SCANCUT-20261013): the scan box's marker sheet is drawn only as a
+  small square round the box (half-size 0.03 sheet units) - whatever else lands on that sheet (the game's line, a routed distance
+  marker?) stays out. AKN "scancut 0|1 [r]".
+- HUDRING2 (AKVR): an A / B press in a menu also writes the HUD tree 0.6 s later (akvr_captures\ringlayers_<n>_<time>.txt) =
+  which part is the bat swarm / the black backdrop (engine-state signal for both fixes, City's lesson: prefer engine state).
+- Next build from that: hide the backdrop part in menus; while the bat part is visible, draw the HUD sheet full view and close
+  (Origins O1D: distance 0.8 m, enlargement 1.6), the sheet's bats keyed as they are.
+
+## JJ 2026-10-13 ~17:45 (HEADSET, SCANCUT build): "all you've done is mask the incorrect HUD elements out instead of fixing it
+## at a fundamental level." Line "a little bit shorter"; duplicate compass still at the start (lower down), then gone; the
+## distance marker still flickers to a different location (captures 174302-174329)
+Looked up again (rule: two failed fixes): playbook symptom-index "HUD or menus drawn twice" (doc 17: world twice, everything else
+once); our NOTES MKTAG RESULTS (compass duplicate near the marker = leftover PS constants marking whole batches), MKGLOW2/3 +
+MKSTICKY (distance marker "kept flickering out to a duplicate above it" = the pulse animation rewrites the colour the mark rides
+on -> pieces flip between the marker layer and the HUD sheet), RETHINK MARKERS 2 (JJ 10-11 "this all feels very hacky"; plan:
+geo-11 polarity - HUD pieces in the EYE pictures by default, room only for positively identified branches; a misjudged piece then
+gets a wrong DEPTH, never a wrong PLACE). Only part of that plan was built (MKEYE moves marker pieces per eye); the default is
+still the room sheet, so every misjudged piece lands in a wrong PLACE = today's symptoms. SCANLINE2-4 / SCANCUT were patches of
+the same class (JJ is right).
+Root causes (evidence):
+1. Extra line = the GAME's dashed line (.9.0, a child of the box) goes wherever the box goes; hiding / transparency never held
+   (the game re-shows it every frame, 17,000 after-update hides). Its draw identity is NOT known: the 216x4 dash-texture
+   kinds start with gameplay and never go (checked 17:42:53 - not the callout; HUDSIG also hit its 800-line cap). Next:
+   log the kinds of the draws routed to the scan sheet (box vs line) - then replace the game's line by identity.
+2. Distance marker duplicate every 3-4 s = classification by colour mark flips on some frames (MKGLOW/MKSTICKY history; the
+   marker's pulse). Not yet measured in AKN-MKEYE: FLIPREC = per frame, each piece of a marker shader within reach of a marker
+   point: layer chosen + its add rows; written only when a piece changes layer between frames.
+3. Duplicate compass at gameplay start, "lower down" = (lead) two HUD presentations overlapping while the HUD switches from
+   the menu quad layer to the in-eye HUD (the quad still holding the last sheet), or the HUD-part adjustments not yet applied
+   for the first seconds. PATHLOG: first 15 s of gameplay, per second: quad layer shown?, in-eye HUD drawn?, layers adjusted.
+4. Bats = an unnamed menu movie ("K?" in ringlayers_06: a slanted part 0.0.0.1.0 with 11 scattered sprite children) - engine-
+   state signal for the full-view bats.
+5. Black box = the menus' opaque 16:9 backdrop (ring dump 2) - its part to be found in ringlayers_02/03/05 the same way.
+- SOURCE finding (xr.cpp): hud_in_eyes draws INTO g_aknSbs, which is refreshed only on a fresh pair (aknSbsUpdate); on a frame
+  without one, the old picture WITH its HUD is shown again, hieNow is false, and the HUD quad layer is added = two HUDs in two
+  places for that frame (compass at start = many non-fresh frames while loading; marker flicker = a hitch). Structural lead.
+
+## TEST PLAN REC1 (recording only - JJ: "I can do the recording for you, and then you can do the rebuild once you've identified
+## what you need"). Installed 18:0x (before: akvr\diagnostics\before-REC1-20261013); SCANCUT default OFF, HUDRING OFF (its dumps stall).
+| # | recorder | proves | read |
+|---|---|---|---|
+| 1 | PATHREC (AKVR, logged by AKN each second) | frames showing the old eye picture with its HUD again + the HUD layer (two HUDs) | "PATHREC: ... BOTH (two HUDs) N" at start-up and during play |
+| 2 | FLIPREC (AKN) | pieces next to a marker point left on the HUD sheet, with their colour rows | "FLIPREC single/batch ..." + per-second counts |
+| 3 | SCANREC (AKN) | the kinds of draws sent to the scan box's sheet (box vs the game's line) | "SCANREC kind N ..." |
+| 4 | BLACKHUNT (AKN, capture in a menu) | the draw that makes the menus' black backdrop | "BLACKHUNT drop #k ... <== THIS DRAW" + HUDSKIPIDX line |
+| 5 | BATREC (HUDSIG reset on A/B in menus) + ringlayers tree | the bat draws' kinds (live ~1 s) and their HUD part | HUDSIG new/gone within 1.5 s of a reset |
+JJ: launch; main menu -> save select (black box) -> capture, keep still ~6 s (HUD flickers while each draw is dropped); a few
+A / B menu moves; continue to gameplay (watch the compass); detective mode on drones + vent ~1 min (line, marker flicker); pause,
+capture once on the pause screen; quit.
+
+### REC1 RESULTS 2026-10-13 18:28-18:31 (JJ, HEADSET + LIVE log; captures 182851-182910 in the menus). JJ: second line still
+### there; distance marker still flickers to a duplicate
+1. PATHREC (LIVE): BOTH (two HUDs) = 0 in all 156 s; old picture with its HUD shown again only 22 frames, all at the start of
+   gameplay, never with the HUD layer. The stale-frame theory is RULED OUT (negative result).
+2. FLIPREC (LIVE): the marker duplicate = pieces of the marker that never carry the mark: 59 x fd60f2d7 single at (0.008,
+   0.178) = 0.07-0.12 above the marker (the "duplicate above" of 10-11) + 2 x 9938094a at d 0.058 (inside reach, tag 0, not
+   sticky). EVERY one of them carries a world point in cb0 rows 0-3 (r0-r2 axes, r3 = -35929.98 -117315.72 3263.27 / -54861.55
+   -110354.06 173.61 = the marker's world position). The 245 batched 05154232 "near misses" carry the ROOM mark (-1/512 in
+   their add row) = correctly room HUD near the marker, not flips. LEAD (unverified): world point in the piece's own draw data =
+   the game's ownership of the piece; must check the shaders READ rows 0-3 (else it is leftover from the marker's previous draw).
+3. SCANREC (LIVE): draws routed to the scan sheet: kind 2 = batch 54cd897e + 1024x1024 atlas, 5 pieces all callout (2,700+);
+   kind 3 = single 9689d605 + 1024x1024 at (0.252, -0.094); kind 1 = single fd60f2d7 + 32x64 at the label (0.750, -0.262);
+   kind 0 = batch 97657b85 + 2048x1984, 1 of 3 pieces. The second line is among these (SCANCUT shortened it = scan sheet), but
+   .9.0 hide / transparency never touched it -> it is probably NOT .9.0. Next: per-piece placement of the scan-sheet draws.
+4. BLACKHUNT: the sheet held no solid black when JJ captured in the menus (0-0.4 %). Captures: save select = menu panels only;
+   182910 (after choosing the save) = a solid 16:9 black band on the sheet = the GAME'S FADE TO BLACK before loading. The "black
+   box" is that fade shown on the menu's HUD panel instead of over the whole view. Same class as the bats.
+5. BATREC: draw kinds cannot separate the bats (they share the 1024x1024 atlas with menu text); the "K? 11-sprite" group was not
+   confirmed as bats. SOURCE (STATIC): BatmanAK.exe EXPORTS AK::SoundEngine::PostEvent (id / char / wchar overloads,
+   RVA 0x1535d30 / 0x1535050 / 0x1534f80) and GetIDFromString - the Origins O1D route (Play_UI_Fader_Bats = FNV-1
+   3904589100 in City/Origins) is open here.
+
+## REBUILD PLAN RB1 (structural; JJ 18:0x: "you can do the rebuild once you've identified what you need")
+Looked up again: Origins BUILD_PLAN O1D (event-gated full-view bats, 0.8 m, enlargement 1.6), City WIPEMAIN / BLACKFILL /
+EXITFADE (fades + bats are screen effects: full view), VR_HUD_GUIDE §6/§7/§10, RETHINK MARKERS 2, memory arkham-bat-sound-and-
+unpause (check unpause / map close / quit separately; prefer engine state).
+A. Screen transitions (bats + fade to black): hook PostEvent (exported); the bat event opens a bounded window; while it is open,
+   or while the HUD sheet is a full-screen cover (fade), show the HUD sheet over the WHOLE view, close (Origins 0.8 m). Log every
+   event id in menus to confirm the bat id and find the fade's.
+B. Marker pieces by the game's own world point (if 2's lead holds: the VS reads cb0 rows 0-3) instead of the colour mark; a
+   piece carrying world point W is a marker piece and is placed by W. Else: mark ownership on the HUD tree branch that holds the
+   marker's pieces and verify every piece of it routes.
+C. Detective line: name the line piece by per-piece placement on the scan sheet, then route by identity; remove SCANCUT and
+   SCANLINE2-4 (masks).
+D. PANELWORDS for the AKVR / AKN panel (peer session's request; JJ "some of the labels ... are very confusing").
+### RB1 BUILD 2026-10-13 ~19:0x (both DLLs, installed; before: akvr\diagnostics\before-RB1-20261013; not run)
+- B DISPROVED (STATIC): the five marker / HUD vertex shaders found in GlobalShaderCache-PC-D3D-SM5.bin by AKVR's fnv64 hash and
+  disassembled (scratchpad sh/*.asm): fd60f2d7 + 9938094a read ONLY cb0[6..9] (placement, uv) and [12..13] (colour mult / add);
+  91e2b222 [6..9]; 05154232 / 54cd897e index rows from 14 by the vertex. Rows 0-3 (the world point) are NOT read = leftover from
+  the draw before (a 3D marker part that writes a world matrix - itself a lead: some marker piece is drawn with the game's world
+  point). FLIPREC single now logs r6, r7, r12 (mult), r13 (add) - the rows the shaders use.
+- A TRANSFULL (AKN BATEVENT + HUDCOVER, AKVR tr_decide): Wwise PostEvent hooked (3 exported overloads, queued in HOOKBATCH),
+  Play_UI_Fader_Bats id checked against Origins' 0xE8BB4D2C, every new event id / name logged once (AKEVENT) to find the fade's;
+  HUDCOVER = 16 rows of the sheet's 16:9 band read back 2 frames late (alpha + darkness). Full view while bats < 2.5 s ago or the
+  band is a dark cover (alpha > 0.6, brightness < 0.08), 0.2 s hold: the sheet drawn into both eyes on a head plane 0.8 m ahead,
+  1.2 x 1.6 x distance half-width (Origins O1D), no cuts / marker layers / box / BLACKKEY; HUD layer off (also on repeated
+  pictures). Mode timeline "full-view transition on (bats / fade / bats+fade)". Panel (MENUS AND SCREENS): "bat transitions and
+  fades to black fill your whole view" (setting transfull, default on). AKN "transfull 0|1 [dist zoom]".
+- C: SCANPIECE logs each callout piece (placement rows) against the box point -> name the line piece. SCANLINE2-4 still in the
+  build (they act on .9.0, which is not the visible line) - remove with C.
+- D: panel - new checkbox only; the default panel labels are already plain (peer session checked; jargon only behind advancedpanel).
+## TEST PLAN RB1 (JJ drives; one launch)
+| # | JJ does | proves | read |
+|---|---|---|---|
+| 1 | titles -> main menu, move between menus (bats), pick the save (fade) | TRANSFULL fires for bats + fade | BATEVENT lines, "full-view transition on (...)" in the timeline; headset: bats / black fill the view, close |
+| 2 | pause -> resume once; pause -> quit to main menu | unpause must not go full view unless the game plays bats; quit bats | same lines |
+| 3 | detective mode on a vent + drones ~30 s | SCANPIECE names the line piece | SCANPIECE lines |
+| 4 | normal play ~1 min (distance marker in view) | FLIPREC rows 12-13 of the flicker pieces | FLIPREC single lines |
+### RB1 RESULTS 2026-10-13 18:58-19:00 (JJ, HEADSET): "Lots of things are broken now": menu items jump close to the face and lock
+### to it for a few seconds between menus; detective boxes no longer on their objects; the distance marker no longer fixed, text gone
+- LIVE: BATEVENT never fired - AK does NOT post Play_UI_Fader_Bats (92 events, all posted BY ID, none = 0xE8BB4D2C; ids logged).
+  The bats may be a Flash-side sound or another event id. Origins' route does not carry over as is.
+- LIVE: the HUDCOVER "dark cover" rule fired on ordinary menus for 1-5 s at a time (6 times before gameplay) = the menu jumping to
+  the face; in gameplay it fired in detective mode (dark detective HUD), and TRANSFULL switches off marker cuts / per-eye marker
+  layers / the box = every gameplay symptom. Rule wrong: a dark HUD is not a transition.
+- FIX (installed 19:01, AKVR only): TRANSFULL off by default, setting renamed transfull2 (JJ's saved transfull=1 ignored), panel
+  label "TEST: ... (not ready)". AKN unchanged (recorders only).
+- SCANPIECE: the 400-line cap was used up by an unrelated piece (97657b85, 2048x1984 atlas) before detective mode - no answer.
+  Next time: only while a box shows, per kind.
+- Lesson: a transition signal must come from the game's state (City: menu movie open/close via MENUSTATE; Origins: the sound
+  event), never from how dark or covered the HUD looks - AK's menus and detective HUD are dark by design.
+
+## RB2 (JJ 19:0x: "just fucking fix" ... "Stepping away now" -> fake headset allowed)
+- SCANBOX (AKVR): the callout's box is drawn by AKVR - four plus signs on small quads round the four corner parts' DRAWN points
+  (akvr_scan_corners), coloured from the game's plus sign at that point on the marker sheet (fallback green); the marker sheet
+  itself is no longer shown, so the game's own line (whatever piece it is) cannot appear. Our line (SCANLINE) unchanged.
+- PARTID (diagnostic, AKVR + AKN "partid 1|0"): room parts get kPartTag - (index + 1) * 4e-7 (clear of kMkTag), table in
+  akvr_captures\partid.txt; FLIPREC prints r12 / r13 / batch rows at 8 decimals with the decoded part index.
+- Runner tools/Run-RB2.ps1: gameplay, partid ~45 s of normal play with small camera moves, detective sweeps to a box, captures +
+  headset shots, settings restored.
+### RB2 / RB3 RESULTS 2026-10-13 19:09-19:22 (fake headset, JJ AFK; JJ's settings restored after each run)
+- LIVE/fake HEADSET: the second line is GONE (rbf1/rbf2 shots: one line from the label to the vent). SCANBOX drew no plus signs:
+  the corner parts were not found (list full at 2040; RB3: stale list entries) -> SCANBOX3 takes the corners from the box's
+  CURRENT children always; diag "box drawn by AKVR N (corners found N)" in AKN's detective line. Not re-run yet.
+- SCANLINE2-4 (hiding the game's line on the HUD tree after every movie update, ~17,000 x per session) switched OFF
+  (g_scanKillOn 0): useless with SCANBOX, and JJ's marker flicker began with the build that added it.
+- PARTID: no flips recorded - the distance marker was never in view from the rooftop start (both runs); no part found.
+- MKCARRY2 (AKN): a HUD frame with no projected marker point keeps the last points for 250 ms (NOTES MKGLOW: ~9 % of seconds had
+  no matched point = the whole marker flat on the HUD sheet = JJ's "duplicate ... off to the side every three or four seconds").
+  Per-second "MKCARRY2: ..." line; command "mkcarry 0|1". Unverified (no marker in view in the fake runs).
+- MENUSTATE (AKN): UGFxMoviePlayer Start / Close hooked from UE3's native table (RVA 5E7CD0 / 5E8080) - every menu movie start /
+  close logged (12 in the menus); URGFxMovieUIexecStart / RGFxMovieFrontMostexecShouldFade not in the table by that spelling;
+  the NAME TABLE was not found (AK's GNames is not a { data, num, max } TArray of entries with "None" at 0x4-0x20, checked live
+  read-only too) -> movies by address only. Next for the bats / fade: AK's name storage (Ghidra / REA: FName::ToString callers).
+- Installed 19:22 (both DLLs): SCANBOX3 + SCANLINE off + MKCARRY2 + MENUSTATE log; TRANSFULL off.
+### RB4 2026-10-13 21:44-21:47 (fake headset; JJ HEADSET 21:3x: "no green plus boxes ... no orange diamond ... no distance marker,
+### but there is the background glow"; lines correct, not doubled)
+- CAUSE (LIVE, EYESKIP counters): the per-eye marker layers were skipped on EVERY frame since the RB1 build (18:45) - AKN drew
+  ~900 marker pieces/s into them, AKVR drew 0 layers. TRANSFULL's `const bool tr` in hud_in_eyes_body was SHADOWED inside the
+  per-eye loop by the existing `tr = tanf(f.angleRight)` (the lens tangent, never 0), so `!tr` there was always false. Renamed
+  trFull (all uses). EYESKIP diag stays in "HUD in the eyes: ... eye layers skipped: no layer / cut / transition / pause key / mode".
+- SCANBOX4: the box part (.9, AKVR's "box" key) has ONE child holding the four corners in this tree (box tree d0:1 d1:4 d2:1 x4
+  d3:0 x4) - SCANBOX2/3 expected .9 -> (line, plus holder) -> 4. Breadth-first search for the first part with four resolvable
+  children fixes it: "box drawn by AKVR 1918 (corners found 4)"; fake shot: four green plus signs on the vent, one line to the label.
+- VERIFIED (fake headset, 21:48-21:50, installed build dinput8 SHA-256 63088405...): eye layers skipped 0 of every kind; headset
+  shot rb4n: "123m" distance marker + its bracket box once per eye; detective shot rbf1: four green plus signs on the vent, one
+  line to the label, the distance marker on screen. JJ's settings restored. Next: JJ's headset look, then HUD_REBUILD_PLAN HR1.
+### HR1 start 2026-10-13 21:5x-22:11 (JJ HEADSET 21:5x: "looks really solid. The only thing I notice is the occasional flickering of
+### the distance marker to another location for one frame")
+- MKJUMP (LIVE, fake, 60 s normal play, marker in view): the game's projected marker list changed ONCE (0 -> 1 at gameplay start);
+  W stable (-35497 -118659 3315) - the game's data does not jump. MKCARRY2 never fired (no empty lists in JJ's session either).
+- MKMISS (LIVE, fake): no marked piece near the marker left on the flat sheet; the only misses = two marked text pieces at the right
+  (0.75, -0.08) every frame (objective panel, correctly flat). FLIPREC near-marker: 0. "no layout map": only 1-8 frames at gameplay
+  start (the map is cached in AKVR).
+- => not reproduced with the fake headset's still head: the one-frame jump comes with JJ's real head motion / headset timing.
+- HR5 quiet (AKN): HUDSIG, HUDCOVER readback, SCANREC / SCANPIECE / FLIPREC / MKMISS event lines OFF by default (counters stay);
+  command "recorders 1". (The flicker was first reported with the 17:26 build that added per-frame recorders.)
+- MKPLACE (AKN): per HUD frame the first marker's point in each eye (pair views); a frame that lies off the line between its two
+  neighbours (out and straight back, > 0.03 NDC and > half the step) is counted ("MKPLACE: ... /s") and logged with HUD seq. Fake
+  check: markers + box fine, layers skipped 0, settings restored; installed 22:11. JJ's next normal session decides: MKPLACE
+  outliers = our placement; none while he sees the flicker = the compositing / timing side (AKVR hud_in_eyes, pair vs layer).
+### HR2 / TAGFADE 2026-10-13 23:0x-23:38 (JJ HEADSET 23:0x: "the box for the distance marker was in the correct spot, but the text for
+### it was in a different location now, and the occasional flicker would see the box very briefly flicker over to where the text is")
+- LIVE (JJ's log): the marker placed every HUD frame (placed = HUD frames); marked draws ~150/s, MKSTICKY "held" 35-268/s = the number
+  and its glow lived on the backup hold; when the hold slipped they fell to the flat sheet (number elsewhere; box one frame there).
+- HELDREC (fake RB6, recorders 1): 300 / 300 held pieces = add-coloured pieces (multiply rgb 0) whose ALPHA ADD = mark x their own alpha
+  multiply, exact (-0.00390625 x 0.23828125 = -0.00093079). The mark is never lost - it is scaled by the piece's fade.
+- TAGFADE (AKN): a (row, row + 1) colour pair whose alpha add equals mark x alpha multiply counts as marked (single pieces: any pair
+  outside rows 5-7; batched pieces: each colour row with the next). Fake RB6b: held 0 (was 300 lines), "TAGFADE: ... recognised by
+  their faded mark/s" 16-73, marked draws ~325/s, settings restored. Command "tagfade 0|1". Installed 23:38 (XINPUT9_1_0.dll).
+- MKSTICKY / MKCARRY2 stay as a fallback for now; HR5 removes them once JJ confirms (MKSTICKY hold counter should stay ~0).
+
+### RB9 / RB10 RESULTS 2026-10-14 00:0x (JJ: "the distance marker always jumped to the other size/location once when entering and exiting detective mode")
+- RINGEVERY / RINGBOTH (AKN HUDRING): the ring now keeps EVERY frame (was every 3rd - a one-frame jump fell between), 24 frames, middle
+  60 % crop, HUD sheet + both eyes' marker layers (`ringNN_KK_<ms>_<why>_{hud,mkL,mkR}.bmp`), written 0.2 s after the detective flag
+  changes. Note: the flag (DETHOLD) changes 600 ms AFTER the game's exit; the right eye's view state swaps at the flag change.
+- STATIC (RB10, 5 entries + 5 exits, 240 frames per eye): both marker layers are steady in every frame (bounding box identical) EXCEPT
+  one exit frame (dump 08 frame 14) where the corner brackets are missing from both layers - on that frame the brackets are on the FLAT
+  HUD sheet around the flat number = the "jump to the other size / location" (flat sheet = HUD depth, our 0.80 shrink).
+- STATIC: the distance NUMBER ("123m") is on the flat HUD sheet in EVERY frame; the marker layers hold brackets, glow and arrow only.
+  Since MKSTICKY went off (RB8) nothing holds the number with the marker: TAGFADE does not recognise the number's draw.
+- LIVE: no FLIPREC line (radius 0.12) - the flat number lies further from the marker point. Next (RB11, built): `fliprad 0.3` +
+  `mkpieces 400` to read the number's draw (shader, kind, colour rows), A/B `mksticky 1`, two detective toggles with the ring.
+
+### RB11-RB13 RESULTS 2026-10-14 00:2x-00:40 (JJ: "the entire fov seems to rescale briefly when entering and exiting detective mode"; "does the zoom matter?")
+- EYERING (AKN, with HUDRING): per finished pair the left eye's picture + both eyes' lens. STATIC: lens identical (1.09169 / 1.00175, both
+  eyes) through every switch - our lens never changes.
+- TEST-TOOL ARTEFACT: the runners' focus click (akmenu click 0.98 0.97) moved the mouse = the game camera swung up to 80 deg in a few frames
+  at each X press (camera.csv F2 00:35:32); RB12/RB13a "zoom" frames were partly this. Without the click (focus kept) the camera trace is
+  still (0 changes in 8192 frames, F2 00:36:31). Lesson: press X without clicking once the window has focus.
+- Clean entries (no click): ~13 frames (~0.2 s) before detective mode shows, near things (Batman) shift and grow while the far skyline
+  stays put = the game's own camera pulls in toward Batman's shoulder for detective mode (not a lens zoom), with a radial streak blur.
+- PSNEW (AKN, lean bind hooks slots 9 / 69 back in; "psnew 0|1", "psnew list", "psskip <crc>"): shaders first bound at the entry -
+  02267B90 + 4B0F0E56 ~0.2 s before the composite, then the detective set. PSSKIP: 4B0F0E56 = the transition's radial streak blur (frames
+  sharp without it, the pull-in stays); 61A7C04F = the outline sweep over Batman; C248EFCC / 02267B90: no visible change at entry.
+- HUDRING now resettable ("hudring 1" resets the count) and triggered by the raw composite (no 600 ms hold) = the real exit (RINGRAW).
+- Still open: the distance number / brackets falling onto the flat HUD sheet during the switch (RB10) - the main marker bug.
+
+### MKCONT / MAPCONT / HELDDROP 2026-10-14 00:5x-01:15 (JJ: "the distance marker still flickers over to a copy")
+- FLATREC (AKN, "recorders 1"): flat HUD-sheet draws for 0.7 s after each raw detective switch, one line per distinct piece, batch pieces
+  with position + colour rows ("flatwin" = manual window). Showed at an exit: the marker point jumped (0.002 -0.082) -> (-0.166 0.053) for
+  ONE HUD frame with the same world point = AKVR's HUD layout map (akvr_hud_layout_map) changed for that frame (0.667 / 0 -0.13 -> 0.28 -0.36).
+- MAPCONT: a new layout map must hold 3 HUD frames before markers use it. MKCONT: a projected point with a new world position (300 u) must
+  hold 3 frames. HELDDROP / HELDDROP2: on a held frame, marked marker pieces out of reach are LEFT OUT (single: draw skipped; batch: rows
+  zeroed), never drawn flat. Command "mkcont 0|1" (default 1); per-second line "MKCONT: ... held back".
+- LIVE (fake, 3 runs, 26 switches): map jumps held at about half the switches; marker layers steady in every frame (both eyes); flat corner
+  copies gone. Left: 1 frame in 12 switches the distance NUMBER alone fell on the flat sheet (ring12 frame 07) - its text draw lost the
+  mark that frame (different mechanism; next: the number's own draw identity, HR2).
+- Not the game's lens: detective entry = the game's camera pull-in + streak blur (4B0F0E56), see RB11-RB13 RESULTS.
+
+### HEADSET 2026-10-14 01:2x (JJ): MKCONT / MAPCONT / HELDDROP did NOT fix it - "It's still flickering to a different location"
+- The fake headset never showed the flicker JJ sees in the headset (it shows other, rarer jumps); fixes "verified" there keep failing in
+  the headset. Do not declare a marker fix from fake runs again; JJ will not do repeated test rounds for it.
+- NEW LIST ITEM (JJ): RAIN brighter near bright lights (moon, volumetric beams) in the flat game; in the headset that brighter area is
+  OFFSET from where it should be, and part of it looks masked by something large moving in and out. Leads to check first: the rain shader
+  reading a screen-space light / shaft / bloom texture (per-eye lens = turned eyes, TURNEDEYE), RAINONCE (rain simulated once, re-anchored
+  per eye - the light buffer of the first eye used in the second), AKN RAINDEPTH / near-rain block (memory ak-near-rain-camera-block).
+
+### RAINLIGHT / RAINRELIGHT 2026-10-14 01:2x-01:4x (JJ: bright rain near the moon / beams offset, "masked by something large moving in and out")
+- Shader (a96594b16ceb399b, simulation): each drop's colour = light picture t2 sampled at the drop's screen spot: uv = (pos - cb0[10]) x
+  cb0[6..9] / w x cb1[19] + bias; the VS just draws the stored colour (offset 64). RAINCB 01:3x: cb0[6..9] = the turned EYE's view x lens;
+  cb0[10] original vs head-free only ~3 units apart -> RAINLIGHT (row 9 corrected for C_hf - C_eye) is right but tiny, NOT the cause.
+- Cause (fake, beam in view): RAINONCE runs the step in the right eye only, so the left eye shows the RIGHT eye's lighting (~14 deg off,
+  the right eye's Batman silhouette in t2 cutting through it). rainonce 0 (each eye its own step) moved the left eye's bright rain into the
+  beam. RAINRELIGHT (default 1, "rainrelight 0|1"): the left eye runs the step again with cb0[13].x (time step) = 0 - positions / age /
+  wrap unchanged, streak length (cb0[13].y) kept, its own lighting. Deferred contexts only (immediate: skip as before). Counters in the
+  per-second "RAINLIGHT ... RAINRELIGHT" line: relights 22-70/s, skipped 0.
+- Same-camera check (eyesame 1, rain only): left vs right 0.038 with relight off, 0.48 with it on (full double step was 1.1-1.3) - the
+  relit eye differs a little; cause unknown (light picture differs per render, or respawned drops). JJ's headset judges; stopped here (JJ:
+  "stop all the tests. just ask me to do it").
+- HEADSET 01:5x (JJ on RAINRELIGHT): "Left and right eyes are not fusing for the bright rain. Maybe for all the rain" -> RAINRELIGHT default
+  OFF. New reading of the fake pictures: each eye's OWN step put its bright rain off its own beam in opposite directions = the light
+  picture t2 is the PREVIOUS render's (the other eye's). RAINLIGHT2 (default 1, "rainlight2 0|1"): the one step (right eye's render) samples
+  t2 with the last published LEFT eye's view x lens (g_mcPubVP[0]; rows 6..8 = its rows 0..2, row 9 = C x rows + row 3) -> one colour per
+  drop for both eyes. Not tested (JJ tests). Panel: "TESTS (only when Claude asks)" drawer with rain as normal / show only the rain / hide.
+  Installed 01:5x (XINPUT9_1_0.dll + dinput8.dll).
+- HEADSET 02:0x (JJ on RAINLIGHT2): "better, yes" but rain vanishes from the bright area when the camera turns toward it ("connected to
+  the camera"); fine while still. Reading: the view x lens was read when the step was RECORDED, not when it RUNS -> another frame than the
+  light picture while the view moves. RAINLIGHT3: the left eye's view x lens is written to a GPU buffer on the render thread when its
+  picture is done (immediate context), and a 1-thread pass builds rows 6..9 from it when the step runs. Installed 02:1x, not tested.
+- Same report: in "show only the rain" the compass stayed, and its GREEN OBJECTIVE BOX flickers off like the distance marker. That box
+  carries the marker mark (05154232 piece 2 at compass height, FLATREC) and joined the marker whenever the marker came within the marked
+  reach (0.35). TAGREACH: g_mkTagReach 0.35 -> 0.15 (marker pieces lie within ~0.1 of their point; "mktagreach" live). Possibly also the
+  distance marker's own flicker. Installed 02:1x, not tested.
+- HEADSET 02:0x (JJ, RAINLIGHT3 + TAGREACH build loaded): compass green box still jumps (capture c020414), bright rain still fades when
+  the camera turns toward the beam ("I'm wondering if it's a DLSS thing. it's not a massive deal").
+- MAPROOT (AKVR earlyres.cpp akvr_hud_target_points, installed 02:2x, not tested): ROOT CAUSE of the one-frame map jumps (MAPCONT): the
+  HUD layout map (akvr_hud_layout_map) came from the FIRST on-target part that had something drawn; JJ's tree has four on-target parts
+  in three movies (K1/0.0.0.0.3.0.9, K2/0.0.0.0.1.0.0.0 + .1, K4/0.0.0.0.1.0.0.0), so on frames where the first was empty the map was
+  another movie's (offset 0.28 / -0.36 instead of 0 / -0.13) -> every marker piece placed with the wrong offset, and the marker point
+  landing near the compass box pulled the box in. The map now always comes from the first part's own movie root, drawn or not.
+- HEADSET 02:1x (JJ): DLSS off FIXED the rain fading in the beam (DLSS, not RAINLIGHT3). Next for the rain: a bias-current-colour mask
+  (pInBiasCurrentColorMask) over the rain draw f50d1365 per eye - our motion vectors are camera-only, so the falling drops reproject wrong
+  and are averaged away where the background is bright. Not built yet (JJ: "not a massive deal").
+- HUD flicker still there with DLSS off; JJ's 02:10 session had 0 MAPCONT holds (MAPROOT stopped the map jumps) - the flicker JJ sees is
+  another cause. JJ: "if we can't fix it this time, then we're just going to leave it". HUDREC (installed 02:3x): every HUD frame's marker
+  numbers (points, world point, eye points, map, routed / flat / miss / held counts, detective) in a ring of 400, written to
+  akn\hudrec_<tag>.txt by the panel capture -> JJ captures right after a flicker.
+- HEADSET 02:1x (JJ, TAGREACH build): "the distance marker box and glow have detached from the target again", compass box still flickers.
+  HUDREC (3 captures, 400 frames each): one marker point, same world point, map constant in every frame (MAPROOT holds) - no jumps of the
+  marker itself; missReach 1 on ~18 % of frames = a marker piece (glow / corner) beyond 0.15 drawn flat -> TAGREACH REVERTED to 0.35.
+  At the capture moments no compass piece was routed; the compass box flicker is NOT pinned down. JJ: leave it if this round fails.
+- RAINMASK (installed 02:4x, not tested): the rain draw (kRainVs, deferred + immediate DrawInstanced hooks) drawn again into a per-eye
+  R8 mask (same target size, game's depth, PS = 1), cleared at each eye render start, passed as pInBiasCurrentColorMask to DLSS.
+  Log line "RAINMASK: eye N mask WxH" once, per-second "RAINMASK: rain draws marked". "rainmask 0|1".
+- HEADSET 02:3x (JJ): RAINMASK ran (mask 1520x1656 per eye, 50-127 marked draws/s) but the rain is still smoothed away facing the beam
+  (fine in the corner of the view). Offered: try DLSS models live (K / J / M / L), else leave it, or the big job (rain drawn after DLSS).
+- NEW (JJ 02:4x): chimney SMOKE sprites differ per eye and roll with head roll. Looked up: playbook FAIL-STR-023 / ch14
+  #per-view-decisions (billboards oriented per view = rivalry; orient once for both eyes from one reference view). Our fleet: markers
+  face the head-free game camera (MARKERCARD), SUITGLOSS3 gives flagged shaders the head-free camera's rows. Plan: give the sprite
+  vertex shaders the head-free game camera's axes (no head roll, same for both eyes). SPRITEFIND (AKVR, installed): vertex shaders with
+  sincos or vertex+instance ids are written to akvr_captures\sprite_vs\<hash>.txt at creation; the panel capture also writes
+  akn\vs_inventory.txt (vertex shaders drawn in the next 3 frames) -> JJ captures while looking at the smoke.
+- SPRITEFIND result (JJ capture 02:46, fresh launch): of 60 vertex shaders drawn, one sprite shader: 1d937df7248f2561 = UE3 particle
+  sprite VS: corners = sin/cos(rotation) x cb0[23] / cb0[24] (camera right / up of the VIEW = per eye, head roll included); also a
+  camera-position facing mode via cb1[8]. 32 of 398 saved sincos VS share the layout (rows 23/24, 25/26, 27/28, 26/27).
+- SPRITEAXES (installed 02:5x, not tested): AKVR finds the two rows per VS at creation (sprite_rows: "sincos rS, rC" + "mul rX, rS.xxxx,
+  cb0[A]" + "mad rX, -rC.xxxx, cb0[B]"; export akvr_vs_sprite_rows); AKN per draw turns those rows from this eye's camera frame into the
+  head-free game camera's (Q = eye view x head-free view^T, 1-thread pass on the game's own values) in a cb0 copy -> one card orientation
+  for both eyes, no head roll. "spriteaxes 0|1"; per-second line "SPRITEAXES: ... draws turned". Camera-position facing (cb1[8]) not
+  handled yet. JJ thought the LEFT eye looked right.
+- HEADSET 03:0x (JJ on SPRITEAXES): eyes agree and no roll now ("Okay, but") - cards still tilt back when looking up; wants "completely
+  facing outwards, perfectly vertical". SPRITEUP (spriteaxes 2, default): target frame = world vertical up (UE3 +Z), the head-free camera's
+  right made level, level forward; spriteaxes 1 = the head-free camera's own axes. Installed 03:0x, not tested.
+- HEADSET 03:1x (JJ): the smoke brightens looking up, darkens looking down - only the smoke, also before today. Sprite VS 1d937df7:
+  o8 = t1 (3D texture) sampled at THIS eye's screen uv (cb1[0..3] clip / w) + a depth slice from w = a screen-space light / fog grid
+  (froxels); o7 = t0 world-space volume (fine). Suspect: the grid is filled for another camera (game's, other eye, previous frame).
+  VOLWATCH (installed 03:2x): the panel capture arms it; the next sprite draw names its grid (size / format), and for 0.2 s every compute
+  pass / draw that writes the grid is logged (shader, eye, recorded / immediate, render stamp) beside the eyes reading it.
+- VOLWATCH result (JJ capture 03:00): grid 84x92x64 R8G8B8A8 (render res / 18 px cells, 64 depth slices), ONE texture written by an
+  unnamed compute pass on the immediate context in EACH eye's render, read by the smoke in each eye's render (no cross-eye frame mixup
+  seen at record time; execution order not proven). JJ 03:1x: in the flat 2D game the smoke stays dark looking up and down -> VR-only.
+  Suspects: the grid is built for the head-free game camera (head pitch shifts the lookup) or with the game's 16:9 lens, while the smoke
+  reads it through the eye's view x lens. VOLCB (installed 03:2x): at the grid pass (immediate, output = the grid) its cb0..cb3 are read
+  back (2 dumps per capture) with the eye's view, lens, view x lens + inverse and the head-free camera x lens + inverse, to match rows.
+  Fix plan: re-map the grid into the eye's frustum (1 pass over 84x92x64) and give the smoke the re-mapped copy.
+
+### DIAGKIT 2026-10-14 03:3x (JJ: permanent test features in the overlay) - guide VR_DEBUG_TOOLKIT.md
+- AKVR: every shader's code kept by name (g_shCode, sh_store); akvr_shader_save(hash, path) writes its disassembly; the panel capture
+  saves the code of the vertex + pixel shaders drawn now into akvr_captures\<time>\shaders (2 s after, from AKN's inventories).
+- AKN: capture also lists pixel shaders (ps_inventory), dumps the replay ring if on, the new-effect list if watching, and the hidden
+  effect. FXSTEP: "fxcollect" (pixel shaders of 4 frames), "fxstep +1/-1/0" hides one at a time (g_skipPs), akn_diag_status for the panel.
+  "psnewarm": 2 s baseline then new effects logged.
+- Panel TESTS drawer: replay switch, detailed logs switch, watch for new effects, collect / previous / next / show all + status, rain view.
+- Installed 03:4x (both DLLs), not tested. Cleared 9.6 GB of my old ring recordings from E: (33 GB free).
+- VOLCB result (JJ capture 03:1x): the grid pass's cb1 = THIS eye's view buffer (rows 0-3 = eye view x lens exactly, 11-13 view rows,
+  15-17 inverse, 24 = forward + depth offset, 34 / 36 = light directions); cb1[4..7] (previous view x lens) = the OTHER eye's (shared
+  history alternates eyes - consistent with the one shared grid). The smoke VS reads it with the same eye view x lens -> no mismatch.
+  Remaining suspect: scattering uses the camera forward (cb1[24]) = follows the head in VR. SMOKELIGHT (AKN, "smokelight 0|1", default 0)
+  gives the grid pass (immediate dispatch whose output is a 3D R8G8B8A8 x64 texture) a cb1 copy with row 24.xyz = head-free forward.
+  Panel A/B in the TESTS drawer ("Smoke lighting: follows your head / steady"). Installed 03:5x, not tested.
+- HEADSET 03:2x (JJ): SMOKELIGHT (grid forward) made no difference; looking far down the smoke turns GREEN (his hunch: not lighting
+  of the grid). DIAGKIT capture 03:16 saved 395 shaders: smoke PS 07ac19831f7c0c35 (inputs = sprite VS outputs): soft-particle depth
+  fade (t0 / t3) and THREE lights whose directions arrive in VIEW space (cb0[25] / [27] / [29], colours cb0[26] / [28] / [30], one green)
+  turned into the world with the view's inverse rows cb1[15..17] = the EYE's (head included) while the directions match the head-free
+  camera -> the lights swing with head pitch. LIGHTDIR (AKVR flags PS with "mul rN.xyz, cb0[K].yyyy, cb1[16].xyz", akvr_shader_lightdir;
+  AKN gloss_pre gives them cb1[15..17] = head-free inverse rows; smokelight 1 = default, panel "Smoke lighting" A/B). Installed 03:3x.
+- NEW (JJ 03:2x): ground reflections flicker / differ per eye (capture 03:15:50: right eye's slabs shine, left dull). Known since 10-08
+  (SteamVR mode-3 note: sheen in one eye only; City PERCAPTURE lead). Next: JJ uses the panel FX stepper to name the reflection shader.
+- HEADSET 03:4x (JJ): LIGHTDIR fixed head moves ("The smoke is stable") but turning the camera with the gamepad still changes its colour.
+  Reading: the light directions are made a frame or more before the draw (UE3 game -> render thread lag), so while the game camera turns
+  the current rows are ahead of them. LIGHTLAG: a 4-deep history of the head-free view (mk_build), LIGHTDIR uses the one N frames back
+  ("lightlag 0..3", default 1; panel "Smoke light delay" 0-3). Installed 03:5x, not tested. Reflections: JJ parked them (flicker in
+  each eye, only seen here).
+- HEADSET 03:5x (JJ): no light delay changes anything; stick pitch still changes the smoke colour (persistent, not lag). FXCB (DIAGKIT,
+  installed 04:0x): a capture records the watched / selected effect's pixel-shader cb0..cb2 at its first draw in each eye (copied on the
+  recording context, read back after the eye render) + eye view, the game's own view, game camera with head, head-free now / 1-3 back.
+  "fxwatch <hash>" (default 07ac19831f7c0c35 = sprite smoke PS); the stepper's hidden effect takes priority. Plan: two captures (camera
+  pitched up / down) -> which camera keeps the world light direction (cb0[25] / [27] / [29] through its inverse) constant.
+- FXCB RESULT (JJ, 3 captures at 3 stick pitches, 03:40): smoke PS cb0[25] = (0, 0.5, 0, 1) every time (cb0[27] its opposite, cb0[29]
+  sideways) = camera-RELATIVE fixed light directions, not world lights; through the head-free rows they swing with the stick (world
+  (-0.67,0,0.74) / (0.63,0,0.78) / (-0.01,0,1.0)). Designed for a card that faces the camera (n.l constant in the flat game). SPRITEUP made
+  the cards upright, so the camera-relative lights hit them differently per pitch = the colour change. LIGHTFRAME (installed 04:1x):
+  LIGHTDIR now turns the lights with the CARD frame (sprite_frame, shared with SPRITEAXES) -> lit from world-up, same at every pitch.
+  LIGHTLAG only matters for spriteaxes 1. Lesson: before changing an effect's geometry, check what its shading assumes about it.
+- HEADSET 04:1x (JJ): LIGHTFRAME fixed the colour change ("Good, that's fixed"); asks the cards to tilt again to face the camera when
+  looking up. SPRITEPITCH (spriteaxes 3, new default): level right + world-up frame tilted about the level right axis to the elevation of
+  the eye's forward (stick + head pitch, both eyes share it), no roll; lighting follows (sprite_frame). Panel: "Smoke cards: upright /
+  tilt with the stick / tilt to where you look"; the light delay choice removed. Installed 04:2x, not tested.
+- HEADSET 04:3x (JJ): spriteaxes 3 -> colour changes with HEAD pitch (cause not found: lights turn with the card frame in every mode;
+  suspects = per-vertex fog grid / ambient volume samples at the tilted card corners). JJ then picked the panel's "Smoke lighting:
+  follows your head" = LIGHTDIR off -> per-eye differences + colour with head yaw (expected). That switch is REMOVED from the panel
+  (known-bad, PANELWORDS rule); command "smokelight" stays. Installs when the game closes. Pending JJ: "Smoke cards: tilt with the stick".
+- HEADSET 04:4x (JJ): upright = most stable but "very skewed" close up looking straight up; stick tilt looks better but the colours come
+  and go a little with stick pitch. SPRITESTEEP (spriteaxes 4, new default): upright up to 40 deg of head-free camera pitch, then tilting
+  in linearly to face fully at +-90. Panel "Smoke cards": upright, tilting when you look steeply / always upright / tilt with the stick /
+  tilt to where you look. Installed 04:5x, not tested.
+- HEADSET 04:5x (JJ): "always upright" = best compromise; every mode swivels the cards about their vertical axis when the camera yaws
+  with the stick (cards copy the camera's DIRECTION, so ones off to the side are seen edge-on - "they should be turning to face" the
+  viewer). All 64 AK sprite VS have the game's own "face the camera position, world-up" branch (weights row W = A + 9: x camera axes,
+  y velocity, z axis lock, w camera position; AKVR now reads W, akvr_vs_sprite_rows out[2]). SPRITEFACE (spriteaxes 5, default): cb0
+  row W = (0, 0, 0, 1) and VS cb1[8] (camera point, translated world, eye at 0) = head-free camera - this eye -> each card upright,
+  facing the head-free camera position, same in both eyes. Lights: upright frame (sprite_frame mode 2 path). Panel "upright, each
+  facing you" (default). Installed 05:0x, not tested.
+- HEADSET 04:1x (JJ; my earlier times in this section ran ahead of the clock): SPRITEFACE ran 25 s (04:08:29-55) then JJ chose
+  "always upright"; cards facing the camera POSITION still swing as the third-person camera orbits Batman - "they should keep facing my
+  character instead". CHARFACE: AKVR camera.cpp fp_body (FIRSTPERSON's skeleton lookup split out of fp_eye) publishes Batman's skeleton
+  origin + head every frame once asked (akvr_character_pos); SPRITEFACE's cb1[8] = Batman - this eye (head-free camera when he is not
+  found). Per-second line "... facing Batman/s N". Panel "upright, facing Batman" (default). Installed 04:2x, not tested.
+- HEADSET 04:1x (JJ): face-Batman ran only ~7 s of gameplay (log), then the panel went back to "always upright"; JJ: "Yes, I want
+  always upright" -> default spriteaxes 2 (panel too). Trade-off told: upright cards turn with the camera heading; upright AND facing
+  Batman per puff would need a rewritten sprite shader (per-particle position is only inside the shader) - offered for later.

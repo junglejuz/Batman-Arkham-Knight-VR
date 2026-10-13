@@ -17,6 +17,7 @@ int akvr_xr_menu_phase();   // xr.cpp: 0 = start-up (before the main menu is con
 void akvr_xr_mode_note(const char* what);           // xr.cpp: a line in the mode timeline
 void akvr_hudsplit_ui_now(int& movies, int& draws); // hudsplit.cpp: the screen UI drawn just now
 bool akvr_xr_startup_3d();                         // xr.cpp: start-up, the 3D menu scene has begun
+bool akvr_engine_stereo();                         // akn_link.cpp: AKN draws the eyes (MENUSOUND)
 float akvr_xr_startup_bright();                    // xr.cpp: the picture's brightness in start-up (-1 = unknown)
 // STARTBRIGHT 2026-10-02 — JJ: with the UI-draw rule "the audio started after the main menu had appeared ... We're
 // syncing it up with the appearance of the first menu": the menu has appeared when the picture is no longer black
@@ -58,6 +59,15 @@ namespace {
         const float b = akvr_xr_startup_bright();
         if (b >= 0.0f) return b < 0.03f;
         int mv = 0, dr = 0; akvr_hudsplit_ui_now(mv, dr);
+        // MENUSOUND 2026-10-12 (JJ: the menu's first sound "happens about one second too late and doesn't sync up with the text that
+        // appears"; timeline: held 4.2 s, released 7.2 s by MAIN MENU on with "ui 0/0, picture -1"): in engine stereo neither the
+        // brightness nor AKVR's own UI count exists - AKN's HUD sheet draws of the last frame say when the menu is drawn
+        if (akvr_engine_stereo())
+        {
+            using HdFn = long (*)(); static HdFn f = nullptr; static bool tried = false;
+            if (!tried) { HMODULE m = GetModuleHandleW(L"XINPUT9_1_0.dll"); f = m ? (HdFn)GetProcAddress(m, "akn_hud_draws_last") : nullptr; tried = m != nullptr; }
+            if (f) dr = (int)f();
+        }
         return dr < 10;
     }
     volatile LONG  g_notes = 0;               // timeline lines written (max 10)
@@ -81,8 +91,8 @@ namespace {
             const ULONGLONG held = GetTickCount64() - g_stoppedAt;
             InterlockedExchange(&g_holdMs, g_holdMs + (LONG)held);
             int mv = 0, dr = 0; akvr_hudsplit_ui_now(mv, dr);
-            char n[64]; snprintf(n, sizeof(n), "sound on after %llu ms (ui %d/%d, picture %.3f)", (unsigned long long)held, mv, dr,
-                                 akvr_xr_startup_bright());
+            char n[64]; snprintf(n, sizeof(n), "sound on after %llu ms (ui %d/%d, picture %.3f, menu %d)", (unsigned long long)held, mv, dr,
+                                 akvr_xr_startup_bright(), menu_not_drawn() ? 0 : 1);
             note(n);
         }
         if (akvr_xr_startup_3d()) InterlockedExchange(&g_holdDone, 1);   // AUDIOSYNC3: the menu-scene hold happens once
@@ -168,7 +178,9 @@ void akvr_audiosync_frame()
         LeaveCriticalSection(&g_lock);
     }
     // AUDIOSYNC3: the 3D menu scene has begun but the menu itself is not drawn yet: hold (at most 6 s from the hold)
-    if (!g_stopped && g_lockReady && g_on && g_xa && !g_holdDone && menu_not_drawn())
+    // MENUSOUND2 2026-10-13 (JJ: "Remove the Audio effect two-second wait between the launch titles and the first menu"): no
+    // menu-scene hold in engine stereo (it could only end on a fixed 2 s timer there); the frame-gap holds stay
+    if (!g_stopped && g_lockReady && g_on && g_xa && !g_holdDone && !akvr_engine_stereo() && menu_not_drawn())
     {
         EnterCriticalSection(&g_lock);
         engine_stop_locked();
@@ -178,7 +190,11 @@ void akvr_audiosync_frame()
     }
     if (g_stopped && g_lockReady)
     {
-        if (menu_not_drawn()) return;   // AUDIOSYNC3: the menu scene is up but the menu is not drawn yet
+        // MENUSOUND 2026-10-12 (JJ: the menu's first sound "about one second too late"; in engine stereo every run released at
+        // MAIN MENU on, 3.0 s after the menu-scene hold began, with no picture or UI signal available - the window and the eye
+        // pair both read black then): in engine stereo the menu-scene hold ends 2 s after it began
+        const bool engineEarly = akvr_engine_stereo();   // MENUSOUND2: in engine stereo a hold ends with the next frame, never waits for the menu
+        if (menu_not_drawn() && !engineEarly) return;   // AUDIOSYNC3: the menu scene is up but the menu is not drawn yet
         EnterCriticalSection(&g_lock);
         engine_start_locked();
         LeaveCriticalSection(&g_lock);

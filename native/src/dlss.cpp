@@ -248,6 +248,7 @@ void akn_dlss_cmd(const char* what, int v)
     else if (!strcmp(what, "mvmode")) g_mvMode = v;
     for (auto& e : g_eye) e.rw = 0;   // recreate the features with the new flags
 }
+extern "C" ID3D11Texture2D* akn_rain_mask(int eye);   // RAINMASK (probe.cpp)
 ID3D11Texture2D* akn_dlss_eval(ID3D11DeviceContext* c, int eye, ID3D11Texture2D* src, float jpx, float jpy, const float* V, const float* P, bool vpOk)
 {
     load_settings();
@@ -317,7 +318,8 @@ ID3D11Texture2D* akn_dlss_eval(ID3D11DeviceContext* c, int eye, ID3D11Texture2D*
     ep.InJitterOffsetX = jpx; ep.InJitterOffsetY = jpy;
     ep.InRenderSubrectDimensions.Width = e.rw; ep.InRenderSubrectDimensions.Height = e.rh;
     ep.InReset = e.reset ? 1 : 0; e.reset = false;
-    ep.InMVScaleX = mvScaleX; ep.InMVScaleY = mvScaleY;   // the game's buffer: [-1, 1] (Luma); our camera motion: pixels
+    ep.InMVScaleX = mvScaleX; ep.InMVScaleY = mvScaleY;
+    if (ID3D11Texture2D* rm = akn_rain_mask(eye)) ep.pInBiasCurrentColorMask = rm;   // RAINMASK (probe.cpp): trust this frame where the rain is   // the game's buffer: [-1, 1] (Luma); our camera motion: pixels
     ID3D11DeviceContext1* c1 = nullptr; ID3DDeviceContextState* prev = nullptr;
     if (g_state && SUCCEEDED(c->QueryInterface(__uuidof(ID3D11DeviceContext1), (void**)&c1)) && c1) c1->SwapDeviceContextState(g_state, &prev);
     Tq* tq = tq_begin(c, eye);
