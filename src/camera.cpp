@@ -976,7 +976,7 @@ namespace
     // Starfield; UEVR) adds NO height - the camera stays where the game's rig puts it, and the game's own collision keeps it out of the
     // floor. Ours added +-2 m x sin(tilt) on top: stick up = the boom already near the ground, then 1.6 m lower = under the floor. Now:
     // never below the game's own camera (lift >= 0), a small rise only (default 0.5 m, max 1.5), eased, none while head-aiming.
-    float g_stickHeightM = 0.5f;
+    float g_stickHeightM = 1.0f;   // 0.3.1: JJ's landed value
     // TPPITCH 2026-10-18 (JJ: "Don't let the camera come completely over his head. Stop it, like well before that"). AK's camera boom
     // orbits: the further the game camera looks down, the higher it swings, up to right over Batman (about -55 deg).
     // TPPITCH2 2026-10-19 (JJ: "doesn't work at all. The slider does nothing"): handing the game back a limited camera pitch (CAMRESTORE)
@@ -986,7 +986,7 @@ namespace
     // would be at the limit angle (same pivot, same distance: lower and further back) and the view's tilt is limited the same way.
     // Continuous at the limit (no correction there). Third person on foot in play only (Batman found; not first person, menus, the
     // frozen screen, head-aiming). 60 = the game's own.
-    float g_tpPitchMax = 30.0f;   // steepest look-down, degrees
+    float g_tpPitchMax = 58.0f;   // steepest look-down, degrees (0.3.1: JJ's landed value)
     long  g_tpPitchHolds = 0, g_tpNoBody = 0;
     bool tp_limit_on()
     {
