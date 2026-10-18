@@ -3,6 +3,10 @@
 Last updated 2026-10-09 22:50 (SteamVR route + suit gloss). Read this first, then the last sections of `NOTES.md` (full run log) and `DLSS_PLAN.md`.
 Workspace rules: `VR_ESSENTIALS.md`, `VR_HUD_GUIDE.md`, `VR_WORLD_MARKERS_GUIDE.md`.
 
+**2026-10-18 21:21: AIMHUD (built + installed, JJ untested)** - Batmobile turret reticle hangs on the head while head-aiming (left trigger); NOTES "AIMHUD", command `aimhud 0|1`.
+
+**2026-10-18: MOTION CONTROLS PLAN** - `MOTION_CONTROLS_PLAN.md` (plan only, nothing built): hands drive the game's own moves, third person first, Shadow-mode first person later; first blocker = an input route Knight obeys (PADINJECT was ignored).
+
 **2026-10-14: RELEASED v0.3.0 (pre-release)** - https://github.com/junglejuz/Batman-Arkham-Knight-VR/releases/tag/v0.3.0, commit 632157d,
 zip sha256 267c5c9c... verified after upload. Panel test drawer renamed TROUBLESHOOTING; background probes off (HUDRING press/screen dumps,
 BLACKHUNT on capture, SPRITEFIND, DETRING, fixed FXCB watch, BATEVENT/MENUSTATE hooks); DIAGKIT kept (`VR_DEBUG_TOOLKIT.md`). Smoke

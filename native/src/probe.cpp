@@ -250,6 +250,8 @@ extern void* volatile g_fam1; extern void* volatile g_fam2; extern volatile LONG
 extern volatile LONG g_shCacheGen;   // PERF1 (below)
 extern int g_mkScratchN;   // MKGLOW2 (below)
 void mk_scratch_set(ID3D11Resource* r, bool on, unsigned f);   // MKGLOW5 (below)
+void aim_scratch_clear(ID3D11Resource* r);   // AIMHUD3 (below)
+extern int g_aimScratchN;
 extern unsigned g_mkHudFrame;   // MKGLOW5 (below)
 extern volatile LONG c_mkGlow, c_mkSticky;   // MKGLOW2 / MKSTICKY2 (below)
 // MKDRAWN 2026-10-11 (JJ: the distance marker "jitters, like tiny little jitters"): where the game actually DREW each
@@ -587,6 +589,7 @@ float g_scanWpub[3] = {}, g_scanSheet[2] = {}; volatile LONG g_scanWok = 0; char
 float g_scanMin = 600.0f; char g_scanDiag[400] = "";   // DETCALLOUT2: 300 -> 600 (JJ's run: hits at 311 / 435 units = Batman / the ledge)
 volatile LONG g_depthProbe = 0;   // DEPTHPROBE: frames left to compare the SMAA-time depth (DLSS's) with the pre-clear copy; "depthprobe N"
 volatile LONG g_mkAnchorOn = 0;   // (default OFF: JJ "even worse") MKANCHOR: command "mkanchor 0|1"
+volatile LONG g_aimOn = 1, f_aimRouted = 0, g_aimRoutedLast = 0, c_aimRouted = 0, c_aimSplit = 0, c_aimLost = 0, g_aimPieceLines = 0, g_aimNearLines = 0;   // AIMHUD (aim sheet below MARKSHEET); AIMNEAR
 volatile LONG g_markSheet = 1, g_mkPieces = 0, f_mkRouted = 0, g_mkRoutedLast = 0, c_mkRouted = 0, c_mkFlat = 0, c_mkNoCb = 0; float g_mkReach = 0.09f;   // MKREACH 2026-10-09: 0.08 left the bracket corners / distance text on the HUD sheet; MKBATCH 23:4x: back to 0.09 - 0.16 pulled a piece 0.11 away (another HUD element) onto the marker, and the brackets / glow are batched pieces now routed one by one   // MARKSHEET (below hud_ready)
 volatile LONG g_mkByTag = 1, c_mkTagged = 0, c_mkTagLost = 0, c_mkOffSheet = 0; float g_mkTagReach = 0.35f;   // TAGREACH REVERTED 2026-10-14 (HUDREC: at 0.15 the glow / a corner fell flat on ~18 % of frames - JJ "box and glow have detached"); was: 2026-10-14 (JJ: the compass's green objective box flickers off like the distance marker - the box carries the marker mark and joined the marker whenever the marker came within 0.35 of it): 0.35 -> 0.15   // MKTAG (commands mkmode / mktag / mktagreach)
 // VSCOPY 2026-10-09 (JJ 03:09, c030900/c030937: with a FRESH right-eye view state detective mode turns lights white
@@ -729,6 +732,8 @@ void do_command(char* line)
         else if (sscanf_s(line, "mkgs %d", &v) == 1) { g_mkGS = v; logf("command: marker pieces placed per vertex in 3D (MKGS) %d", v); }
         else if (sscanf_s(line, "mkcard %d", &v) == 1) { g_mkCard = v; logf("command: markers as perspective cards (MKCARD) %d", v); }
         else if (sscanf_s(line, "mkfacecam %d", &v) == 1) { g_mkFaceCam = v; logf("command: markers face %s (MKFACE2)", v ? "the game camera's direction" : "the viewer's eyes"); }
+        else if (sscanf_s(line, "aimgroup %d", &v) == 1) { using AgFn = void(*)(int); HMODULE hm = GetModuleHandleW(L"dinput8.dll"); AgFn f = hm ? (AgFn)GetProcAddress(hm, "akvr_aim_group_set") : nullptr; if (f) f(v); logf("command: the reticle's whole parent group follows the head %d (AIMHUD3)%s", v, f ? "" : " - AKVR export missing"); }
+        else if (sscanf_s(line, "aimhud %d", &v) == 1) { g_aimOn = v ? 1 : 0; using AsFn = void(*)(int); HMODULE hm = GetModuleHandleW(L"dinput8.dll"); AsFn f = hm ? (AsFn)GetProcAddress(hm, "akvr_aim_set") : nullptr; if (f) f(v); logf("command: Batmobile turret reticle on its own sheet, hung on the head while aiming %d (AIMHUD)", v); }
         else if (sscanf_s(line, "scan %d", &v) == 1) { g_scanOn = v; using SsFn = void(*)(int); HMODULE hm = GetModuleHandleW(L"dinput8.dll"); SsFn f = hm ? (SsFn)GetProcAddress(hm, "akvr_scan_set") : nullptr; if (f) f(v); logf("command: detective scan callout on its object %d (DETCALLOUT)", v); }
         else if (sscanf_s(line, "depthprobe %d", &v) == 1) { g_depthProbe = v; logf("command: depth probe for %d left-eye renders", v); }
         else if (strncmp(line, "scancut", 7) == 0) { int on = 1; float r = 0.0f; sscanf_s(line + 7, "%d %f", &on, &r); using ScFn = void(*)(int, float); HMODULE hm = GetModuleHandleW(L"dinput8.dll"); ScFn f = hm ? (ScFn)GetProcAddress(hm, "akvr_scan_cut") : nullptr; if (f) f(on, r); logf("command: scan box drawn from a small square only %d (r %.3f) (SCANCUT)", on, r); }
@@ -1628,6 +1633,9 @@ ID3D11DepthStencilView* g_hudDSV = nullptr;   // HUDDSV (below)
 // copy of the game's last upload (Map/Unmap, UpdateSubresource). Commands: "marksheet 0|1", "mkreach <ndc>",
 // "mkpieces N" (log N HUD draws: placement, nearest marker, routed).
 ID3D11Texture2D* g_mkTex = nullptr; ID3D11RenderTargetView* g_mkRTV = nullptr;
+// AIMHUD 2026-10-18 (JJ: the Batmobile turret aims with the head, its reticle should move with the head): the reticle's pieces carry
+// AKVR's aim mark and go to their own AIM SHEET, unmoved; AKVR hangs that sheet on the head while the head aims. Command "aimhud 0|1".
+ID3D11Texture2D* g_aimTex = nullptr; ID3D11RenderTargetView* g_aimRTV = nullptr; ID3D11RenderTargetView* g_splitRTV = nullptr;
 float g_mkC[8][2] = {}; int g_mkCN = 0;   // (MARKSHEET switches: next to VSSPLIT, above the commands)
 // MKEYE 2026-10-11 (RETHINK MARKERS 2, NOTES.md; JJ: "This all feels very hacky" ... "look at how we did it in the Geo11
 // version because they were rock solid" ... "They were at object distance"): a marker piece is never cut out of a sheet
@@ -2284,6 +2292,7 @@ using MkCentresFn = int (*)(float*, int); MkCentresFn p_mkCentres = nullptr; boo
 void mk_frame_start()
 {   // at the HUD sheet clear: last frame's routed count, this frame's marker centres from AKVR (sheet NDC)
     g_mkRoutedLast = InterlockedExchange(&f_mkRouted, 0);
+    g_aimRoutedLast = InterlockedExchange(&f_aimRouted, 0);   // AIMHUD
     // MKGLOW4: the scratch chain is NOT per frame - Flash caches a filter's result and pastes it for many frames without
     // drawing the scratch again (the glow went into 3D only 1-4 times a second); a target leaves the set only when
     // something else is drawn into it
@@ -2316,6 +2325,8 @@ bool hud_ready(ID3D11DeviceContext* c)
         logf("HUD texture %ux%u format %d", d.Width, d.Height, (int)d.Format);
         if (FAILED(g_dev->CreateTexture2D(&hd, nullptr, &g_mkTex)) || FAILED(g_dev->CreateRenderTargetView(g_mkTex, nullptr, &g_mkRTV)))
         { logf("MARKSHEET: marker sheet create FAILED - off"); g_markSheet = 0; if (g_mkTex) { g_mkTex->Release(); g_mkTex = nullptr; } }   // MARKSHEET
+        if (FAILED(g_dev->CreateTexture2D(&hd, nullptr, &g_aimTex)) || FAILED(g_dev->CreateRenderTargetView(g_aimTex, nullptr, &g_aimRTV)))
+        { logf("AIMHUD: aim sheet create FAILED - off"); g_aimOn = 0; if (g_aimTex) { g_aimTex->Release(); g_aimTex = nullptr; } g_aimRTV = nullptr; }   // AIMHUD
         for (int e = 0; e < 2; ++e)   // MKEYE: one marker layer per eye, the eye picture's size and lens
             if (FAILED(g_dev->CreateTexture2D(&hd, nullptr, &g_mkEyeTex[e])) || FAILED(g_dev->CreateRenderTargetView(g_mkEyeTex[e], nullptr, &g_mkEyeRTV[e])))
             { logf("MKEYE: eye marker layer create FAILED - off"); g_mkEye = 0; }
@@ -2328,6 +2339,7 @@ bool hud_ready(ID3D11DeviceContext* c)
         InterlockedIncrement(&c_hudClear); InterlockedIncrement(&g_hudSeq); InterlockedExchange(&f_hudIdx, 0);   // HUDSKIPIDX
         if (g_hudDSV && o_ClrDSV) o_ClrDSV(c, g_hudDSV, D3D11_CLEAR_DEPTH | D3D11_CLEAR_STENCIL, 1.0f, 0);   // HUDDSV
         if (g_mkRTV) { o_ClearRTV ? o_ClearRTV(c, g_mkRTV, z) : c->ClearRenderTargetView(g_mkRTV, z); }   // MARKSHEET
+        if (g_aimRTV) { o_ClearRTV ? o_ClearRTV(c, g_aimRTV, z) : c->ClearRenderTargetView(g_aimRTV, z); }   // AIMHUD
         for (int e = 0; e < 2; ++e) if (g_mkEyeRTV[e]) { o_ClearRTV ? o_ClearRTV(c, g_mkEyeRTV[e], z) : c->ClearRenderTargetView(g_mkEyeRTV[e], z); }   // MKEYE
         g_mkCtx = c;   // DETCALLOUT
         mk_frame_start();
@@ -2573,7 +2585,7 @@ void STDMETHODCALLTYPE hk_ClearRTV(ID3D11DeviceContext* c, ID3D11RenderTargetVie
         const bool isBB = r == g_bb; if (r) r->Release();
         if (isBB && hud_ready(c)) { const FLOAT z[4] = { 0, 0, 0, 0 }; o_ClearRTV(c, g_hudRTV, z); return; }   // keep the HUD texture transparent
     }
-    if (g_mkScratchN && v && c == g_gameCtx && !tl_inEyeRender) { ID3D11Resource* r = nullptr; v->GetResource(&r); if (r) { mk_scratch_set(r, false, 0); r->Release(); } }   // MKGLOW5: a cleared target holds no marker
+    if ((g_mkScratchN || g_aimScratchN) && v && c == g_gameCtx && !tl_inEyeRender) { ID3D11Resource* r = nullptr; v->GetResource(&r); if (r) { mk_scratch_set(r, false, 0); aim_scratch_clear(r); r->Release(); } }   // MKGLOW5: a cleared target holds no mark (AIMHUD3: nor the aim mark)er
     o_ClearRTV(c, v, col);
 }
 void xe_rtvs(ID3D11RenderTargetView* const* v, UINT n, ID3D11DepthStencilView* d, bool deferred);   // XEYE, below
@@ -4755,6 +4767,42 @@ void mk_scratch_write(ID3D11Resource* res, bool tagged, ID3D11DeviceContext* c)
     const long long rf = mk_reads_scratch_f(c);
     if (mk_scratch_fresh(rf)) mk_scratch_set(res, true, (unsigned)rf); else mk_scratch_set(res, false, 0);
 }
+// AIMHUD3 2026-10-18 (JJ: "one element of the reticle, not the very central one, but the one just outside of that, which is still
+// fixed to the rest of the HUD"; log: "left flat (unknown layout)" 2/s steady, 86-133/s at aim starts): a reticle piece with a Flash
+// filter (glow) is drawn into a scratch target and the blurred copy PASTED onto the HUD sheet - often a cached copy for many frames.
+// The same chain as MKGLOW, for the aim mark: targets written by aim-marked pieces (or copied from such a target) are aim scratch;
+// a HUD-sheet draw reading one goes whole to the aim sheet.
+float g_aimV = 0.0f; bool g_aimVTried = false;
+float aim_tag_v() { if (!g_aimVTried) { HMODULE hm = GetModuleHandleW(L"dinput8.dll"); g_aimVTried = hm != nullptr; using AvFn = float(*)(); AvFn f = hm ? (AvFn)GetProcAddress(hm, "akvr_aim_tag_value") : nullptr; g_aimV = f ? f() : 0.0f; } return g_aimV; }
+bool aim_tag_in(const float* m, int n) { const float v = aim_tag_v(); if (v == 0.0f) return false; for (int i = 0; i < n; ++i) if (fabsf(m[i] - v) < 1.0e-7f) return true; return false; }
+MkScr g_aimScratch[8] = {}; int g_aimScratchN = 0; volatile LONG c_aimPaste = 0, c_aimScrMarked = 0;
+int aim_scratch_find(ID3D11Resource* r) { for (int i = 0; i < g_aimScratchN; ++i) if (g_aimScratch[i].r == r) return i; return -1; }
+long long aim_reads_scratch_f(ID3D11DeviceContext* c)
+{
+    if (!g_aimScratchN) return -1;
+    ID3D11ShaderResourceView* v[4] = {}; c->PSGetShaderResources(0, 4, v);
+    long long best = -1;
+    for (int i = 0; i < 4; ++i) if (v[i])
+    {
+        ID3D11Resource* r = nullptr; v[i]->GetResource(&r);
+        if (r) { const int k = aim_scratch_find(r); if (k >= 0 && (long long)g_aimScratch[k].f > best) best = g_aimScratch[k].f; r->Release(); }
+        v[i]->Release();
+    }
+    return best;
+}
+void aim_scratch_clear(ID3D11Resource* r) { const int i = aim_scratch_find(r); if (i >= 0) g_aimScratch[i] = g_aimScratch[--g_aimScratchN]; }
+bool aim_reads_scratch(ID3D11DeviceContext* c) { return mk_scratch_fresh(aim_reads_scratch_f(c)); }
+void aim_scratch_write(ID3D11Resource* res, bool tagged, ID3D11DeviceContext* c)
+{
+    const int i = aim_scratch_find(res);
+    long long f = tagged ? (long long)g_mkHudFrame : aim_reads_scratch_f(c);
+    if (tagged) InterlockedIncrement(&c_aimScrMarked);
+    if (tagged || mk_scratch_fresh(f))
+    {
+        if (i >= 0) g_aimScratch[i].f = (unsigned)f; else if (g_aimScratchN < 8) g_aimScratch[g_aimScratchN++] = MkScr{ res, (unsigned)f };
+    }
+    else if (i >= 0) g_aimScratch[i] = g_aimScratch[--g_aimScratchN];
+}
 // MKGLOW3: binding a scratch target turns g_hudBound off, so mk_route_begin never saw those draws - tracked here,
 // for every HUD-phase draw of the game's context that is NOT aimed at the HUD sheet
 extern ID3D11Buffer* g_vsCb0;
@@ -4767,9 +4815,10 @@ void mk_scratch_track(ID3D11DeviceContext* c)
         ID3D11Resource* res = nullptr; rt->GetResource(&res);
         if (res)
         {
-            bool tagged = false;
-            if (g_vsCb0) { const CbShadow& e = cb_slot(g_vsCb0); if (e.b == g_vsCb0) tagged = mk_tag_in(e.m, (int)(e.bytes / 4)); }
+            bool tagged = false, aimT = false;
+            if (g_vsCb0) { const CbShadow& e = cb_slot(g_vsCb0); if (e.b == g_vsCb0) { tagged = mk_tag_in(e.m, (int)(e.bytes / 4)); aimT = g_aimOn && aim_tag_in(e.m, (int)(e.bytes / 4)); } }
             mk_scratch_write(res, tagged, c);   // MKGLOW5
+            if (g_aimOn) aim_scratch_write(res, aimT, c);   // AIMHUD3
             res->Release();
         }
     }
@@ -4801,8 +4850,12 @@ bool mk_sticky(unsigned long long vh)
 struct MkSplit { UINT bytes; float hud[kCbShBytes / 4], mk[kCbShBytes / 4]; } g_mkSplit = {}; volatile LONG c_mkSplit = 0;
 int mk_route_begin(ID3D11DeviceContext* c, ID3D11DepthStencilView** dsv)
 {
+    g_splitRTV = nullptr;   // AIMHUD: mk_split_draw's second target (null = the marker sheet)
     if (!g_markSheet || !g_mkRTV || !g_hudBound) return 0;
-    if (g_mkCN == 0 && g_mkPieces <= 0) return 0;
+    const float s_aimV = aim_tag_v();   // AIMHUD: the turret reticle's mark (AKVR earlyres kAimTag)
+    const bool aimOn = g_aimOn && s_aimV != 0.0f && g_aimRTV;
+    const bool mkIdle = g_mkCN == 0 && g_mkPieces <= 0;
+    if (mkIdle && !aimOn) return 0;
     const CbShadow& e = cb_slot(g_vsCb0);
     if (!g_vsCb0 || e.b != g_vsCb0) { InterlockedIncrement(&c_mkNoCb); return 0; }
     {   // MKSHEETONLY 2026-10-10 (JJ: the glow "flashing above it at a bigger size"): only draws aimed at the HUD sheet. A
@@ -4810,10 +4863,10 @@ int mk_route_begin(ID3D11DeviceContext* c, ID3D11DepthStencilView** dsv)
         // scratch draws put them in the marker sheet at the scratch target's place and size.
         ID3D11RenderTargetView* rt = nullptr; c->OMGetRenderTargets(1, &rt, nullptr);
         const bool onSheet = rt && rt == g_hudRTV;
-        if (!onSheet && rt && g_mkCN > 0)
+        if (!onSheet && rt && (g_mkCN > 0 || aimOn))
         {   // MKGLOW2: the glow scratch chain (marked piece -> scratch, blur reads a scratch -> its target; anything else clears)
             ID3D11Resource* res = nullptr; rt->GetResource(&res);
-            if (res) { mk_scratch_write(res, mk_tag_in(e.m, (int)(e.bytes / 4)), c); res->Release(); }   // MKGLOW5
+            if (res) { if (g_mkCN > 0) mk_scratch_write(res, mk_tag_in(e.m, (int)(e.bytes / 4)), c); if (aimOn) aim_scratch_write(res, aim_tag_in(e.m, (int)(e.bytes / 4)), c); res->Release(); }   // MKGLOW5; AIMHUD3
         }
         if (rt) rt->Release();
         if (!onSheet) { InterlockedIncrement(&c_mkOffSheet); return 0; }
@@ -4841,6 +4894,95 @@ int mk_route_begin(ID3D11DeviceContext* c, ID3D11DepthStencilView** dsv)
         ID3D11VertexShader* v2 = nullptr; c->VSGetShader(&v2, nullptr, nullptr);
         if (v2) { if (!one && p_one) one = p_one(v2) != 0; if (!one && p_lay) layOk = p_lay(v2, lay) != 0; v2->Release(); }
     }
+    // AIMHUD: the turret reticle's pieces (own mark, also scaled by a fade like TAGFADE) go to the aim sheet unmoved - before the
+    // marker rules, which need a marker on screen. A draw of unknown layout carrying the mark stays flat (DETCALLOUT2: it may hold
+    // other HUD pieces) and is counted as lost.
+    if (aimOn)
+    {
+        auto aimHit = [&](const float* f, int n) { for (int i = 0; i < n; ++i) if (fabsf(f[i] - s_aimV) < 1.0e-7f) return true; return false; };   // AIMHUD2: exact (a near value is the game's own)
+        auto aimFaded = [&](const float* a, const float* mu) { const float ma = mu[3], want = s_aimV * ma;
+            return g_tagFade && ma > 0.01f && ma < 1.001f && fabsf(a[3] - want) <= 1.0e-9f + 1.0e-5f * fabsf(want); };
+        auto toAim = [&](int code) {
+            ID3D11RenderTargetView* cur = nullptr; c->OMGetRenderTargets(1, &cur, dsv); if (cur) cur->Release();
+            if (code == 1) o_OMSetRT(c, 1, &g_aimRTV, *dsv); else g_splitRTV = g_aimRTV;
+            InterlockedIncrement(&f_aimRouted); InterlockedIncrement(&c_aimRouted); if (code == 2) InterlockedIncrement(&c_aimSplit);
+            if (g_aimPieceLines < 40) { InterlockedIncrement(&g_aimPieceLines); logf("AIMPIECE vs %016llx %s -> aim sheet", vh, one ? "single" : code == 1 ? "batch, all reticle" : "batch, split"); }
+            return code; };
+        if (aim_reads_scratch(c))
+        {   // AIMHUD3: the reticle's glow / filter copy pasted onto the HUD sheet
+            InterlockedIncrement(&c_aimPaste);
+            return toAim(1);
+        }
+        if (one)
+        {
+            bool hit = e.bytes >= 128 && (aimHit(m, 24) || aimHit(m + 32, (int)(e.bytes / 4) - 32));   // not the placement rows 6 / 7
+            if (!hit && e.bytes >= 128) { const int nr = (int)(e.bytes / 16); for (int r = 0; r + 1 < nr && r < 64 && !hit; ++r) if (r != 5 && r != 6 && r != 7) hit = aimFaded(m + r * 4, m + (r + 1) * 4); }
+            if (hit) return toAim(1);
+        }
+        else
+        {
+            D3D11_BUFFER_DESC ad{}; g_vsCb0->GetDesc(&ad);
+            if (layOk && e.bytes >= ad.ByteWidth && ad.ByteWidth <= kCbShBytes)
+            {
+                const int rowX = lay[0], rowY = lay[1], st = lay[2], rowW = lay[5], np = lay[6];
+                const int lim = (int)(ad.ByteWidth / 16) < lay[3] ? (int)(ad.ByteWidth / 16) : lay[3];
+                unsigned long long aimM = 0; int nAll = 0;
+                for (int k = 0; k < 64; ++k)
+                {
+                    bool inside = rowX + k * st < lim && rowY + k * st < lim && (rowW < 0 || rowW + k * st < lim);
+                    for (int q = 0; q < np && inside; ++q) inside = lay[7 + q] + k * lay[19 + q] < lim;
+                    if (!inside) break;
+                    const float* X = m + (rowX + k * st) * 4; const float* Y = m + (rowY + k * st) * 4;
+                    if (!X[0] && !X[1] && !X[3] && !Y[0] && !Y[1] && !Y[3]) continue;   // unused slot
+                    ++nAll;
+                    bool hit = false;
+                    for (int q = 0; q < np && !hit; ++q)   // colour / uv rows only, not the placement
+                    {
+                        if (lay[7 + q] == rowX || lay[7 + q] == rowY || lay[7 + q] == rowW) continue;
+                        const int r = lay[7 + q] + k * lay[19 + q];
+                        hit = aimHit(m + r * 4, 4) || (r + 1 < lim && r + 1 != rowX && r + 1 != rowY && aimFaded(m + r * 4, m + (r + 1) * 4));
+                    }
+                    if (hit) aimM |= 1ull << k;
+                }
+                if (aimM)
+                {
+                    if ((int)__popcnt64(aimM) == nAll) return toAim(1);
+                    g_mkSplit.bytes = ad.ByteWidth;   // the legacy split: the reticle's pieces on the aim sheet, the rest on the HUD sheet
+                    memcpy(g_mkSplit.hud, m, ad.ByteWidth); memcpy(g_mkSplit.mk, m, ad.ByteWidth);
+                    for (int k = 0; k < 64; ++k)
+                    {
+                        const int rx = rowX + k * st, ry = rowY + k * st;
+                        if (rx >= lim || ry >= lim) break;
+                        float* t = (aimM >> k & 1) ? g_mkSplit.hud : g_mkSplit.mk;
+                        memset(t + rx * 4, 0, 16); memset(t + ry * 4, 0, 16);
+                    }
+                    return toAim(2);
+                }
+            }
+            else if (aimHit(m, (int)(e.bytes / 4)))
+            {
+                InterlockedIncrement(&c_aimLost);
+                if (g_aimPieceLines < 40) { InterlockedIncrement(&g_aimPieceLines); logf("AIMPIECE vs %016llx unknown layout (%u of %u bytes known) -> left on the HUD sheet", vh, e.bytes, ad.ByteWidth); }
+            }
+        }
+    }
+    if (aimOn && (g_aimRoutedLast > 0 || f_aimRouted > 0) && g_aimNearLines < 80)
+    {   // AIMNEAR (AIMHUD3 diag): while the reticle is drawn, HUD-sheet draws left on the room sheet near the centre - one line per shader + kind
+        static unsigned long long s_seen[48]; static int s_seenN = 0;
+        float px = 9.0f, py = 9.0f; const char* kind = "unknown layout";
+        if (one && e.bytes >= 128) { px = m[27]; py = m[31]; kind = "single"; }
+        else if (layOk) { kind = "batch"; const float* X = m + lay[0] * 4; const float* Y = m + lay[1] * 4; if ((lay[0] + 1) * 4 <= (int)(e.bytes / 4) && (lay[1] + 1) * 4 <= (int)(e.bytes / 4)) { px = X[3]; py = Y[3]; } }
+        const bool nearC = (px > -0.4f && px < 0.4f && py > -0.4f && py < 0.4f) || px == 9.0f;
+        const unsigned long long key = vh ^ (unsigned long long)(kind[0]);
+        bool dup = false; for (int i = 0; i < s_seenN; ++i) dup |= s_seen[i] == key;
+        if (nearC && !dup && s_seenN < 48)
+        {
+            s_seen[s_seenN++] = key; InterlockedIncrement(&g_aimNearLines);
+            int marks = 0; for (int i = 0; i < (int)(e.bytes / 4); ++i) if (e.m[i] < -0.0005f && e.m[i] > -0.008f) ++marks;
+            logf("AIMNEAR flat vs %016llx %s at %.3f %.3f | %u bytes, mark-like values %d, reads marker scratch %d, aim scratch targets %d", vh, kind, px, py, e.bytes, marks, (int)mk_reads_scratch(c), g_aimScratchN);
+        }
+    }
+    if (mkIdle) return 0;   // (no marker on screen: as before AIMHUD)
     // MKTAG 2026-10-09 (JJ: "do you need to rethink your strategy?"): AKVR puts its own invisible colour mark on the HUD
     // parts marked "stays on its target"; every piece drawn from them carries it in its colour rows (VS cb0, per piece in
     // a batch) or in the pixel shader's constants. A piece goes to the marker sheet only if it carries the mark - position
@@ -5145,7 +5287,8 @@ template <class F> void mk_split_draw(ID3D11DeviceContext* c, ID3D11DepthStencil
     o_UpdSub(c, a, 0, nullptr, g_mkSplit.hud, 0, 0);   // (g_mkSplit's arrays are kCbShBytes long: MKEYE2 buffers may be bigger than .bytes)
     o_UpdSub(c, b, 0, nullptr, g_mkSplit.mk, 0, 0);
     o_VSCB(c, 0, 1, &a); draw();                                   // HUD sheet: everything but the marker
-    o_OMSetRT(c, 1, &g_mkRTV, dsv); o_VSCB(c, 0, 1, &b); draw();   // marker sheet: only the marker
+    ID3D11RenderTargetView* second = g_splitRTV ? g_splitRTV : g_mkRTV; g_splitRTV = nullptr;   // AIMHUD: or the aim sheet
+    o_OMSetRT(c, 1, &second, dsv); o_VSCB(c, 0, 1, &b); draw();   // marker sheet: only the marker
     o_OMSetRT(c, 1, &g_hudRTV, dsv); o_VSCB(c, 0, 1, &game);
     if (dsv) dsv->Release();
 }
@@ -5346,6 +5489,13 @@ extern "C" __declspec(dllexport) ID3D11Texture2D* akn_get_eye_marker_hud(int eye
 {
     if (routedLastFrame) *routedLastFrame = g_mkRoutedLast;
     return eye >= 0 && eye < 2 && akn_marker_eye_mode() ? g_mkEyeTex[eye] : nullptr;
+}
+// AIMHUD (AKVR): the turret reticle's sheet; routed = reticle draws in the last or the current HUD frame
+extern "C" __declspec(dllexport) ID3D11Texture2D* akn_get_aim_hud(long* routed)
+{
+    const LONG a = g_aimRoutedLast, b = f_aimRouted;
+    if (routed) *routed = a > b ? a : b;
+    return g_aimOn ? g_aimTex : nullptr;
 }
 extern "C" __declspec(dllexport) ID3D11Texture2D* akn_get_marker_hud(long* routedLastFrame)   // MARKSHEET (AKVR)
 {
@@ -6298,6 +6448,11 @@ DWORD WINAPI worker(LPVOID)
                           static int s_sdN = 0; if ((!s1 || ++s_sdN % 5 == 0) && akn_detective_active()) { using SdFn = const char* (*)(); static SdFn f = nullptr; static bool t = false; if (!t) { HMODULE hm = GetModuleHandleW(L"dinput8.dll"); f = hm ? (SdFn)GetProcAddress(hm, "akvr_scan_diag") : nullptr; t = hm != nullptr; } if (f) logf("  DETCALLOUT: %s | %s", s1 ? "box shown" : "no box", f()); }   // SCANLINE2: every 5 s while a box shows too
                           static LONG a7 = 0; const LONG s7 = c_scanExact - a7; a7 = c_scanExact;
                           hud_sig_sweep();   // HUDSIG
+                          {   static LONG b1 = 0, b2 = 0, b3 = 0; const LONG r1 = c_aimRouted - b1, r2 = c_aimSplit - b2, r3 = c_aimLost - b3; b1 = c_aimRouted; b2 = c_aimSplit; b3 = c_aimLost;   // AIMHUD
+                              static int s_aimN = 0;
+                              if (r1 || r3 || ++s_aimN % 30 == 0) { using AdFn = const char* (*)(); static AdFn f = nullptr; static bool t = false; if (!t) { HMODULE hm = GetModuleHandleW(L"dinput8.dll"); f = hm ? (AdFn)GetProcAddress(hm, "akvr_aim_diag") : nullptr; t = hm != nullptr; }
+                                  static LONG b4 = 0, b5 = 0; const LONG r4 = c_aimPaste - b4, r5 = c_aimScrMarked - b5; b4 = c_aimPaste; b5 = c_aimScrMarked;
+                                  logf("  AIMHUD: reticle draws to the aim sheet/s %ld (split %ld, glow pastes %ld; scratch draws marked %ld), marked draws left flat (unknown layout)/s %ld | %s", r1, r2, r4, r5, r3, f ? f() : "AKVR diag missing"); } }
                           if (s1 || s3) logf("  DETCALLOUT: scan box seen/s %ld, placed as a marker/s %ld (at the projected object point/s %ld, match %.3f), callout pieces routed/s %ld | depth passes/s %ld, answers %ld (sky %ld), distance %.0f units (hit %.0f), skip nearer than %.0f | %s | %s", s1, s2, s7, g_scanMatchD, s3, s4, s5, s6, g_scanDist, g_scanRaw, g_scanMin, g_scanDiag, g_scanNearDiag); }
                       if (g_mkEye) logf("  MKEYE: marker pieces drawn per eye/s %ld, glow pastes per eye/s %ld | HUD frames with markers placed %ld (markers %ld, faced to the camera %ld, mkfacepos %ld), no layout map %ld, no pair view %ld", dp, dw, df, dk, dfc, (long)g_mkFacePos, dm, dv);
                       static LONG lk1 = 0, lk2 = 0, lk3 = 0, lfl = 0;   // MKEYE2

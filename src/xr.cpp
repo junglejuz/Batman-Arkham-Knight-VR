@@ -51,6 +51,8 @@ float akvr_head_pos_scale();   // camera.cpp: game units per metre (world scale)
 #include <windows.h>
 
 int akvr_hud_target_points(float* xy, int max, int rtW, int rtH, float* off, float* xf);   // earlyres.cpp: TARGETANCHOR (MARKERCUT)
+bool akvr_cam_aim_head_now();                        // camera.cpp AIMTRIGGER2: the head is in the game's aim now (AIMHUD)
+unsigned long long akvr_gamepad_left_trigger_ms();   // gamepad.cpp AIMTRIGGER (AIMHUD)
 namespace {
 XrInstance g_inst = XR_NULL_HANDLE;
 XrSystemId g_sys = XR_NULL_SYSTEM_ID;
@@ -2350,6 +2352,8 @@ bool scanplus_build() {
 }
 extern "C" int akvr_scan_corners(float *out8);   // earlyres.cpp SCANBOX
 extern "C" long akvr_scan_plus_draws_c() { return g_scanPlusDraws; }
+long g_aimHudFrames = 0, g_aimHudHead = 0;   // AIMHUD: frames the aim sheet was drawn / of them hung on the head
+extern "C" long akvr_aim_hud_frames_c(long *headLocked) { if (headLocked) *headLocked = g_aimHudHead; return g_aimHudFrames; }
 bool scanline_build() {
   if (g_scanLineState) return g_scanLineState == 1;
   g_scanLineState = -1;
@@ -3099,6 +3103,46 @@ bool hud_in_eyes_body(ID3D11Texture2D *sbs, const XrPosef &headPose) {
       }
     }
   }
+  // AIMHUD 2026-10-18 (JJ: the Batmobile's turret aims with the head while the left trigger is held, "but the HUD element is not
+  // moving with it ... should be independent of the rest of the HUD and should move around with your head movements"): AKN puts the
+  // turret reticle's pieces on their own aim sheet, unmoved (earlyres.cpp kAimTag). While the head is in the game's aim, the game
+  // laid that sheet out for a camera that holds the head, so it hangs on the HEAD: the HUD sheet's own size and distance, square to
+  // the face, its centre on the head's forward direction. Otherwise it stays on the room HUD plane, exactly where it was.
+  ID3D11ShaderResourceView *aimSRV = nullptr; XrVector3f aimCorner[4];
+  if (!cut && !trFull && !keyNow) {
+    using AimHudFn = ID3D11Texture2D *(*)(long *); static AimHudFn s_ah = nullptr; static bool s_aht = false;
+    if (!s_aht) { HMODULE am = GetModuleHandleW(L"XINPUT9_1_0.dll"); if (am) s_ah = (AimHudFn)GetProcAddress(am, "akn_get_aim_hud"); s_aht = am != nullptr; }
+    long routed = 0; ID3D11Texture2D *at = s_ah ? s_ah(&routed) : nullptr;
+    static ID3D11Texture2D *s_aSrc = nullptr; static ID3D11ShaderResourceView *s_aSRV = nullptr;
+    if (at != s_aSrc) {
+      if (s_aSRV) { s_aSRV->Release(); s_aSRV = nullptr; }
+      s_aSrc = at;
+      if (at) {
+        D3D11_TEXTURE2D_DESC md{}; at->GetDesc(&md);
+        D3D11_SHADER_RESOURCE_VIEW_DESC vd{}; vd.Format = md.Format == DXGI_FORMAT_R8G8B8A8_TYPELESS ? DXGI_FORMAT_R8G8B8A8_UNORM : md.Format;
+        vd.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D; vd.Texture2D.MipLevels = 1;
+        if (FAILED(g_device->CreateShaderResourceView(at, &vd, &s_aSRV))) s_aSRV = nullptr;
+      }
+    }
+    if (s_aSRV && routed > 0) {
+      aimSRV = s_aSRV;
+      for (int k = 0; k < 4; ++k) aimCorner[k] = corner[k];
+      ++g_aimHudFrames;
+      if (akvr_cam_aim_head_now() && akvr_gamepad_left_trigger_ms() < 300) {
+        const XrVector3f H = headPose.position;
+        float dist = sqrtf((C.x - H.x) * (C.x - H.x) + (C.y - H.y) * (C.y - H.y) + (C.z - H.z) * (C.z - H.z));
+        dist = dist < 0.3f ? 0.3f : (dist > 20.0f ? 20.0f : dist);
+        const XrVector3f f = quat_rotate(headPose.orientation, XrVector3f{0.0f, 0.0f, -dist});
+        const XrVector3f Rh = quat_rotate(headPose.orientation, XrVector3f{hw, 0, 0}), Uh = quat_rotate(headPose.orientation, XrVector3f{0, hh, 0});
+        const XrVector3f Ch{H.x + f.x, H.y + f.y, H.z + f.z};
+        aimCorner[0] = {Ch.x - Rh.x + Uh.x, Ch.y - Rh.y + Uh.y, Ch.z - Rh.z + Uh.z};
+        aimCorner[1] = {Ch.x + Rh.x + Uh.x, Ch.y + Rh.y + Uh.y, Ch.z + Rh.z + Uh.z};
+        aimCorner[2] = {Ch.x - Rh.x - Uh.x, Ch.y - Rh.y - Uh.y, Ch.z - Rh.z - Uh.z};
+        aimCorner[3] = {Ch.x + Rh.x - Uh.x, Ch.y + Rh.y - Uh.y, Ch.z + Rh.z - Uh.z};
+        ++g_aimHudHead;
+      }
+    }
+  }
   for (int e = 0; e < 2; ++e) {
     XrPosef ep; XrFovf f; hie_eye_view(e, headPose, ep, f);
     const float tl = tanf(f.angleLeft), tr = tanf(f.angleRight), tu = tanf(f.angleUp), td = tanf(f.angleDown);
@@ -3175,6 +3219,22 @@ bool hud_in_eyes_body(ID3D11Texture2D *sbs, const XrPosef &headPose) {
       g_ctx->Draw(4, 0);
       g_ctx->PSSetShaderResources(0, 1, &g_hieSRV);
       ++g_hieEyeDraws;
+    }
+    if (aimSRV) {   // AIMHUD: the turret reticle's sheet on its plane (head or room), in this eye
+      float ca[16];
+      for (int k = 0; k < 4; ++k) {
+        const XrVector3f v = quat_rotate(inv, XrVector3f{aimCorner[k].x - ep.position.x, aimCorner[k].y - ep.position.y, aimCorner[k].z - ep.position.z});
+        const float w = -v.z;
+        ca[k * 4 + 0] = (2.0f * v.x + (tr + tl) * v.z) / (tr - tl);
+        ca[k * 4 + 1] = (2.0f * v.y + (tu + td) * v.z) / (tu - td);
+        ca[k * 4 + 2] = 0.5f * w;
+        ca[k * 4 + 3] = w;
+      }
+      g_ctx->VSSetShader(g_hieVS, nullptr, 0); g_ctx->VSSetConstantBuffers(0, 1, &g_hieCB); g_ctx->PSSetShader(g_hiePS, nullptr, 0);
+      g_ctx->UpdateSubresource(g_hieCB, 0, nullptr, ca, 0, 0);
+      g_ctx->PSSetShaderResources(0, 1, &aimSRV);
+      g_ctx->Draw(4, 0);
+      g_ctx->PSSetShaderResources(0, 1, &g_hieSRV);
     }
     // SCANHUD 2026-10-13 (JJ: "the lines and the box should all be at HUD depth for detective mode"; drones' boxes "miss
     // the mark a little"): the callout's box is a HUD piece on AKN's marker sheet; it is drawn ON THE HUD PLANE, shifted so the

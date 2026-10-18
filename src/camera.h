@@ -103,6 +103,10 @@ void           akvr_head_pitch_unlink_set(int mode); // 0 level, 1 tilt + level 
 int            akvr_head_pitch_unlink();
 void           akvr_head_stick_height_set(float m); // STICKHEIGHT: extra lift, metres at full stick
 float          akvr_head_stick_height();
+void           akvr_cam_tp_pitch_max_set(float deg);   // TPPITCH: steepest third-person look-down (60 = the game's own)
+float          akvr_cam_tp_pitch_max();
+long           akvr_cam_tp_pitch_holds();
+long           akvr_cam_tp_no_body();
 // The other two axes of the same offset. All three ride the FINALIZED camera basis,
 // so they stay glued to the camera however it is pitched or rolled.
 void           akvr_head_offset_up_set(float v);  // + = viewpoint moves UP

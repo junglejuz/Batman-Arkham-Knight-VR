@@ -2626,3 +2626,119 @@ D. PANELWORDS for the AKVR / AKN panel (peer session's request; JJ "some of the 
 - HEADSET 04:1x (JJ): face-Batman ran only ~7 s of gameplay (log), then the panel went back to "always upright"; JJ: "Yes, I want
   always upright" -> default spriteaxes 2 (panel too). Trade-off told: upright cards turn with the camera heading; upright AND facing
   Batman per puff would need a rewritten sprite shader (per-particle position is only inside the shader) - offered for later.
+
+## AIMHUD - Batmobile turret reticle follows the head (JJ 2026-10-18: "the Batmobile is aiming its turret when you have the left
+## trigger pressed. It's aiming the turret with your head movements, but the HUD element is not moving with it. The HUD element for the
+## Batmobile's weapons should be independent of the rest of the HUD and should move around with your head movements")
+Looked up: akvr/CLAUDE_HANDOFF.md AIMHEAD / AIMTRIGGER / AIMTRIGGER2 / AIMRETICLE / AIMSHOT / RETICLETICK (2026-10-03, geo-11: the reticle =
+part `.../0.0.0.0.1.0.0.0` with 96 children, centred at stage 512,384, shown only while aiming; fixed by ticking K13/... "on target" =
+drawn in the game picture, head-locked because the game camera holds the head while aiming); VR_WORLD_MARKERS_GUIDE §6 (aim reticles,
+markers placed without a projection call); NOTES DETCALLOUT / SCANHUD / SCANOWN (own colour mark -> pieces routed unmoved to their own
+sheet -> AKVR draws that sheet on a moved HUD plane); memory jj-drives-i-record, panel-labels-plain-no-bad-switches. Playbook @ b955f224
+04-ui-and-hud "Three ways to place a HUD in stereo" (head-locked layer is legitimate for an aim reticle that IS the head's aim). Nothing
+else in the fleet on a head-aimed gun reticle.
+STATIC (JJ's capture 20:54:56 today, akvr_captures\20261018_205456_148 + akn c205456): head aiming ON at capture, but the reticle part
+(index 1404, `K?/0.0.0.0.1.0.0.0`, 96 kids, parent at 10240,7680 twips = stage centre) was HIDDEN - the panel took the pad, so the game
+saw the trigger released (AIMSHOT lesson). Its container got no saved id ("K?"), so JJ's old `K13/...:...:1` tick never applies in the
+native build: the reticle is on the room-fixed HUD sheet. Same path, saved ticked: `K4/0.0.0.0.1.0.0.0` = the 74-entry Batmobile world
+marker list (2026-10-02) - must NOT be caught.
+Fix AIMHUD (both DLLs):
+- AKVR earlyres: candidate = key ends `/0.0.0.0.1.0.0.0` with >= 48 children; gets its own mark kAimTag (-4/512) instead of a room
+  mark. Behaviour check: a candidate seen visible for 3 s with the left trigger released (> 0.4 s) is ruled out for the session (by
+  node) - the marker list shows while driving, the reticle only while aiming. Kept out of the marker target points.
+- AKN probe: pieces carrying kAimTag (single, batch, faded) go unmoved to an own AIM SHEET (cleared with the HUD sheet), before the
+  marker rules (works with no marker on screen). Unknown-layout draws with the mark stay flat and are counted ("lost").
+- AKVR xr hud_in_eyes: the aim sheet is drawn in each eye on a plane of the HUD sheet's own size at the HUD's distance, SQUARE TO THE
+  FACE and centred on the head's forward direction while the head is in the game's aim (camera.cpp read-back flag = left trigger held
+  + aim with head on); otherwise on the room HUD plane exactly where it was (nothing changes outside aiming).
+## TEST PLAN AIMHUD (JJ drives, one launch, normal launcher)
+| # | step | proves | judge |
+|---|---|---|---|
+| 1 | drive the Batmobile 10 s, no trigger | the marker list is ruled out, markers unchanged | log "AIMHUD: ... ruled out" names a K4-type part; distance markers still on objects |
+| 2 | hold left trigger (battle mode), look around with the head | reticle follows the head, rest of HUD stays in the room | JJ; log "aim pieces routed/s" > 0, "head-locked frames" > 0 |
+| 3 | still aiming, turn the head far left/right/up | reticle stays centred on the view, fuses (one image) | JJ |
+| 4 | release trigger | reticle gone, nothing left behind | JJ; routed/s back to 0 |
+| 5 | command `aimhud 0` while aiming (control) | old behaviour: reticle on the room HUD | JJ / log |
+| 6 | if the reticle shows a glow copy left in the room | the glow paste is an unknown-layout draw | log "lost/s" > 0 -> next: route its paste like MKGLOW |
+Follow-ups ready: reticle slightly above the aim point -> it is the game's own layout offset (part at -400 twips); if JJ wants it dead
+centre, shift by the part's drawn point. Enemy lock brackets inside the same part (if any) would also hang on the head plane at HUD size,
+not on the enemies -> next step would be sizing the plane to the game's lens.
+### AIMHUD BUILD 2026-10-18 21:21 (STATIC: both DLLs built clean, exports present, installed; before: akvr\diagnostics\before-AIMHUD-20261018)
+AKVR earlyres (aim_candidate / kAimTag / 3 s rule-out / akvr_aim_tag_value, akvr_aim_set, akvr_aim_diag), xr.cpp hud_in_eyes (aim sheet
+drawn per eye after the eye marker layers; head plane while akvr_cam_aim_head_now() && trigger < 300 ms), AKN probe (aim sheet g_aimTex,
+routing before the marker rules, split target g_splitRTV, akn_get_aim_hud, command "aimhud 0|1", per-second "AIMHUD:" line with AKVR's
+diag). Not run yet - no fake-headset run (JJ 10-14: no fake tests, ask him). Waiting for JJ's TEST PLAN AIMHUD run.
+### AIMHUD RESULT 1 + AIMHUD2 (2026-10-18 21:2x)
+- HEADSET (JJ): "only partially moving with the head ... the inner reticle and the very outer horizontal lines at the top and the
+  bottom are still static on the main HUD".
+- LIVE (akn_log 21:23-21:25): AKVR "candidates 0, frames shown 0" all session = the reticle part was never in the list; yet draws were
+  routed to the aim sheet already at 21:24:01 and while driving with "head in the aim now 0" -> the mark -4/512 (= -1/128) collided with
+  the game's own HUD constants (vs fd60f2d764b91756 single, 05154232 batch). What moved with the head = those coincidental pieces.
+- Cause of "candidates 0" (SOURCE): the HUD tree is read only 0.5 s and 3 s into a gameplay stretch (and on a capture); the reticle's
+  ~96 children are made when battle mode first starts, so at those reads it had < 48 children. JJ's 20:54 capture re-read the tree.
+- AIMHUD2 (installed 21:27): kAimTag = -0.0047131 (odd), AKN matches it exactly (1e-7; faded 1e-5 relative); AKVR re-reads the tree
+  0.4 s into a left-trigger hold when no reticle part is listed (once per hold, >= 5 s apart; ~9 ms one-off). Diag "tree re-read at a
+  trigger hold N". Same test plan AIMHUD.
+### AIMHUD2 RESULT + AIMHUD3 (2026-10-18 21:3x)
+- HEADSET (JJ): "still one element of the reticle, not the very central one, but the one just outside of that, which is still fixed to
+  the rest of the HUD".
+- LIVE (akn_log 21:30-21:32): the part is found now (candidates 1, K13/0.0.0.0.1.0.0.0, tree re-read at the hold 1, never ruled out),
+  ~3,000 reticle draws/s to the aim sheet, on the head every frame while aiming. Marked draws of unknown layout left flat: 2/s steady,
+  86-133/s at aim starts. AIMPIECE lines were used up in the first second - no shader list for the ring.
+- Ranked causes: (A) the ring has a Flash filter (glow): drawn into a scratch target, the blurred copy pasted onto the HUD sheet, mostly a
+  CACHED copy (MKGLOW4) whose paste does not carry the mark; (B) the ring is a SIBLING part under K13/0.0.0.0.1.0.0 (5 children), unmarked.
+- AIMHUD3 (both DLLs, installed 21:36): (A) default - aim scratch chain like MKGLOW (targets written by aim-marked pieces or copied from
+  one; cleared/other writes unmark; a HUD-sheet draw reading one goes whole to the aim sheet; counter "glow pastes"); (B) live switch
+  AKN "aimgroup 1" = the reticle part's PARENT carries the mark. Diag AIMNEAR: while the reticle draws, flat HUD-sheet draws near the centre
+  (one line per shader + kind, 80 max).
+## TEST PLAN AIMHUD3 (JJ drives, one launch)
+| # | step | proves | judge |
+|---|---|---|---|
+| 1 | Batmobile, hold left trigger ~1 s first (tree re-read), look around | (A) fixed? | JJ: ring follows; log "glow pastes" > 0 |
+| 2 | if the ring still stays: I send `aimgroup 1` while JJ aims | (B) | JJ: ring follows; check nothing else (non-reticle) moved with it |
+| 3 | release trigger | nothing left behind | JJ |
+| 4 | log AIMNEAR lines | what is still flat near the centre | shader list for the next step if both fail |
+### AIMHUD3 RESULT (JJ 2026-10-18 ~22:0x, HEADSET): "That's better" - the ring follows. LIVE: glow pastes 214-267/s to the aim sheet at
+aim starts (cause A, the cached glow copy); aimgroup never used. CONFIRMED (JJ), aimgroup stays a command only.
+### PITCHPANEL 2026-10-18 (JJ: "we need an option in the VR overlay to decouple the pitch from the camera")
+The existing PITCHUNLINK mode 0 (view level, game tilt ignored, right stick up/down = camera height, STICKHEIGHT) was advanced-panel
+only; now in VIEW: "decouple pitch: keep the view level ..." + its height slider. Default unchanged (pitchunlink=2, follows the game's
+tilt). AKVR only, installed. Note: while head-aiming in the Batmobile with it on, the view ignores the game's pitch but the turret still
+aims along game pitch + head - if the reticle and the shots part vertically, that is why.
+### HEIGHTLIMIT 2026-10-18 (JJ with the decouple tick: "the camera is going up way too high and also going underneath the floor. It needs
+### to be limited. I would suggest checking other mods for how they limit it")
+Looked up: vrframework guide 09 s7 (decoupled pitch in Anvil / Valhalla and Starfield: strip the pitch, KEEP the engine camera's
+translation - no added height); playbook pattern-catalog aim-mode entry (yaw / pitch ownership as settings); SKVR / DS3VR "tilt with camera
+height" (a tilt strength, no height added); akvr PLAYBOOK_REVIEW HEIGHTPITCH / LAYERS 2026-09-26 (AK's boom already rises / drops with the
+stick: -19.6 deg -> +236 uu, +57 deg -> -232 uu; STICKHEIGHT added +-2 m x sin(pitch) on top because JJ found plain mode 0 "dead").
+Cause: stick up = the game's boom near the ground, then our -1.6 m = under the floor; stick down = boom rise + 1.6 m.
+Fix (AKVR camera.cpp, hooks.cpp; installed): the extra lift is never negative (the game's own camera + its collision is the floor limit,
+as in the other mods), default 0.5 m, max 1.5 m, eased (15 %/frame), none while head-aiming (g_rbHead). Setting key stickheight2 (JJ's
+old stickheight=2.00 not carried over). Panel: "extra camera height when the game camera looks down, up to (m, 0 = like other VR mods)".
+If it still rises too high at 0: that is AK's own boom - next option would be a scale on the game's own height change.
+### TPPITCH + TPOFFSET 2026-10-18 23:59 (AKVR only, built + installed, JJ untested)
+JJ: "Don't let the camera come completely over his head. Stop it, like well before that. Also, add some camera controls to third person
+to allow the camera to be shifted left, right, back, forwards, up and down to taste".
+- TPPITCH (camera.cpp tp_pitch_limited): AK's boom orbits with the game pitch (PLAYBOOK_REVIEW HEIGHTPITCH: -55 deg = over Batman). The
+  CAMRESTORE hand-back now gives the game a pitch no steeper than -tppitchmax (default 30 deg; 60 = off), keeping the game's own wrap
+  convention, so its boom stops rising there. Not in first person, menus, the frozen screen, or head-aiming (that branch keeps the head).
+  ASSUMPTION to verify: the game's next camera update starts from the handed-back rotation (AIMHEAD proved it does for aim). If JJ still
+  sees the camera swing over him, the boom reads another pitch (the controller's) -> clamp there instead.
+- TPOFFSET: the "where you stand" offsets (shoulder / offsetup / offsetfwd, game units, +-300) always apply now (up / forward were tied
+  to the old camfix switch, off) and move along the game camera's LEVEL heading + world up (were the head-rotated camera axes); none in
+  menus / frozen screen / first person. Panel VIEW: pitch slider + "third-person camera position" (open by default). JJ's saved offsets 0.
+### TPPITCH RESULT + TPPITCH2 + VIEWTIDY (2026-10-19 00:11, AKVR only, installed, JJ untested)
+- HEADSET (JJ): "Stop the camera before it swings over Batman doesn't work at all. The slider does nothing." + "clean up these options
+  in the view menu".
+- Cause (inferred, SOURCE): the CAMRESTORE hand-back is read by the turret / aim (AIMHEAD), not by AK's boom - the boom builds from the
+  controller's own rotation (UE3 ProcessViewRotation / control rotation, the UEVR route; playbook 17 / 11 ProcessViewRotation). Looked
+  up: vrframework guide 09 s7, playbook 17-teardown-fc2vr ProcessViewRotation, uevr-afw IXRTrackingSystemHook control rotation.
+- TPPITCH2 (camera.cpp tp_orbit_limit, called after smooth_cb's smoothing): position domain. Pivot = the point of the camera's view ray
+  nearest Batman's head (CHARPOS, fp_body); past the limit the camera is put on the same orbit at the limit angle (same distance), added
+  to g_smoothApplied (CAMRESTORE takes it off for the game). The view's tilt (b2pitchV) and the STICKHEIGHT lift use the limited pitch.
+  Only with Batman found (not the Batmobile / cutscenes), not first person / menus / frozen screen / head-aiming. CAMRESTORE clamp removed.
+  Panel shows "LIMITING" while active; status line "camera look-down limit (TPPITCH2): ... frames limited N, no Batman found M".
+  Fallback if wrong: find the controller rotation (runtime scan of the PlayerController for the pitch / yaw pair) and limit there.
+- VIEWTIDY (hooks.cpp): VIEW grouped under headings First person / Third-person camera / Batmobile / Size and picture; labels shortened
+  ("keep the view level (decouple pitch)", "lowest the camera may look down at Batman", "ease the game's fast camera swings", "camera
+  position", "aim with your head while holding the left trigger", "picture size per eye (restart)"); same settings.

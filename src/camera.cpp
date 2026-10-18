@@ -840,7 +840,14 @@ namespace
     volatile LONG g_exRecSeq = 0;
     LONG g_exWrites = 0;
     void exact_head(uintptr_t cam);  // below decompose_basis
+    void tp_orbit_limit(uintptr_t cam);   // TPPITCH2 (below)
+    void smooth_cb_body(uintptr_t cam);
     void __fastcall smooth_cb(uintptr_t cam)
+    {
+        smooth_cb_body(cam);
+        if (!g_fpActive) { __try { tp_orbit_limit(cam); } __except (EXCEPTION_EXECUTE_HANDLER) {} }   // TPPITCH2: after the smoothing
+    }
+    void smooth_cb_body(uintptr_t cam)
     {
         __try
         {
@@ -964,7 +971,54 @@ namespace
     // Extra lift = -sin(game pitch) x this many metres (at the world scale, via the lean
     // scale), on top of the game's own boom: stick fully down (-55 deg) = +0.82 x value.
     // Mode 0, gameplay only. The view never tilts, so it adds no roll.
-    float g_stickHeightM = 2.0f;
+    // HEIGHTLIMIT 2026-10-18 (JJ with the decouple tick in the panel: "the camera is going up way too high and also going underneath the
+    // floor. It needs to be limited ... check other mods"). Other mods' decoupled pitch (vrframework guide 09 s7: Anvil / Valhalla,
+    // Starfield; UEVR) adds NO height - the camera stays where the game's rig puts it, and the game's own collision keeps it out of the
+    // floor. Ours added +-2 m x sin(tilt) on top: stick up = the boom already near the ground, then 1.6 m lower = under the floor. Now:
+    // never below the game's own camera (lift >= 0), a small rise only (default 0.5 m, max 1.5), eased, none while head-aiming.
+    float g_stickHeightM = 0.5f;
+    // TPPITCH 2026-10-18 (JJ: "Don't let the camera come completely over his head. Stop it, like well before that"). AK's camera boom
+    // orbits: the further the game camera looks down, the higher it swings, up to right over Batman (about -55 deg).
+    // TPPITCH2 2026-10-19 (JJ: "doesn't work at all. The slider does nothing"): handing the game back a limited camera pitch (CAMRESTORE)
+    // changed nothing - the boom is built from the controller's own aim rotation, not from the camera we hand back (the turret reads the
+    // camera, a different reader). Now in the position domain, independent of the game's internals: the camera sits on its orbit around
+    // a pivot on its own view ray (the point of the ray nearest Batman's head); past the limit it is put back on that orbit where it
+    // would be at the limit angle (same pivot, same distance: lower and further back) and the view's tilt is limited the same way.
+    // Continuous at the limit (no correction there). Third person on foot in play only (Batman found; not first person, menus, the
+    // frozen screen, head-aiming). 60 = the game's own.
+    float g_tpPitchMax = 30.0f;   // steepest look-down, degrees
+    long  g_tpPitchHolds = 0, g_tpNoBody = 0;
+    bool tp_limit_on()
+    {
+        return g_tpPitchMax < 59.5f && !g_fpActive && !g_rbHead &&!akvr_xr_screen_frozen() && !akvr_xr_main_menu_detected() && !akvr_xr_menu_scene();
+    }
+    void tp_orbit_limit(uintptr_t cam)
+    {
+        if (!tp_limit_on() || !g_bYaw || !g_bPitch) return;
+        g_charWanted = 1;   // CHARPOS: Batman's head every frame from now on
+        const float lim = -g_tpPitchMax * (3.14159265f / 180.0f);
+        const float yaw = (float)(*g_bYaw) * ROT2DEG * (3.14159265f / 180.0f);
+        float pd = fmodf((float)(*g_bPitch) * ROT2DEG, 360.0f); if (pd >= 180.0f) pd -= 360.0f; else if (pd < -180.0f) pd += 360.0f;
+        const float pitch = pd * (3.14159265f / 180.0f);
+        if (pitch >= lim) return;
+        if (!g_charOk) { ++g_tpNoBody; return; }   // no Batman (Batmobile, cutscene): the game's own camera
+        float* P = (float*)(cam + OFF_X);
+        const float F[3] = { cosf(pitch) * cosf(yaw), cosf(pitch) * sinf(yaw), sinf(pitch) };
+        const float L[3] = { cosf(lim) * cosf(yaw), cosf(lim) * sinf(yaw), sinf(lim) };
+        const float d = (g_charHead[0] - P[0]) * F[0] + (g_charHead[1] - P[1]) * F[1] + (g_charHead[2] - P[2]) * F[2];
+        if (d < 30.0f || d > 3000.0f) return;   // Batman not ahead of the camera on its ray: leave it
+        for (int i = 0; i < 3; ++i)
+        {
+            const float q = P[i] + F[i] * d;            // the pivot on the view ray
+            const float nw = q - L[i] * d;               // the same distance back along the limited direction
+            g_smoothApplied[i] += nw - P[i];             // CAMRESTORE takes it off again for the game
+            P[i] = nw;
+        }
+        ++g_tpPitchHolds;
+    }
+    // TPOFFSET 2026-10-18 (JJ: "add some camera controls to third person to allow the camera to be shifted left, right, back, forwards,
+    // up and down to taste"): the "where you stand" offsets now always apply (up / forward were tied to the old camera-fix test switch)
+    // and move along the GAME camera's heading - level right, level forward, world up - so they never swing with the head.
     // The other two axes of the same camera offset (2026-08-05). Same units, same
     // finalized camera basis: + = up, + = forward (toward what you are looking at).
     float g_offUpUU    = 0.0f;
@@ -1981,6 +2035,8 @@ void akvr_head_update()
     // frame from yaw/pitch only, so that roll 180 was dropped and the world turned upside down. Keep the base in the
     // game's own form (the nearest one), which build_basis handles past the pole.
     euler_nearest(b2yaw, b2pitch, b2roll, byaw, bpitch, broll);
+    // TPPITCH2: the view's tilt limited like the camera's orbit (only matters when the view follows the game's tilt)
+    const float b2pitchV = tp_limit_on() && g_charOk && b2pitch < -g_tpPitchMax * DEG2RAD ? -g_tpPitchMax * DEG2RAD : b2pitch;
 
     // Head offset: strip ONLY the recenter heading (delta = Ry(-refYaw) * cur), which
     // leaves pitch/roll gravity-absolute — see g_refYawDeg. Note neither plain
@@ -2085,7 +2141,7 @@ void akvr_head_update()
         // game's full pitch kept, head turns rolled Batman - the same geometry as the
         // original gameplay complaint). Only a frozen screen keeps its framing as-is.
         const bool unlink = g_pitchUnlink != 0 && !screenFrozen && !akvr_xr_main_menu_detected();
-        const float basePitch = b2pitch * (screenFrozen || unlink ? 1.0f : g_basePitchKeep);
+        const float basePitch = b2pitchV * (screenFrozen || unlink ? 1.0f : g_basePitchKeep);
         V3 bf, brv, bu;
         build_basis(b2yaw, basePitch, 0.0f, bf, brv, bu);
         const float pitchDeg = fabsf(basePitch * RAD2DEG);
@@ -2143,7 +2199,7 @@ void akvr_head_update()
     const bool tipped = g_pitchUnlink == 2 && !screenFrozen;
     if (tipped)
     {
-        V3 bf, br, bu; build_basis(b2yaw, b2pitch, 0.0f, bf, br, bu);
+        V3 bf, br, bu; build_basis(b2yaw, b2pitchV, 0.0f, bf, br, bu);   // TPPITCH2
         V3 hf, hr, hu; build_basis(gy, -gp, -gr, hf, hr, hu);  // -gp: PITCH_SIGN note; -gr: ROLLSIGN
         auto toCam = [&](V3 v) { return v_add(v_add(v_scale(bf, v.x), v_scale(br, v.y)), v_scale(bu, v.z)); };
         fwd = v_norm(toCam(hf)); right = v_norm(toCam(hr)); up = v_norm(toCam(hu));
@@ -2227,7 +2283,7 @@ void akvr_head_update()
         const float t = 1.0f;
         if (t > 0.0f)
         {
-            V3 bf, br, bu; build_basis(b2yaw, b2pitch, 0.0f, bf, br, bu);
+            V3 bf, br, bu; build_basis(b2yaw, b2pitchV, 0.0f, bf, br, bu);   // TPPITCH2
             const float upW = upAmt * g_posScale;
             const float tx = bf.x * fwdW + br.x * rightW + bu.x * upW;
             const float ty = bf.y * fwdW + br.y * rightW + bu.y * upW;
@@ -2276,7 +2332,11 @@ void akvr_head_update()
     // is exactly why it is worth being able to prove rather than argue. The OFF branch
     // is the pre-2026-08-05 expression, character for character.
     const float stickLiftUU = (g_pitchUnlink == 0 && g_basePitchKeep < 0.001f && !screenFrozen && !g_fpActive)   // FIRSTPERSON: no lift
-                            ? -sinf(b2pitch) * g_stickHeightM * g_posScale : 0.0f;   // STICKHEIGHT
+                            ? -sinf(b2pitchV) * g_stickHeightM * g_posScale : 0.0f;   // STICKHEIGHT (TPPITCH2: limited)
+    static float s_lift = 0.0f;   // HEIGHTLIMIT: rise only, eased; none while the head aims (the read-back pitch holds the head)
+    const float liftWant = (stickLiftUU > 0.0f && !g_rbHead) ? stickLiftUU : 0.0f;
+    s_lift += (liftWant - s_lift) * 0.15f;
+    const float stickLiftUseUU = s_lift;
     // MENUSIDE5 2026-10-10 (JJ: "when it does open the first menu screen and Batman appears, he's in the center of the
     // screen. Then he quickly pops over to the right where he belongs"): the slide waited for "MAIN MENU on" (3 s of
     // the menu scene). Now from the menu scene's first frame (start-up phase, camera live), eased over ~0.3 s.
@@ -2289,22 +2349,14 @@ void akvr_head_update()
     oy +=  cy * menuSideUU;
     // FIRSTPERSON: the third-person framing offsets (shoulder, up, forward) are not used at Batman's head
     const float fpShoulder = g_fpActive ? 0.0f : g_shoulderUU, fpUp = g_fpActive ? 0.0f : g_offUpUU, fpFwd = g_fpActive ? 0.0f : g_offFwdUU;
-    if (g_camFixOn)
-    {
-        ox += gRight.x * fpShoulder + gUp.x * fpUp + gFwd.x * fpFwd;
-        oy += gRight.y * fpShoulder + gUp.y * fpUp + gFwd.y * fpFwd;
+    {   // TPOFFSET: level right (-sin, cos) and forward (cos, sin) of the game's heading, world up; none in menus / the frozen screen
+        const bool tpOk = !screenFrozen && !akvr_xr_main_menu_detected() && !akvr_xr_menu_scene();
+        const float sR = tpOk ? fpShoulder : 0.0f, sF = tpOk ? fpFwd : 0.0f, sU = tpOk ? fpUp : 0.0f;
+        ox += -sy * sR + cy * sF;
+        oy +=  cy * sR + sy * sF;
         *g_dPosX = ox;
         *g_dPosY = oy;
-        *g_dPosZ = leanZ + gRight.z * (eyeUU + fpShoulder)
-                 + gUp.z * fpUp + gFwd.z * fpFwd + stickLiftUU;   // LEANTIP: leanZ (was upAmt * g_posScale)
-    }
-    else
-    {
-        ox += gRight.x * fpShoulder;
-        oy += gRight.y * fpShoulder;
-        *g_dPosX = ox;
-        *g_dPosY = oy;
-        *g_dPosZ = leanZ + gRight.z * (eyeUU + fpShoulder) + stickLiftUU;   // LEANTIP
+        *g_dPosZ = leanZ + gRight.z * eyeUU + sU + stickLiftUseUU;   // LEANTIP; HEIGHTLIMIT; TPOFFSET
     }
 
     // --- Trace ---------------------------------------------------------------
@@ -2550,8 +2602,12 @@ void  akvr_head_pitch_keep_set(float v) { g_basePitchKeep = v < 0.0f ? 0.0f : (v
 float akvr_head_pitch_keep() { return g_basePitchKeep; }
 void  akvr_head_pitch_unlink_set(int mode) { g_pitchUnlink = mode < 0 ? 0 : (mode > 2 ? 2 : mode); }
 int   akvr_head_pitch_unlink() { return g_pitchUnlink; }
-void  akvr_head_stick_height_set(float m) { g_stickHeightM = m < 0.0f ? 0.0f : (m > 8.0f ? 8.0f : m); }
+void  akvr_head_stick_height_set(float m) { g_stickHeightM = m < 0.0f ? 0.0f : (m > 1.5f ? 1.5f : m); }   // HEIGHTLIMIT: max 1.5 m
 float akvr_head_stick_height() { return g_stickHeightM; }
+void  akvr_cam_tp_pitch_max_set(float d) { g_tpPitchMax = d < 10.0f ? 10.0f : (d > 60.0f ? 60.0f : d); }   // TPPITCH
+float akvr_cam_tp_pitch_max() { return g_tpPitchMax; }
+long  akvr_cam_tp_pitch_holds() { return g_tpPitchHolds; }
+long  akvr_cam_tp_no_body() { return g_tpNoBody; }
 void  akvr_head_shoulder_add(float d) { akvr_head_shoulder_set(g_shoulderUU + d); }
 
 void  akvr_head_offset_up_set(float v)

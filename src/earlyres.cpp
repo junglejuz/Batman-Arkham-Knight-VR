@@ -50,9 +50,12 @@
 #include "camera.h"
 #include "xr.h"
 #include "hud_projection.h"
+#include "gamepad.h"   // AIMHUD: akvr_gamepad_left_trigger_ms
 void akvr_hud_layers_hook_vtable(void** vt);   // HUDLAYERS, defined below
 void akvr_hud_layers_discover();
 void akvr_hud_layers_discover_quick();
+bool akvr_aim_part_live();          // AIMHUD2: a turret reticle part is in the list (defined below)
+volatile long g_aimRereads = 0;     // AIMHUD2: tree re-reads at a trigger hold
 bool akvr_hud_room_all();   // ROOMALL
 const char* akvr_hud_layer_xf_list();
 #include <cstddef>
@@ -3156,6 +3159,15 @@ void akvr_hud_tick()
             if (!want && !g_hudMarksAt) g_hudMarksAt = 1;   // MARKFIRST: nothing to mark, nothing to wait for
             if (!done && GetTickCount64() - since > 3000)
             { done = true; if (want) akvr_hud_layers_discover_quick(); }
+            // AIMHUD2 2026-10-18 (JJ: only part of the Batmobile HUD moved with the head; log: "candidates 0"): the turret
+            // reticle's ~96 children are made when battle mode first starts, after the reads above - so it never qualified. Read the
+            // tree again 0.4 s into a left-trigger hold when no reticle part is in the list (once per hold, at most every 5 s).
+            static ULONGLONG s_ltSince = 0, s_aimRead = 0; static bool s_aimArmed = true;
+            const ULONGLONG now = GetTickCount64();
+            if (akvr_gamepad_left_trigger_ms() < 100) { if (!s_ltSince) s_ltSince = now; }
+            else { s_ltSince = 0; s_aimArmed = true; }
+            if (want && s_ltSince && now - s_ltSince > 400 && s_aimArmed && now - s_aimRead > 5000 && !akvr_aim_part_live())
+            { s_aimArmed = false; s_aimRead = now; akvr_hud_layers_discover_quick(); InterlockedIncrement(&g_aimRereads); }
         }
     }
     if (!g_uiHaveBase) return;             // not initialised yet
@@ -3435,6 +3447,7 @@ namespace
         bool zoomHide;                              // ZOOMHIDE: hidden only while the zoom vignette is on
         bool world, autoRoom;                       // ROOMALL: "stays on its target"; marked by the whole-HUD rule
         bool scan;                                  // DETCALLOUT: a part of detective mode's scan callout (its own mark)
+        bool aim; ULONGLONG aimFreeSince;           // AIMHUD: the Batmobile turret reticle (its own mark); seen shown without the trigger since
     };
     Layer   g_layers[2048];
     int     g_nLayers = 0;
@@ -3478,9 +3491,27 @@ namespace
         if (strcmp(rest, "9") == 0) { if (isBox) *isBox = true; return true; }
         return false;
     }
+    // AIMHUD 2026-10-18 (JJ: the turret aims with the head while the left trigger is held, "but the HUD element is not moving with
+    // it ... should be independent of the rest of the HUD and should move around with your head movements"). The reticle is the part
+    // .../0.0.0.0.1.0.0.0 with ~96 children (AIMSHOT diff 2026-10-03; again in JJ's 20:54 capture, container "K?" - so the old K13 tick
+    // never applies). It gets its own mark (kAimTag): AKN routes its pieces to an aim sheet, xr.cpp hangs that sheet on the head while
+    // the head aims. The same path with many children is also the Batmobile's world-marker list (K4, 74 entries): it shows while
+    // driving, the reticle only while aiming - a candidate seen shown for 3 s with the trigger released is ruled out (by node).
+    volatile LONG g_aimOn = 1;   // AKN command "aimhud 0|1"
+    volatile LONG g_aimGroup = 0;   // AIMHUD3: AKN command "aimgroup 1" = the reticle part's PARENT (its sibling parts too) carries the mark
+    uintptr_t g_aimNot[32] = {}; int g_aimNotN = 0; long g_aimRuledOut = 0, g_aimShownFrames = 0;
+    char g_aimNotKey[96] = "";
+    bool aim_ruled_out(uintptr_t node) { for (int i = 0; i < g_aimNotN; ++i) if (g_aimNot[i] == node) return true; return false; }
+    bool aim_candidate(const char* key, int kids)
+    {
+        static const char kSuf[] = "/0.0.0.0.1.0.0.0";
+        const size_t n = strlen(key), s = sizeof(kSuf) - 1;
+        return kids >= 48 && n > s && strcmp(key + n - s, kSuf) == 0;
+    }
     void layer_load(Layer& L)
     {
         L.s = 1.0f; L.dx = L.dy = 0.0f; L.hide = false; L.room = false; L.zoomHide = false; L.world = false;
+        L.aim = aim_candidate(L.key, L.kids) && !aim_ruled_out(L.node); L.aimFreeSince = 0;   // AIMHUD (not a saved setting)
         L.scan = g_scanOn && scan_key(L.key, nullptr);   // DETCALLOUT: on target by default (not a saved setting)
         if (L.scan) L.world = true;
         char k[112]; _snprintf_s(k, sizeof(k), _TRUNCATE, ";%s:", L.key);
@@ -3888,6 +3919,9 @@ namespace
     // the part (table in akvr_captures\partid.txt). Steps keep every value within -0.00195 .. -0.0028, clear of kMkTag (-0.0039 +- 2e-4).
     constexpr float kPartIdStep = 4.0e-7f; volatile LONG g_partIdOn = 0;
     constexpr float kScanTag = -3.0f / 512.0f;   // DETCALLOUT: detective scan callout parts (AKN: one marker at the box's object)
+    // AIMHUD: the Batmobile turret reticle (AKN: its own aim sheet). AIMHUD2: -4/512 (= -1/128) also sits in the game's own HUD
+    // constants (draws routed while driving, no reticle part known) - an odd value, matched exactly by AKN
+    constexpr float kAimTag = -0.0047131f;
     volatile LONG g_mkTagOn = 1; long g_mkTagSets = 0;
     // PARTTAG2 2026-09-30 — JJ: ticking "hang in the room" changed nothing and "marks set" kept rising: the game
     // rewrote the part's colour every frame after our mark. DisplayObjectBase::SetCxform 0x1411eedf0 (obj, cx)
@@ -3930,7 +3964,7 @@ namespace
     void mark_rgb(uint8_t* data, float v)
     {
         float* add = (float*)(data + 0x60);
-        if (v == 0.0f) { for (int c = 0; c < 4; ++c) if (add[c] == kPartTag || add[c] == kMkTag || add[c] == kScanTag) add[c] = 0.0f; return; }
+        if (v == 0.0f) { for (int c = 0; c < 4; ++c) if (add[c] == kPartTag || add[c] == kMkTag || add[c] == kScanTag || add[c] == kAimTag) add[c] = 0.0f; return; }
         // KEEPGLOW3 — JJ: with KEEPGLOW/KEEPGLOW2 the launch objective stayed on the head; it hung in the room when the
         // mark overwrote all four adds (WORLDKIDS). Back to that; the glow is kept instead by never marking a part
         // under an already marked one (apply_layers), which is where the two compass pieces lost it.
@@ -4046,10 +4080,13 @@ namespace
     {
         if ((!g_layerAdjusted && !g_layerRestores && !g_roomAll && g_tagNodeN == 0) || !g_treeSetMatrix || !layer_fns_ready()) return;
         if (!TryAcquireSRWLockShared(&g_layerLock)) return;
+        static bool s_aimGrp[2048];   // AIMHUD3: the parent of a reticle part (aimgroup 1)
         if (g_autoDirty)
         {   // ROOMALL: which branches hold a world part (children follow their parent in the list)
+            for (int i = 0; i < g_nLayers; ++i) s_aimGrp[i] = false;
+            if (g_aimGroup) for (int i = 0; i < g_nLayers; ++i) if (g_layers[i].aim && g_layers[i].parent >= 0 && g_layers[i].parent < i) s_aimGrp[g_layers[i].parent] = true;
             static bool s_holds[2048];
-            for (int i = 0; i < g_nLayers; ++i) s_holds[i] = g_layers[i].world;
+            for (int i = 0; i < g_nLayers; ++i) s_holds[i] = g_layers[i].world || g_layers[i].aim;   // AIMHUD: like a target part
             // ROOMALL2 2026-09-30 — JJ: the reticle and distance sat in the room for the first 10-20 s: their parts are
             // created later than the tree is read, so their branch was marked and they inherited it. Every saved
             // "stays on its target" key protects its deepest EXISTING ancestor, so the branch stays unmarked until the
@@ -4083,7 +4120,7 @@ namespace
             for (int i = 0; i < g_nLayers; ++i)
             {
                 const int p = g_layers[i].parent;
-                s_inWorld[i] = g_layers[i].world || (p >= 0 && p < i && s_inWorld[p]);
+                s_inWorld[i] = g_layers[i].world || g_layers[i].aim || s_aimGrp[i] || (p >= 0 && p < i && s_inWorld[p]);
                 // ROOTKIDS 2026-09-30 — JJ: the launch objective stays on the head. A movie with no world part marked
                 // only its ROOT, and roots are never written (apply_layers skips depth 0), so nothing in it was marked.
                 // A root is never marked; its children are the top branches.
@@ -4098,7 +4135,8 @@ namespace
             Layer& L = g_layers[i];
             // KEEPGLOW3: a part under a marked part already carries the mark; marking it too only wipes its own colour
             // add (JJ's compass glow pieces). Parents come before their children in the list.
-            const bool roomWanted = !L.world && (L.room || (g_roomAll && L.autoRoom));   // ROOMALL
+            const bool aimPart = g_aimOn && (g_aimGroup ? s_aimGrp[i] : L.aim);   // AIMHUD; AIMHUD3: or its parent
+            const bool roomWanted = !L.world && !aimPart && (L.room || (g_roomAll && L.autoRoom));   // ROOMALL
             const bool above = L.parent >= 0 && L.parent < i && s_markAbove[L.parent];
             s_markAbove[i] = roomWanted || above;
             if (L.view != view || L.depth == 0) continue;
@@ -4107,15 +4145,29 @@ namespace
             // plain hide took the tips too. "hide while zoomed" hides it only while our zoom vignette is on.
             const bool hideNow = L.hide || (L.zoomHide && akvr_xr_vig_active());
             const bool roomNow0 = roomWanted && !above;
-            const bool mkNow = g_mkTagOn && L.world && !roomNow0;   // MKTAG: the marker part itself (its pieces inherit it)
+            const bool mkNow = (g_mkTagOn && L.world && !roomNow0) || aimPart;   // MKTAG: the marker part itself (its pieces inherit it); AIMHUD
             const bool roomNow = roomNow0 || mkNow;                 // (name kept: "carries a mark now")
-            const float tagV = mkNow ? (L.scan ? kScanTag : kMkTag) : (g_partIdOn ? kPartTag - (float)(i + 1) * kPartIdStep : kPartTag);   // DETCALLOUT: the callout's own mark; PARTID
+            const float tagV = mkNow ? (aimPart ? kAimTag : L.scan ? kScanTag : kMkTag) : (g_partIdOn ? kPartTag - (float)(i + 1) * kPartIdStep : kPartTag);   // DETCALLOUT: the callout's own mark; PARTID; AIMHUD
             if (!moved && !hideNow && !L.haveLast && !L.hidByUs && !roomNow && !L.taggedByUs) continue;
             __try
             {
                 if (!is_child_of(L.node, L.parentNode)) continue;          // node gone or moved
                 float cur[12]; int flags = 0;
                 if (!node_matrix(L.node, cur, &flags)) continue;
+                if (L.aim)
+                {   // AIMHUD: shown with the trigger released for 3 s = not the reticle (the Batmobile's world-marker list)
+                    const bool shown = (flags & 1) != 0;
+                    if (shown) ++g_aimShownFrames;
+                    const ULONGLONG now = GetTickCount64();
+                    if (!shown || akvr_gamepad_left_trigger_ms() < 400) L.aimFreeSince = 0;
+                    else if (!L.aimFreeSince) L.aimFreeSince = now;
+                    else if (now - L.aimFreeSince > 3000)
+                    {
+                        L.aim = false; g_autoDirty = true; ++g_aimRuledOut; strcpy_s(g_aimNotKey, L.key);
+                        if (g_aimNotN < 32) g_aimNot[g_aimNotN++] = L.node;
+                        log_add("AIMHUD: %s (%d children) shown without the trigger for 3 s - not the turret reticle", L.key, L.kids);
+                    }
+                }
                 const bool is3d = (flags & 0x200) != 0;
                 const int  nf = is3d ? 12 : 8;
                 const bool wasPending = L.haveLast || L.hidByUs || L.taggedByUs;
@@ -4134,7 +4186,7 @@ namespace
                         {
                             if (uint8_t* w = (uint8_t*)g_treeWritable((void*)L.node, 2)) { mark_rgb(w, tagV); ++g_tagSets; if (mkNow) ++g_mkTagSets; }
                         }
-                        else if (!roomNow && b)
+                        else if (!roomNow && (b || L.taggedByUs))   // AIMHUD3: also a mark we set that is not the room mark (aim mark after an aimgroup switch)
                         {
                             if (uint8_t* w = (uint8_t*)g_treeWritable((void*)L.node, 2)) mark_rgb(w, 0.0f);
                         }
@@ -4716,6 +4768,28 @@ extern "C" __declspec(dllexport) void akvr_partid_set(int on)
     fclose(f);
 }
 extern "C" __declspec(dllexport) float akvr_scan_tag_value() { return kScanTag; }
+// AIMHUD: AKN reads the turret reticle's mark value, switches it ("aimhud 0|1") and logs the diag
+extern "C" __declspec(dllexport) float akvr_aim_tag_value() { return kAimTag; }
+bool akvr_aim_part_live()   // AIMHUD2
+{
+    bool any = false;
+    if (TryAcquireSRWLockShared(&g_layerLock)) { for (int i = 0; i < g_nLayers && !any; ++i) any = g_layers[i].aim; ReleaseSRWLockShared(&g_layerLock); }
+    else any = true;   // a read is running: do not start another
+    return any;
+}
+extern "C" __declspec(dllexport) void akvr_aim_set(int on) { InterlockedExchange(&g_aimOn, on ? 1 : 0); g_autoDirty = true; }
+extern "C" __declspec(dllexport) void akvr_aim_group_set(int on) { InterlockedExchange(&g_aimGroup, on ? 1 : 0); g_autoDirty = true; }   // AIMHUD3
+extern "C" long akvr_aim_hud_frames_c(long* headLocked);   // xr.cpp AIMHUD
+bool akvr_cam_aim_head_now();   // camera.cpp AIMTRIGGER2: the head is in the game's aim now
+extern "C" __declspec(dllexport) const char* akvr_aim_diag()
+{
+    static char d[400]; int cand = 0; char key[96] = "";
+    if (TryAcquireSRWLockShared(&g_layerLock)) { for (int i = 0; i < g_nLayers; ++i) if (g_layers[i].aim) { if (!cand) strcpy_s(key, g_layers[i].key); ++cand; } ReleaseSRWLockShared(&g_layerLock); }
+    long head = 0; const long fr = akvr_aim_hud_frames_c(&head);
+    _snprintf_s(d, sizeof(d), _TRUNCATE, "AKVR reticle part: candidates %d (%s), ruled out %ld (last %s), frames shown %ld, tree re-read at a trigger hold %ld | aim sheet drawn %ld frames, on the head %ld | head in the aim now %d",
+                cand, key[0] ? key : "-", g_aimRuledOut, g_aimNotKey[0] ? g_aimNotKey : "-", g_aimShownFrames, (long)g_aimRereads, fr, head, (akvr_cam_aim_head_now() && akvr_gamepad_left_trigger_ms() < 300) ? 1 : 0);
+    return d;
+}
 extern "C" __declspec(dllexport) void akvr_scan_set(int on) { InterlockedExchange(&g_scanOn, on ? 1 : 0); }
 // MKTAG: AKN reads the mark value and switches it (command "mktag 0|1")
 extern "C" __declspec(dllexport) float akvr_marker_tag_value() { return kMkTag; }
@@ -4735,7 +4809,7 @@ int akvr_hud_target_points(float* xy, int max, int rtW, int rtH, float* off, flo
     for (int i = 0; i < g_nLayers && nWant < 8; ++i)
     {
         const Layer& L = g_layers[i];
-        if (!L.world || !L.node || L.scan) continue;   // DETCALLOUT: never a target point (the layout map comes from the first part)
+        if (!L.world || !L.node || L.scan || L.aim) continue;   // DETCALLOUT / AIMHUD: never a target point (the layout map comes from the first part)
         bool top = true; int r = L.parent, guard = 0;
         while (r >= 0 && r < i && guard++ < 32) { if (g_layers[r].world) { top = false; break; } if (g_layers[r].depth == 0) break; r = g_layers[r].parent; }
         if (!top || r < 0 || r >= i || g_layers[r].depth != 0) continue;

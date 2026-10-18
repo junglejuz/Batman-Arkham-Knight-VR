@@ -971,7 +971,8 @@ namespace
         fprintf(f, "pitchkeep=%.3f\n", akvr_head_pitch_keep());
         fprintf(f, "pitchunlink=%d\n", akvr_head_pitch_unlink());
         fprintf(f, "sbsswapchain=%d\n", akvr_xr_sbs_one() ? 1 : 0);
-        fprintf(f, "stickheight=%.2f\n", akvr_head_stick_height());
+        fprintf(f, "stickheight2=%.2f\n", akvr_head_stick_height());   // HEIGHTLIMIT: new key, the old 2.0 m is not carried over
+        fprintf(f, "tppitchmax=%.1f\n", akvr_cam_tp_pitch_max());   // TPPITCH
         fprintf(f, "offsetup=%.3f\n",  akvr_head_offset_up());
         fprintf(f, "offsetfwd=%.3f\n", akvr_head_offset_fwd());
         fprintf(f, "fov=%.3f\n",    akvr_head_fov_delta());
@@ -1131,7 +1132,8 @@ namespace
             else if (sscanf(line, "menutextleft=%f", &v) == 1) akvr_menu_text_left_set(v);   // MENUTEXT
             else if (sscanf(line, "pitchkeep=%f",  &v) == 1) akvr_head_pitch_keep_set(0.0f);   // settled: view level (v ignored)
             else if (sscanf(line, "pitchunlink=%d", &iv) == 1) akvr_head_pitch_unlink_set(iv == 2 ? 2 : 0);   // 1 (horizon-level tilt) retired; 2 = UEVR-style
-            else if (sscanf(line, "stickheight=%f", &v) == 1) akvr_head_stick_height_set(v);
+            else if (sscanf(line, "stickheight2=%f", &v) == 1) akvr_head_stick_height_set(v);   // HEIGHTLIMIT ("stickheight=" ignored)
+            else if (sscanf(line, "tppitchmax=%f", &v) == 1) akvr_cam_tp_pitch_max_set(v);   // TPPITCH
             else if (sscanf(line, "offsetup=%f",   &v) == 1) akvr_head_offset_up_set(v);
             else if (sscanf(line, "offsetfwd=%f",  &v) == 1) akvr_head_offset_fwd_set(v);
             else if (sscanf(line, "fov=%f",    &v) == 1) akvr_head_fov_set(v);
@@ -1953,7 +1955,7 @@ namespace
 
         ImGui::TextColored(ImVec4(1.0f, 0.85f, 0.2f, 1.0f), "Arkham Knight VR");
         ImGui::SameLine();
-        ImGui::TextDisabled("   version 0.3.0  (" __DATE__ ")");   // PANELTIDY4: the release number
+        ImGui::TextDisabled("   version 0.3.1  (" __DATE__ ")");   // PANELTIDY4: the release number
 
         ImGui::Separator();
         // ---- one status line ----------------------------------------------------
@@ -2084,11 +2086,14 @@ namespace
         }
         ImGui::SetNextItemOpen(false, ImGuiCond_Once); if (ImGui::CollapsingHeader("VIEW"))
         {
+            // VIEWTIDY 2026-10-19 (JJ: "we need to clean up these options in the view menu. It's starting to get a bit messy"): grouped,
+            // shorter labels, same settings.
+            ImGui::SeparatorText("First person");   // VIEWTIDY
             {   // FIRSTPERSON 2026-10-11, in the VIEW drawer since PANELTIDY5 (JJ): Batman City's panel rows
                 static bool s_fpDirty = false;
                 bool fp = akvr_fp();
                 // FPFIX 2026-10-11 (JJ: fix first person before the release): back on the panel while it is being fixed
-                if (ImGui::Checkbox("FIRST PERSON  (or click both sticks twice quickly)", &fp)) { akvr_fp_set(fp); settings_save(); }
+                if (ImGui::Checkbox("first person  (or click both sticks twice quickly)", &fp)) { akvr_fp_set(fp); settings_save(); }
                 if (fp)
                 {
                     float f = akvr_fp_fwd(), u = akvr_fp_up();
@@ -2106,6 +2111,75 @@ namespace
                 if (s_fpDirty && !ImGui::IsAnyItemActive()) { settings_save(); s_fpDirty = false; }
             }
 
+            ImGui::SeparatorText("Third-person camera");   // VIEWTIDY
+            // PANELTIDY2 2026-10-01 â€” JJ: "look through the rest of the VR overlay ... remove any other things that aren't
+            // required as options". Settled or test-only controls are shown only with advancedpanel=1 (g_showAdvanced);
+            // their settings keep working from akvr_settings.ini.
+            // Camera pitch (TILTBOX / ROLLSIGN): follows the game's tilt by default, like UEVR (JJ's settled choice).
+            // PITCHPANEL 2026-10-18 (JJ: "we need an option in the VR overlay to decouple the pitch from the camera"): out of the
+            // advanced panel into VIEW, in plain words (memory panel-labels-plain-no-bad-switches). Off = JJ's settled default.
+            bool decouple = akvr_head_pitch_unlink() != 2;
+            if (ImGui::Checkbox("keep the view level  (decouple pitch)", &decouple))
+            { akvr_head_pitch_unlink_set(decouple ? 0 : 2); settings_save(); }
+            if (decouple)
+            {
+                float sh = akvr_head_stick_height();
+                if (SliderStep("   extra height when the camera looks down  (m, 0 = none)", &sh, 0.0f, 1.5f, "%.1f"))
+                    akvr_head_stick_height_set(sh);
+                if (ImGui::IsItemDeactivatedAfterEdit()) settings_save();
+            }
+            // TPPITCH 2026-10-18 (JJ: "Don't let the camera come completely over his head. Stop it, like well before that")
+            {
+                float pm = akvr_cam_tp_pitch_max();
+                if (SliderStep("lowest the camera may look down at Batman  (deg, 60 = no limit)", &pm, 10.0f, 60.0f, "%.0f"))
+                    akvr_cam_tp_pitch_max_set(pm);
+                if (ImGui::IsItemDeactivatedAfterEdit()) settings_save();
+                static long s_tpLast = 0; static ULONGLONG s_tpAt = 0; const long th = akvr_cam_tp_pitch_holds();
+                if (th != s_tpLast) { s_tpLast = th; s_tpAt = GetTickCount64(); }
+                if (s_tpAt && GetTickCount64() - s_tpAt < 300) { ImGui::SameLine(); ImGui::TextColored(ImVec4(0.3f, 1.0f, 0.3f, 1.0f), "LIMITING"); }
+            }
+            // CAMSMOOTH 2026-10-02 (JJ: getting out of the Batmobile still pops - the game's camera jumps ~30 cm in a frame)
+            // PANELTIDY3: "soften the game's sudden camera jumps" is settled ON (camsmooth) - no toggle
+            // SWINGEASE 2026-10-02 (JJ: getting out of the Batmobile still pops - the game swings its camera ~55 deg in 0.37 s)
+            bool csw = akvr_cam_swing();
+            if (ImGui::Checkbox("ease the game's fast camera swings", &csw)) { akvr_cam_swing_set(csw); settings_save(); }
+            // CAMERA POSITION (TPOFFSET 2026-10-18, JJ: third-person camera shifted left, right, back, forwards, up and down to taste):
+            // level along the game camera's heading + world up, always applied (was: the camera's own axes, up / forward only with
+            // the old camera-fix switch).
+            ImGui::SetNextItemOpen(true, ImGuiCond_Once);
+            if (ImGui::TreeNode("camera position"))
+            {
+                float x = akvr_head_shoulder();
+                if (SliderStep("left / right", &x, -300.0f, 300.0f, "%.0f", kNum))
+                    akvr_head_shoulder_set(x);
+                if (ImGui::IsItemDeactivatedAfterEdit()) settings_save();
+                float y = akvr_head_offset_up();
+                if (SliderStep("down / up", &y, -300.0f, 300.0f, "%.0f", kNum))
+                    akvr_head_offset_up_set(y);
+                if (ImGui::IsItemDeactivatedAfterEdit()) settings_save();
+                float z = akvr_head_offset_fwd();
+                if (SliderStep("back / forward", &z, -300.0f, 300.0f, "%.0f", kNum))
+                    akvr_head_offset_fwd_set(z);
+                if (ImGui::IsItemDeactivatedAfterEdit()) settings_save();
+                if (ImGui::Button("Reset position"))
+                {
+                    akvr_head_shoulder_set(0.0f);
+                    akvr_head_offset_up_set(0.0f);
+                    akvr_head_offset_fwd_set(0.0f);
+                    settings_save();
+                }
+                ImGui::TreePop();
+            }
+
+            ImGui::SeparatorText("Batmobile");   // VIEWTIDY
+            // CAMRESTORE 2026-10-02 (JJ: the camera "pops" getting in and out of the Batmobile)
+            // PANELTIDY3: "smooth Batmobile get in / out" is settled ON (camrestore) - no toggle
+            // AIMHEAD 2026-10-03 (JJ: the Batmobile's weapon reticle no longer follows the head)
+            bool aih = akvr_cam_aim_head();
+            if (ImGui::Checkbox("aim with your head while holding the left trigger", &aih)) { akvr_cam_aim_head_set(aih); settings_save(); }
+            if (akvr_cam_aim_head_now()) { ImGui::SameLine(); ImGui::TextColored(ImVec4(0.3f, 1.0f, 0.3f, 1.0f), "AIMING"); }
+
+            ImGui::SeparatorText("Size and picture");   // VIEWTIDY
             if (akvr_engine_stereo())
             {   // PANELTIDY4 2026-10-11: native stereo's world scale = game units per metre (the eye distance sent to AKN and
                 // the head lean both use it; xr.cpp akn_send_eyes); the geo-11 slider below did nothing here
@@ -2138,46 +2212,6 @@ namespace
                     akvr_head_stereo_set(world * kStereoAt1);
                 if (ImGui::IsItemDeactivatedAfterEdit()) settings_save();
             }
-
-            // PANELTIDY2 2026-10-01 â€” JJ: "look through the rest of the VR overlay ... remove any other things that aren't
-            // required as options". Settled or test-only controls are shown only with advancedpanel=1 (g_showAdvanced);
-            // their settings keep working from akvr_settings.ini.
-            // Camera pitch (TILTBOX / ROLLSIGN): follows the game's tilt by default, like UEVR (JJ's settled choice).
-            bool decouple = akvr_head_pitch_unlink() != 2;
-            if (g_showAdvanced && ImGui::Checkbox("decouple the camera pitch  (view stays level)", &decouple))
-            { akvr_head_pitch_unlink_set(decouple ? 0 : 2); settings_save(); }
-            if (g_showAdvanced && decouple)
-            {
-                float sh = akvr_head_stick_height();
-                if (SliderStep("right stick up/down: extra camera height  (m)", &sh, 0.0f, 8.0f, "%.1f"))
-                    akvr_head_stick_height_set(sh);
-                if (ImGui::IsItemDeactivatedAfterEdit()) settings_save();
-            }
-
-            if (akvr_xr_native())
-            {
-                // EDGES (SKVR OVERSCAN + VEDGE): margins beyond the lenses.
-                float ft = akvr_head_fov_delta();
-                if (ft < 0.0f) ft = 0.0f;
-                bool shapeCh = false;
-                if (SliderStep("extra view at the sides  (deg)", &ft, 0.0f, 30.0f, "%.1f"))
-                { akvr_head_fov_set(ft); shapeCh = true; }
-                float fv = g_ovV < 0.0f ? ft : g_ovV;
-                if (g_showAdvanced)   // PANELTIDY2
-                {
-                    if (SliderStep("extra view top and bottom  (deg, restart)", &fv, 0.0f, 30.0f, "%.1f"))
-                    { g_ovV = fv; shapeCh = true; }
-                    ImGui::SameLine();
-                    if (ImGui::Button("same as sides")) { g_ovV = -1.0f; shapeCh = true; }
-                }
-                if (shapeCh)
-                {
-                    const int calc = next_geo11_shape(g_eyeViewSaved);
-                    if (calc > 0) akvr_geo11_shape_set(calc);
-                    g_sliderDirty = true;
-                }
-            }
-
             // Picture size (the engine's own render height; width follows the shape).
             // RESMAX 2026-10-05 â€” JJ: "a slider for resolution that can increase even more than our
             // existing high setting for people with better headsets". The 1-pixel 0..4320 slider is now
@@ -2195,7 +2229,7 @@ namespace
                 uint32_t bbw = 0, bbh = 0; akvr_xr_backbuffer_size(bbw, bbh);
                 const int cur = akvr_engine_res();
                 float sc = (float)(cur > 0 ? cur : kHigh) / (float)kHigh;
-                if (SliderStep("picture size per eye  (1.00 = High, restart)", &sc, 0.50f, (float)maxH / (float)kHigh, "%.2f",
+                if (SliderStep("picture size per eye  (restart)", &sc, 0.50f, (float)maxH / (float)kHigh, "%.2f",
                                ImGuiSliderFlags_AlwaysClamp))
                     set_h(((int)lroundf(sc * (float)kHigh) + 2) & ~3);   // steps of 4, so 1.00 stays exactly High
                 static const struct { const char* name; int h; } kSizes[] = {
@@ -2223,7 +2257,29 @@ namespace
                 else
                     ImGui::TextDisabled("   off: the game picks its own size (now %u x %u)", bbw, bbh);
             }
-
+            if (akvr_xr_native())
+            {
+                // EDGES (SKVR OVERSCAN + VEDGE): margins beyond the lenses.
+                float ft = akvr_head_fov_delta();
+                if (ft < 0.0f) ft = 0.0f;
+                bool shapeCh = false;
+                if (SliderStep("extra view at the sides  (deg)", &ft, 0.0f, 30.0f, "%.1f"))
+                { akvr_head_fov_set(ft); shapeCh = true; }
+                float fv = g_ovV < 0.0f ? ft : g_ovV;
+                if (g_showAdvanced)   // PANELTIDY2
+                {
+                    if (SliderStep("extra view top and bottom  (deg, restart)", &fv, 0.0f, 30.0f, "%.1f"))
+                    { g_ovV = fv; shapeCh = true; }
+                    ImGui::SameLine();
+                    if (ImGui::Button("same as sides")) { g_ovV = -1.0f; shapeCh = true; }
+                }
+                if (shapeCh)
+                {
+                    const int calc = next_geo11_shape(g_eyeViewSaved);
+                    if (calc > 0) akvr_geo11_shape_set(calc);
+                    g_sliderDirty = true;
+                }
+            }
             if (akvr_xr_native() && g_showAdvanced && !akvr_engine_stereo())   // PANELTIDY2: an experiment (the compass doubles with it on)
             {
                 // EYEVIEW (SKVR port): each eye's picture turned outward to match the lens.
@@ -2255,48 +2311,6 @@ namespace
                     bool fl = akvr_xr_eye_flip();
                     if (ImGui::Checkbox("flip eye turn  (if everything is badly doubled)", &fl)) { akvr_xr_eye_flip_set(fl); settings_save(); }
                 }
-            }
-
-            // CAMRESTORE 2026-10-02 (JJ: the camera "pops" getting in and out of the Batmobile)
-            // PANELTIDY3: "smooth Batmobile get in / out" is settled ON (camrestore) - no toggle
-            // AIMHEAD 2026-10-03 (JJ: the Batmobile's weapon reticle no longer follows the head)
-            bool aih = akvr_cam_aim_head();
-            if (ImGui::Checkbox("aim with your head while holding the left trigger  (Batmobile battle mode, gadget aim)", &aih)) { akvr_cam_aim_head_set(aih); settings_save(); }
-            ImGui::SameLine();
-            if (akvr_cam_aim_head_now()) ImGui::TextColored(ImVec4(0.3f, 1.0f, 0.3f, 1.0f), "AIMING");
-            else ImGui::TextDisabled("(trigger not held)");
-            // CAMSMOOTH 2026-10-02 (JJ: getting out of the Batmobile still pops - the game's camera jumps ~30 cm in a frame)
-            // PANELTIDY3: "soften the game's sudden camera jumps" is settled ON (camsmooth) - no toggle
-            // SWINGEASE 2026-10-02 (JJ: getting out of the Batmobile still pops - the game swings its camera ~55 deg in 0.37 s)
-            bool csw = akvr_cam_swing();
-            if (ImGui::Checkbox("ease the game's fast camera tilts  (comfort - not while you use the right stick)", &csw)) { akvr_cam_swing_set(csw); settings_save(); }
-
-            // CAMERA POSITION: all three slide the viewpoint along the camera's own axes,
-            // so they stay glued to it however it is pitched or rolled (JJ, 2026-08-05).
-            if (ImGui::TreeNode("where you stand  (camera offset)"))
-            {
-                float x = akvr_head_shoulder();
-                if (SliderStep("left / right", &x, -300.0f, 300.0f, "%.0f", kNum))
-                    akvr_head_shoulder_set(x);
-                if (ImGui::IsItemDeactivatedAfterEdit()) settings_save();
-                float y = akvr_head_offset_up();
-                if (SliderStep("down / up", &y, -300.0f, 300.0f, "%.0f", kNum))
-                    akvr_head_offset_up_set(y);
-                if (ImGui::IsItemDeactivatedAfterEdit()) settings_save();
-                float z = akvr_head_offset_fwd();
-                if (SliderStep("back / forward", &z, -300.0f, 300.0f, "%.0f", kNum))
-                    akvr_head_offset_fwd_set(z);
-                if (ImGui::IsItemDeactivatedAfterEdit()) settings_save();
-                if (ImGui::Button("Reset position"))
-                {
-                    akvr_head_shoulder_set(0.0f);
-                    akvr_head_offset_up_set(0.0f);
-                    akvr_head_offset_fwd_set(0.0f);
-                    settings_save();
-                }
-                ImGui::SameLine();
-                ImGui::TextDisabled("standing LEFT of what you look at? drag left/right RIGHT.");
-                ImGui::TreePop();
             }
         }
 
@@ -2902,6 +2916,7 @@ namespace
                     akvr_xr_pause_look() ? "ON" : "off", akvr_xr_pause_live() ? "LIVE" : "not live",
                     akvr_camera_main_view_live() ? "yes" : "no", akvr_camera_pause_writes(), akvr_xr_pause_dim() * 100.0f);
             fprintf(f, "   pause test: %s\n", akvr_camera_main_view_diag());   // PAUSEFOV2
+            fprintf(f, "   camera look-down limit (TPPITCH2): %.0f deg, frames limited %ld, frames past it with no Batman found %ld\n", akvr_cam_tp_pitch_max(), akvr_cam_tp_pitch_holds(), akvr_cam_tp_no_body());
             fprintf(f, "   head aiming: %s now, %ld frames so far | %s\n", akvr_cam_aim_head_now() ? "ON" : "off",
                     akvr_cam_aim_head_frames(), akvr_gamepad_trigger_diag());   // AIMTRIGGER2
             fprintf(f, "   head on the shown camera (dive fix): %s, %ld camera frames so far\n", akvr_cam_exact_on() ? "on" : "off",

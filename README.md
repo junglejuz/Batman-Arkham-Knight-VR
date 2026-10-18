@@ -26,6 +26,10 @@ behind when the camera swings.
 
 - **HUD on a panel in front of you**; the distance marker and the grapple reticle sit on their targets, at the
   target's depth, and turn only with the game camera.
+- **Batmobile battle mode**: hold the left trigger and the cannon aims where you look; its reticle stays in front of your
+  eyes while the rest of the HUD stays in the room.
+- **Third-person camera to taste** (VR menu, VIEW): keep the view level while the game camera tilts, and move the camera
+  left / right, back / forward and up / down.
 - **Menus, the map and loading screens** on a large screen in the room; the main menu in live 3D.
 - **An in-headset VR menu**: hold both thumbsticks down (or press F8). World scale, DLSS, HUD size and distance, render
   size, comfort options, and more. Settings are saved.
